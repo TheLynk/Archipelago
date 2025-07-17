@@ -4,14 +4,32 @@ APWorld pour Pikmin - Fichier principal
 
 from typing import Dict, List, Set, Tuple, Optional, Any
 from BaseClasses import World, Region, Location, Item, Tutorial, ItemClassification
-from .Items import PikminItem, item_table, ship_parts
-from .Locations import PikminLocation, location_table, ship_part_locations
-from .Rules import set_rules
-from .Options import pikmin_options
-from worlds.AutoWorld import World, WebWorld
+from worlds.AutoWorld import WebWorld
 import logging
 
 logger = logging.getLogger("Pikmin")
+
+from .Items import PikminItem, item_table, ship_parts
+
+try:
+    from .Locations import PikminLocation, location_table, ship_part_locations
+except ImportError:
+    logger.warning("Locations module not found, using dummy data")
+    location_table = {}
+    ship_part_locations = []
+    
+    class PikminLocation(Location):
+        def __init__(self, player: int, name: str, address: int, parent: Region):
+            super().__init__(player, name, address, parent)
+
+try:
+    from .Rules import set_rules
+except ImportError:
+    logger.warning("Rules module not found, using dummy function")
+    def set_rules(world):
+        pass
+
+from .Options import PikminOptions
 
 
 class PikminWebWorld(WebWorld):
@@ -37,11 +55,11 @@ class PikminWorld(World):
     game = "Pikmin"
     web = PikminWebWorld()
     
-    item_name_to_id = {name: data.id for name, data in item_table.items()}
-    location_name_to_id = {name: data.id for name, data in location_table.items()}
+    item_name_to_id = {name: data.id for name, data in item_table.items()} if item_table else {}
+    location_name_to_id = {name: data.id for name, data in location_table.items()} if location_table else {}
     
-    options_dataclass = pikmin_options
-    options: pikmin_options
+    options_dataclass = PikminOptions
+    options: PikminOptions
     
     required_client_version = (0, 4, 2)
     
@@ -74,20 +92,21 @@ class PikminWorld(World):
             area_region = Region(area_name, self.player, self.multiworld)
             self.multiworld.regions.append(area_region)
             
-            # Ajouter les emplacements de cette zone
-            area_locations = [
-                loc for loc in ship_part_locations 
-                if loc.area == area_name
-            ]
-            
-            for location_data in area_locations:
-                location = PikminLocation(
-                    self.player,
-                    location_data.name,
-                    location_data.id,
-                    area_region
-                )
-                area_region.locations.append(location)
+            # Ajouter les emplacements de cette zone si disponible
+            if ship_part_locations:
+                area_locations = [
+                    loc for loc in ship_part_locations 
+                    if hasattr(loc, 'area') and loc.area == area_name
+                ]
+                
+                for location_data in area_locations:
+                    location = PikminLocation(
+                        self.player,
+                        location_data.name,
+                        location_data.id,
+                        area_region
+                    )
+                    area_region.locations.append(location)
             
             # Créer l'entrée depuis la région précédente
             if previous_region:
@@ -100,16 +119,17 @@ class PikminWorld(World):
         """Crée les objets du jeu"""
         
         # Objets principaux (pièces de vaisseau)
-        for part_name in ship_parts:
-            if part_name in item_table:
-                item_data = item_table[part_name]
-                item = PikminItem(
-                    part_name,
-                    item_data.classification,
-                    item_data.id,
-                    self.player
-                )
-                self.multiworld.itempool.append(item)
+        if ship_parts:
+            for part_name in ship_parts:
+                if part_name in item_table:
+                    item_data = item_table[part_name]
+                    item = PikminItem(
+                        part_name,
+                        item_data.classification,
+                        item_data.id,
+                        self.player
+                    )
+                    self.multiworld.itempool.append(item)
         
         # Objets utilitaires (Pikmin, améliorations, etc.)
         utility_items = [
@@ -158,7 +178,7 @@ class PikminWorld(World):
     def fill_slot_data(self) -> Dict[str, Any]:
         """Données à envoyer au client"""
         return {
-            "ship_parts": list(ship_parts),
+            "ship_parts": list(ship_parts) if ship_parts else [],
             "areas": list(self.areas_unlocked),
             "seed": self.multiworld.seed,
             "player_name": self.multiworld.player_name[self.player],
