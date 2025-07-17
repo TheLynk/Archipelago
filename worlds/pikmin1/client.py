@@ -1,239 +1,218 @@
+"""
+Client Pikmin 1 GameCube PAL pour Archipelago
+Ce client se connecte au jeu via Dolphin et lit la mémoire
+"""
+
 import asyncio
-import struct
-from typing import Dict, Any, Optional, Set
-from CommonClient import CommonContext, server_loop, gui_enabled, ClientCommandProcessor
-from NetUtils import ClientStatus
 import logging
+import struct
+import time
+from typing import Dict, List, Optional, Set, Tuple
 
-logger = logging.getLogger(__name__)
+from CommonClient import CommonContext, server_loop, ClientCommandProcessor, logger, gui_enabled
+from NetUtils import ClientStatus, color
+from Utils import async_start
 
-class PikminCommandProcessor(ClientCommandProcessor):
-    """Command processor for Pikmin client"""
+if gui_enabled:
+    from kivy.app import App
+    from kivy.uix.boxlayout import BoxLayout
+    from kivy.uix.label import Label
+    from kivy.uix.textinput import TextInput
+    from kivy.uix.button import Button
+
+
+class PikminClientCommandProcessor(ClientCommandProcessor):
+    """Processeur de commandes pour le client Pikmin"""
     
-    def _cmd_connect_dolphin(self):
-        """Connect to Dolphin emulator"""
-        if isinstance(self.ctx, PikminContext):
-            asyncio.create_task(self.ctx.connect_to_dolphin())
-    
-    def _cmd_check_pikmin(self):
-        """Check current Pikmin count"""
-        if isinstance(self.ctx, PikminContext):
-            asyncio.create_task(self.ctx.check_pikmin_count())
+    def _cmd_dolphin(self):
+        """Commande pour se connecter à Dolphin"""
+        if self.ctx.dolphin_sync_task:
+            logger.info("Dolphin déjà connecté")
+        else:
+            self.ctx.dolphin_sync_task = asyncio.create_task(self.ctx.dolphin_sync())
+            logger.info("Tentative de connexion à Dolphin...")
+
 
 class PikminContext(CommonContext):
-    """Context for Pikmin client"""
+    """Context pour le client Pikmin"""
     
-    command_processor = PikminCommandProcessor
+    command_processor = PikminClientCommandProcessor
     game = "Pikmin"
-    items_handling = 0b111  # Full item handling
+    items_handling = 0b111  # Recevoir tous les items
     
-    def __init__(self, server_address: Optional[str], password: Optional[str]):
+    def __init__(self, server_address, password):
         super().__init__(server_address, password)
         
-        # Game state
+        # Variables pour Dolphin
+        self.dolphin_sync_task = None
+        self.dolphin_process = None
+        self.dolphin_pid = None
+        
+        # Variables de jeu
         self.red_pikmin_count = 0
-        self.yellow_pikmin_count = 0
-        self.blue_pikmin_count = 0
-        self.previous_red_count = 0
-        
-        # Memory addresses
+        self.last_red_pikmin_count = 0
         self.red_pikmin_address = 0x803D6CF7
-        self.yellow_pikmin_address = 0x803D6CF8  # Exemple
-        self.blue_pikmin_address = 0x803D6CF9    # Exemple
         
-        # Connection state
-        self.dolphin_connected = False
-        self.game_connected = False
-        
-        # Locations already checked
+        # Locations vérifiées
         self.checked_locations: Set[int] = set()
         
-        # Monitoring task
-        self.monitor_task = None
-    
     async def server_auth(self, password_requested: bool = False):
-        """Authenticate with server"""
+        """Authentification avec le serveur"""
         if password_requested and not self.password:
             await super().server_auth(password_requested)
         await self.get_username()
         await self.send_connect()
-    
+        
     async def connection_closed(self):
-        """Handle connection closed"""
-        if self.monitor_task:
-            self.monitor_task.cancel()
+        """Gestion de la fermeture de connexion"""
+        if self.dolphin_sync_task:
+            self.dolphin_sync_task.cancel()
+            self.dolphin_sync_task = None
         await super().connection_closed()
-    
-    async def connect_to_dolphin(self):
-        """Connect to Dolphin emulator"""
-        try:
-            # Simulation de connexion à Dolphin
-            # Dans un vrai projet, utilisez l'API Dolphin Memory Engine
-            logger.info("Attempting to connect to Dolphin...")
+        
+    @property
+    def endpoints(self):
+        """Points de terminaison pour la connexion"""
+        if self.server_task is None:
+            return []
+        return [self.server_task]
+        
+    async def shutdown(self):
+        """Arrêt du client"""
+        if self.dolphin_sync_task:
+            self.dolphin_sync_task.cancel()
+            self.dolphin_sync_task = None
+        await super().shutdown()
+        
+    def on_package(self, cmd: str, args: dict):
+        """Traitement des paquets reçus"""
+        if cmd in {"Connected"}:
+            self.slot_data = args.get("slot_data", {})
+            self.red_pikmin_address = self.slot_data.get("red_pikmin_address", 0x803D6CF7)
+            logger.info(f"Connecté! Adresse pikmin rouge: 0x{self.red_pikmin_address:08X}")
             
-            # Simuler une connexion réussie
-            await asyncio.sleep(1)
-            self.dolphin_connected = True
-            self.game_connected = True
+        elif cmd in {"ReceivedItems"}:
+            start_index = args["index"]
             
-            logger.info("Successfully connected to Dolphin!")
-            
-            # Démarrer la surveillance
-            if not self.monitor_task:
-                self.monitor_task = asyncio.create_task(self.monitor_game_state())
+            if start_index == 0:
+                self.items_received = []
                 
-        except Exception as e:
-            logger.error(f"Failed to connect to Dolphin: {e}")
-            self.dolphin_connected = False
-            self.game_connected = False
-    
-    async def read_memory(self, address: int, size: int = 4) -> Optional[bytes]:
-        """Read memory from Dolphin"""
-        if not self.dolphin_connected:
-            return None
+            for item in args["items"]:
+                self.items_received.append(item)
+                logger.info(f"Reçu: {self.item_names[item.item]} de {self.player_names[item.player]}")
+                
+    async def dolphin_sync(self):
+        """Synchronisation avec Dolphin"""
+        logger.info("Démarrage de la synchronisation Dolphin...")
         
-        try:
-            # Simulation de lecture mémoire
-            # Dans un vrai projet, utilisez l'API Dolphin
-            import random
-            value = random.randint(0, 100)
-            return struct.pack('>I', value)
-            
-        except Exception as e:
-            logger.error(f"Memory read error at 0x{address:08X}: {e}")
-            return None
-    
-    async def get_red_pikmin_count(self) -> int:
-        """Get current red Pikmin count"""
-        memory_data = await self.read_memory(self.red_pikmin_address, 4)
-        if memory_data:
-            return struct.unpack('>I', memory_data)[0]
-        return 0
-    
-    async def check_pikmin_count(self):
-        """Manually check Pikmin count"""
-        if not self.game_connected:
-            logger.warning("Game not connected")
-            return
-        
-        count = await self.get_red_pikmin_count()
-        logger.info(f"Current red Pikmin count: {count}")
-    
-    async def monitor_game_state(self):
-        """Monitor game state for changes"""
-        logger.info("Starting game state monitoring...")
-        
-        while self.game_connected:
+        while True:
             try:
-                # Vérifier le nombre de Pikmin rouges
-                current_red_count = await self.get_red_pikmin_count()
+                # Tentative de connexion à Dolphin
+                if not self.dolphin_process:
+                    await self.connect_to_dolphin()
                 
-                if current_red_count != self.previous_red_count:
-                    logger.info(f"Red Pikmin count changed: {self.previous_red_count} -> {current_red_count}")
-                    self.red_pikmin_count = current_red_count
+                if self.dolphin_process:
+                    # Lire la mémoire
+                    await self.read_memory()
                     
-                    # Vérifier les emplacements basés sur le nombre de Pikmin
-                    await self.check_pikmin_locations()
+                    # Vérifier les conditions de location
+                    await self.check_locations()
                     
-                    self.previous_red_count = current_red_count
+                await asyncio.sleep(1)  # Vérifier chaque seconde
                 
-                await asyncio.sleep(0.1)  # Vérifier toutes les 100ms
-                
-            except asyncio.CancelledError:
-                logger.info("Game monitoring cancelled")
-                break
             except Exception as e:
-                logger.error(f"Error monitoring game state: {e}")
-                await asyncio.sleep(1)
-    
-    async def check_pikmin_locations(self):
-        """Check locations based on Pikmin count"""
-        locations_to_check = []
-        
-        # Vérifier les emplacements basés sur le nombre de Pikmin rouges
-        if self.red_pikmin_count >= 10:
-            locations_to_check.append(11100)  # "Collect 10 Red Pikmin"
-        if self.red_pikmin_count >= 25:
-            locations_to_check.append(11101)  # "Collect 25 Red Pikmin"
-        if self.red_pikmin_count >= 50:
-            locations_to_check.append(11102)  # "Collect 50 Red Pikmin"
-        if self.red_pikmin_count >= 100:
-            locations_to_check.append(11103)  # "Collect 100 Red Pikmin"
-        
-        # Envoyer les emplacements vérifiés
-        new_locations = [loc for loc in locations_to_check if loc not in self.checked_locations]
-        if new_locations:
-            self.checked_locations.update(new_locations)
-            await self.send_msgs([{
-                "cmd": "LocationChecks",
-                "locations": new_locations
-            }])
-            logger.info(f"Checked locations: {new_locations}")
-    
-    def on_package(self, cmd: str, args: Dict[str, Any]):
-        """Handle incoming packages"""
-        if cmd == "Connected":
-            self.game_state = ClientStatus.CLIENT_PLAYING
-            logger.info("Connected to multiworld!")
-            
-            # Démarrer la connexion Dolphin si pas déjà fait
-            if not self.dolphin_connected:
-                asyncio.create_task(self.connect_to_dolphin())
+                logger.error(f"Erreur dans dolphin_sync: {e}")
+                await asyncio.sleep(5)  # Attendre avant de réessayer
                 
-        elif cmd == "ReceivedItems":
-            # Traiter les items reçus
-            start_index = args.get("index", 0)
-            items = args.get("items", [])
+    async def connect_to_dolphin(self):
+        """Se connecter au processus Dolphin"""
+        try:
+            import psutil
             
-            for i, item in enumerate(items):
-                logger.info(f"Received item: {item}")
-                # Ici, vous pourriez modifier l'état du jeu
+            # Chercher le processus Dolphin
+            for proc in psutil.process_iter(['pid', 'name']):
+                if proc.info['name'] and 'dolphin' in proc.info['name'].lower():
+                    self.dolphin_process = proc
+                    self.dolphin_pid = proc.info['pid']
+                    logger.info(f"Connecté à Dolphin (PID: {self.dolphin_pid})")
+                    return
+                    
+            logger.warning("Dolphin non trouvé")
+            
+        except ImportError:
+            logger.error("psutil requis pour la connexion Dolphin")
+        except Exception as e:
+            logger.error(f"Erreur de connexion à Dolphin: {e}")
+            
+    async def read_memory(self):
+        """Lire la mémoire de Dolphin"""
+        try:
+            # Ici, vous devrez implémenter la lecture mémoire réelle
+            # Pour l'instant, simulation avec une valeur qui augmente
+            import random
+            
+            # Simulation: augmenter parfois le nombre de pikmin
+            if random.random() < 0.1:  # 10% de chance d'augmenter
+                self.red_pikmin_count = min(self.red_pikmin_count + 1, 100)
                 
-        elif cmd == "LocationInfo":
-            # Informations sur les emplacements
-            locations = args.get("locations", [])
-            logger.info(f"Location info: {locations}")
+            # En vrai, vous feriez quelque chose comme:
+            # memory_value = read_dolphin_memory(self.red_pikmin_address)
+            # self.red_pikmin_count = memory_value
+            
+        except Exception as e:
+            logger.error(f"Erreur de lecture mémoire: {e}")
+            
+    async def check_locations(self):
+        """Vérifier les conditions de location"""
+        try:
+            # Vérifier si on a 10 pikmin rouge
+            if self.red_pikmin_count >= 10 and self.last_red_pikmin_count < 10:
+                location_id = 0x1000001  # ID de "10 Red Pikmin"
+                
+                if location_id not in self.checked_locations:
+                    self.checked_locations.add(location_id)
+                    await self.send_msgs([{
+                        "cmd": "LocationChecks",
+                        "locations": [location_id]
+                    }])
+                    logger.info(f"Location '10 Red Pikmin' déclenchée! ({self.red_pikmin_count} pikmin)")
+                    
+            self.last_red_pikmin_count = self.red_pikmin_count
+            
+        except Exception as e:
+            logger.error(f"Erreur dans check_locations: {e}")
 
-class PikminClient:
-    """Main client class for Pikmin"""
-    
-    def __init__(self):
-        self.ctx = None
-    
-    async def main(self, args):
-        """Main client entry point"""
-        self.ctx = PikminContext(args.connect, args.password)
-        self.ctx.server_task = asyncio.create_task(server_loop(self.ctx))
-        
-        if gui_enabled:
-            # Si GUI est activé, lancer l'interface graphique
-            from kvui import GameManager
-            
-            class PikminManager(GameManager):
-                logging_pairs = [
-                    ("Client", "Archipelago"),
-                    ("Pikmin", "Pikmin")
-                ]
-                base_title = "Archipelago Pikmin Client"
-            
-            await PikminManager(self.ctx).async_run()
-        else:
-            # Mode console
-            await self.ctx.server_task
 
 def launch():
-    """Launch the Pikmin client"""
-    import asyncio
+    """Lancer le client"""
+    async def main():
+        parser = get_base_parser(description="Client Pikmin 1 GameCube PAL pour Archipelago")
+        args, rest = parser.parse_known_args()
+        
+        ctx = PikminContext(args.connect, args.password)
+        ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
+        
+        if gui_enabled:
+            ctx.run_gui()
+        ctx.run_cli()
+        
+        await ctx.server_task
+        
+    import colorama
+    colorama.init()
+    asyncio.run(main())
+
+
+def get_base_parser(description=None):
+    """Obtenir le parser de base"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Pikmin Client for Archipelago")
-    parser.add_argument("--connect", default=None, help="Address of the multiworld host")
-    parser.add_argument("--password", default=None, help="Password for the multiworld")
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument('--connect', default=None, help='Adresse pour se connecter')
+    parser.add_argument('--password', default=None, help='Mot de passe si nécessaire')
     
-    args = parser.parse_args()
-    
-    client = PikminClient()
-    asyncio.run(client.main(args))
+    return parser
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     launch()

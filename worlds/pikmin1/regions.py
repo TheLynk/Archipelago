@@ -1,85 +1,62 @@
-from BaseClasses import Region, Entrance
-from .locations import PikminLocation, locations_by_region, location_table
+"""
+Regions pour Pikmin 1 GameCube PAL
+"""
 
-def create_regions(multiworld, player: int):
-    """Create all regions for Pikmin world"""
-    
-    # Région de menu (toujours accessible)
-    menu_region = Region("Menu", player, multiworld)
-    multiworld.regions.append(menu_region)
-    
-    # Zone d'impact (région de départ)
-    impact_site = Region("Impact Site", player, multiworld)
-    impact_site.locations = [
-        PikminLocation(player, loc_name, location_table[loc_name].id, impact_site)
-        for loc_name in locations_by_region["Impact Site"]
-    ]
-    multiworld.regions.append(impact_site)
-    
-    # Forêt de l'Espoir
-    forest_hope = Region("Forest of Hope", player, multiworld)
-    forest_hope.locations = [
-        PikminLocation(player, loc_name, location_table[loc_name].id, forest_hope)
-        for loc_name in locations_by_region["Forest of Hope"]
-    ]
-    multiworld.regions.append(forest_hope)
-    
-    # Caverne de la Flamme
-    forest_navel = Region("Forest Navel", player, multiworld)
-    forest_navel.locations = [
-        PikminLocation(player, loc_name, location_table[loc_name].id, forest_navel)
-        for loc_name in locations_by_region["Forest Navel"]
-    ]
-    multiworld.regions.append(forest_navel)
-    
-    # Rivage Lointain
-    distant_spring = Region("Distant Spring", player, multiworld)
-    distant_spring.locations = [
-        PikminLocation(player, loc_name, location_table[loc_name].id, distant_spring)
-        for loc_name in locations_by_region["Distant Spring"]
-    ]
-    multiworld.regions.append(distant_spring)
-    
-    # Épreuve Finale
-    final_trial = Region("Final Trial", player, multiworld)
-    final_trial.locations = [
-        PikminLocation(player, loc_name, location_table[loc_name].id, final_trial)
-        for loc_name in locations_by_region["Final Trial"]
-    ]
-    multiworld.regions.append(final_trial)
-    
-    # Connexions entre régions
-    create_region_connections(multiworld, player)
+from typing import Dict, List, NamedTuple, Optional, TYPE_CHECKING
+from BaseClasses import Entrance, Region
+from .Locations import PikminLocation, location_table
 
-def create_region_connections(multiworld, player: int):
-    """Create connections between regions"""
+if TYPE_CHECKING:
+    from . import PikminWorld
+
+
+def create_regions(world: "PikminWorld") -> None:
+    """Créer toutes les régions du monde Pikmin"""
     
-    # Connexion du menu vers la zone d'impact
-    menu_to_impact = Entrance(player, "Start Game", multiworld.get_region("Menu", player))
-    menu_to_impact.connect(multiworld.get_region("Impact Site", player))
-    multiworld.get_region("Menu", player).exits.append(menu_to_impact)
+    # Menu principal (point d'entrée)
+    menu = Region("Menu", world.player, world.multiworld)
+    world.multiworld.regions.append(menu)
     
-    # Zone d'impact vers Forêt de l'Espoir
-    impact_to_forest = Entrance(player, "To Forest of Hope", multiworld.get_region("Impact Site", player))
-    impact_to_forest.connect(multiworld.get_region("Forest of Hope", player))
-    multiworld.get_region("Impact Site", player).exits.append(impact_to_forest)
+    # Région principale - The Impact Site
+    impact_site = Region("The Impact Site", world.player, world.multiworld)
+    world.multiworld.regions.append(impact_site)
     
-    # Forêt de l'Espoir vers Caverne de la Flamme
-    forest_to_navel = Entrance(player, "To Forest Navel", multiworld.get_region("Forest of Hope", player))
-    forest_to_navel.connect(multiworld.get_region("Forest Navel", player))
-    multiworld.get_region("Forest of Hope", player).exits.append(forest_to_navel)
+    # Autres régions
+    forest_hope = Region("The Forest of Hope", world.player, world.multiworld)
+    world.multiworld.regions.append(forest_hope)
     
-    # Caverne de la Flamme vers Rivage Lointain
-    navel_to_spring = Entrance(player, "To Distant Spring", multiworld.get_region("Forest Navel", player))
-    navel_to_spring.connect(multiworld.get_region("Distant Spring", player))
-    multiworld.get_region("Forest Navel", player).exits.append(navel_to_spring)
+    forest_navel = Region("The Forest Navel", world.player, world.multiworld)
+    world.multiworld.regions.append(forest_navel)
     
-    # Rivage Lointain vers Épreuve Finale
-    spring_to_final = Entrance(player, "To Final Trial", multiworld.get_region("Distant Spring", player))
-    spring_to_final.connect(multiworld.get_region("Final Trial", player))
-    multiworld.get_region("Distant Spring", player).exits.append(spring_to_final)
+    # Créer les entrances
+    menu.connect(impact_site, "Start Game")
+    impact_site.connect(forest_hope, "To Forest of Hope")
+    impact_site.connect(forest_navel, "To Forest Navel")
     
-    # Connexions de retour (optionnelles)
-    forest_to_impact = Entrance(player, "Back to Impact Site", multiworld.get_region("Forest of Hope", player))
-    forest_to_impact.connect(multiworld.get_region("Impact Site", player))
-    multiworld.get_region("Forest of Hope", player).exits.append(forest_to_impact)
+    # Ajouter les locations aux régions
+    add_locations_to_regions(world)
+
+
+def add_locations_to_regions(world: "PikminWorld") -> None:
+    """Ajouter les locations aux régions appropriées"""
+    
+    # Organiser les locations par région
+    regions = {
+        "The Impact Site": [],
+        "The Forest of Hope": [],
+        "The Forest Navel": [],
+    }
+    
+    # Distribuer les locations
+    for location_name, location_data in location_table.items():
+        if location_data.region in regions:
+            regions[location_data.region].append(location_name)
+    
+    # Créer les objets Location et les ajouter aux régions
+    for region_name, location_names in regions.items():
+        region = world.multiworld.get_region(region_name, world.player)
+        
+        for location_name in location_names:
+            location_data = location_table[location_name]
+            location = PikminLocation(world.player, location_name, location_data.code, region)
+            region.locations.append(location)
