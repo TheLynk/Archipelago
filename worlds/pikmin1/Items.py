@@ -1,68 +1,88 @@
-import typing
-from BaseClasses import Item, ItemClassification
 from dataclasses import dataclass
-
+from BaseClasses import Item, ItemClassification
+from typing import Dict
 
 @dataclass
 class PikminItemData:
-    code: int
+    """Data for a Pikmin item"""
+    id: int
     classification: ItemClassification
-    progression: bool = False
-
+    max_quantity: int = 1
 
 class PikminItem(Item):
-    game: str = "Pikmin 1"
+    """Pikmin item implementation"""
+    game = "Pikmin"
 
-
-# Base item ID for Pikmin 1
-base_id = 0x500000
-
-# Item table
-item_table: typing.Dict[str, PikminItemData] = {
-    # Ship Parts (Progression Items)
-    "Main Engine": PikminItemData(
-        code=base_id + 1,
+# Table des items pour Pikmin
+item_table: Dict[str, PikminItemData] = {
+    # Graines de Pikmin
+    "Red Pikmin Seed": PikminItemData(
+        id=12000,
         classification=ItemClassification.progression,
-        progression=True
+        max_quantity=100
     ),
-    "Positron Generator": PikminItemData(
-        code=base_id + 2,
+    "Yellow Pikmin Seed": PikminItemData(
+        id=12001,
         classification=ItemClassification.progression,
-        progression=True
+        max_quantity=100
     ),
-    "Eternal Fuel Dynamo": PikminItemData(
-        code=base_id + 3,
+    "Blue Pikmin Seed": PikminItemData(
+        id=12002,
         classification=ItemClassification.progression,
-        progression=True
+        max_quantity=100
     ),
     
-    # Useful Items
-    "Red Pikmin Seeds": PikminItemData(
-        code=base_id + 50,
-        classification=ItemClassification.useful
-    ),
-    "Blue Pikmin Seeds": PikminItemData(
-        code=base_id + 51,
-        classification=ItemClassification.useful
-    ),
-    "Yellow Pikmin Seeds": PikminItemData(
-        code=base_id + 52,
-        classification=ItemClassification.useful
-    ),
-    
-    # Filler Items
-    "Pellet": PikminItemData(
-        code=base_id + 100,
-        classification=ItemClassification.filler
+    # Items utiles
+    "Pellet Posy": PikminItemData(
+        id=12010,
+        classification=ItemClassification.useful,
+        max_quantity=50
     ),
     "Nectar": PikminItemData(
-        code=base_id + 101,
-        classification=ItemClassification.filler
+        id=12011,
+        classification=ItemClassification.useful,
+        max_quantity=20
     ),
+    
+    # Pièces de vaisseau (progression)
+    "Ship Part": PikminItemData(
+        id=12020,
+        classification=ItemClassification.progression_skip_balancing,
+        max_quantity=30
+    ),
+    "Engine": PikminItemData(
+        id=12021,
+        classification=ItemClassification.progression
+    ),
+    "Main Engine": PikminItemData(
+        id=12022,
+        classification=ItemClassification.progression
+    ),
+    
+    # Capacités spéciales
+    "Pikmin Whistle Range": PikminItemData(
+        id=12030,
+        classification=ItemClassification.useful
+    ),
+    "Pikmin Throw Power": PikminItemData(
+        id=12031,
+        classification=ItemClassification.useful
+    ),
+    
+    # Items de remplissage
+    "Pikmin Treat": PikminItemData(
+        id=12040,
+        classification=ItemClassification.filler,
+        max_quantity=10
+    )
 }
 
-# Filler item for filling extra slots
-filler_item_name = "Pellet"
-
-# All item names
-item_names = frozenset(item_table.keys())
+# Items de progression requis
+progression_items = [
+    "Red Pikmin Seed",
+    "Yellow Pikmin Seed", 
+    "Blue Pikmin Seed",
+    "Ship Part",
+    "Engine",
+    "Main Engine"
+]
