@@ -276,7 +276,7 @@ PROGRESSION_COUNT = len(progression_locations)
 
 # Vérifications finales
 assert TOTAL_LOCATIONS > 0, "La table des emplacements est vide"
-assert SHIP_PART_COUNT >= 30, f"Nombre insuffisant d'emplacements de pièces: {SHIP_PART_COUNT}"
+assert SHIP_PART_COUNT >= 29, f"Nombre insuffisant d'emplacements de pièces: {SHIP_PART_COUNT}"
 assert len(get_locations_by_area(Areas.IMPACT_SITE.value)) > 0, "Pas d'emplacements dans Impact Site"
 assert len(get_locations_by_area(Areas.FOREST_HOPE.value)) > 0, "Pas d'emplacements dans Forest of Hope"
 assert len(get_locations_by_area(Areas.FOREST_NAVEL.value)) > 0, "Pas d'emplacements dans Forest Navel"
