@@ -12,9 +12,9 @@ import subprocess
 import os
 from dataclasses import dataclass, field
 
-from NetUtils import ClientCommandProcessor, CommonContext, server_loop
-from CommonClient import ClientCommandProcessor as CCP, CommonContext as CC, get_base_parser, gui_enabled, logger, \
-    server_loop
+from CommonClient import (
+    ClientCommandProcessor as CCP, CommonContext as CC, get_base_parser, gui_enabled, logger, server_loop
+)
 from Utils import async_start
 
 # Configuration du jeu
@@ -42,7 +42,7 @@ PIKMIN_TYPES = [
 ]
 
 @dataclass
-class PikminContext(CommonContext):
+class PikminContext(CC):
     """Context pour le client Pikmin"""
     game = GAME_NAME
     command_processor = None
@@ -66,7 +66,7 @@ class PikminContext(CommonContext):
         self.command_processor = PikminCommandProcessor(self)
 
 
-class PikminCommandProcessor(ClientCommandProcessor):
+class PikminCommandProcessor(CCP):
     """Processeur de commandes pour le client Pikmin"""
     
     def __init__(self, ctx: PikminContext):
