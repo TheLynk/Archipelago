@@ -49,7 +49,7 @@ class PikminContext(CommonContext):
 
 def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
         """
-        Initialize the TWW context.
+        Initialize the Pikmin context.
 
         :param server_address: Address of the Archipelago server.
         :param password: Password for server authentication.
@@ -86,11 +86,11 @@ async def server_auth(self, password_requested: bool = False) -> None:
 
 def make_gui(self) -> type["kvui.GameManager"]:
     """
-    Initialize the GUI for The Wind Waker client.
+    Initialize the GUI for Pikmin client.
     :return: The client's GUI.
     """
     ui = super().make_gui()
-    ui.base_title = "Archipelago The Wind Waker Client"
+    ui.base_title = "Archipelago Pikmin Client"
     return ui
 
 async def dolphin_sync_task(ctx: PikminContext) -> None:
@@ -99,7 +99,7 @@ async def dolphin_sync_task(ctx: PikminContext) -> None:
 
     While connected, read the emulator's memory to look for any relevant changes made by the player in the game.
 
-    :param ctx: The Wind Waker client context.
+    :param ctx: Pikmin client context.
     """
     logger.info("Starting Dolphin connector. Use /dolphin for status information.")
     sleep_time = 0.0

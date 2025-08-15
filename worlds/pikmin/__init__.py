@@ -61,7 +61,7 @@ class PikminContainer(APPlayerContainer):
         # Record the data for the game under the key `plando`.
         opened_zipfile.writestr("plando", b64encode(bytes(yaml.safe_dump(self.data, sort_keys=False), "utf-8")))
 
-class TWWWeb(WebWorld):
+class PikminWeb(WebWorld):
     """
     This class handles the web interface for Pikmin.
 
@@ -71,7 +71,7 @@ class TWWWeb(WebWorld):
     tutorials = [
         Tutorial(
             "Multiworld Setup Guide",
-            "A guide to setting up the Archipelago The Wind Waker software on your computer.",
+            "A guide to setting up the Archipelago Pikmin software on your computer.",
             "English",
             "setup_en.md",
             "setup/en",
@@ -79,7 +79,7 @@ class TWWWeb(WebWorld):
         ),
         Tutorial(
             "Multiworld Setup Guide",
-            "A guide to setting up the Archipelago The Wind Waker software on your computer.",
+            "A guide to setting up the Archipelago Pikmin software on your computer.",
             "Français",
             "setup_fr.md",
             "setup/fr",
@@ -87,6 +87,6 @@ class TWWWeb(WebWorld):
         )
     ]
     theme = "jungle"
-    """options_presets = tww_options_presets
-    option_groups = tww_option_groups"""
+    """options_presets = pikmin_options_presets
+    option_groups = pikmin_option_groups"""
     rich_text_options_doc = True
