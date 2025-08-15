@@ -15,6 +15,9 @@ from worlds.Files import APPlayerContainer
 from worlds.generic.Rules import add_item_rule
 from worlds.LauncherComponents import Component, SuffixIdentifier, Type, components, icon_paths, launch_subprocess
 
+from .Items import PikminItem, ITEM_TABLE
+from .Locations import LOCATION_TABLE, PikminLocation
+
 VERSION: tuple[int, int, int] = (3, 0, 0)
 
 def run_client() -> None:
@@ -35,7 +38,7 @@ components.append(
         icon="Pikmin",
     )
 )
-icon_paths["Pikmin"] = "ap:worlds.tww/assets/icon.png"
+icon_paths["Pikmin"] = "ap:worlds.pikmin/assets/icon.png"
 
 class PikminContainer(APPlayerContainer):
     """
@@ -90,3 +93,32 @@ class PikminWeb(WebWorld):
     """options_presets = pikmin_options_presets
     option_groups = pikmin_option_groups"""
     rich_text_options_doc = True
+
+class PikminWorld(World):
+    """
+    Blabla
+    """
+
+    """options_dataclass = PikminOptions
+    options: PikminOptions"""
+
+    game: ClassVar[str] = "Pikmin"
+    topology_present: bool = True
+
+    item_name_to_id: ClassVar[dict[str, int]] = {
+        name: PikminItem.get_apid(data.code) for name, data in ITEM_TABLE.items() if data.code is not None
+    }
+    
+    location_name_to_id: ClassVar[dict[str, int]] = {
+        name: PikminLocation.get_apid(data.code) for name, data in LOCATION_TABLE.items() if data.code is not None
+    }
+    """
+    item_name_groups: ClassVar[dict[str, set[str]]] = item_name_groups"""
+
+    required_client_version: tuple[int, int, int] = (0, 5, 1)
+
+    web: ClassVar[PikminWeb] = PikminWeb()
+
+    origin_region_name: str = "Crash Site"
+
+    """create_items = generate_itempool"""

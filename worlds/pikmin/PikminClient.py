@@ -13,13 +13,13 @@ if TYPE_CHECKING:
     import kvui
 
 CONNECTION_REFUSED_GAME_STATUS = (
-    "Dolphin failed to connect. Please load a randomized ROM for The Wind Waker. Trying again in 5 seconds..."
+    "Dolphin failed to connect. Please load a randomized ROM for Pikmin. Trying again in 5 seconds..."
 )
 CONNECTION_REFUSED_SAVE_STATUS = (
     "Dolphin failed to connect. Please load into the save file. Trying again in 5 seconds..."
 )
 CONNECTION_LOST_STATUS = (
-    "Dolphin connection was lost. Please restart your emulator and make sure The Wind Waker is running."
+    "Dolphin connection was lost. Please restart your emulator and make sure Pikmin is running."
 )
 CONNECTION_CONNECTED_STATUS = "Dolphin connected successfully."
 CONNECTION_INITIAL_STATUS = "Dolphin connection has not been initiated."
@@ -28,7 +28,7 @@ CONNECTION_INITIAL_STATUS = "Dolphin connection has not been initiated."
 RED_PIKMIN_ADDRESS = 0x803D6CF7
 
 class PikminContext(CommonContext):
-    game = "Pikmin"
+    game: str = "Pikmin"
     items_handling = 0b000  # On ne gère pas encore les locations
 
     async def game_watcher(self):
@@ -47,7 +47,7 @@ class PikminContext(CommonContext):
 
             await asyncio.sleep(1)  # toutes les secondes
 
-def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
+    def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
         """
         Initialize the Pikmin context.
 
@@ -56,42 +56,46 @@ def __init__(self, server_address: Optional[str], password: Optional[str]) -> No
         """
 
         super().__init__(server_address, password)
+        self.dolphin_sync_task: Optional[asyncio.Task[None]] = None
+        self.dolphin_status: str = CONNECTION_INITIAL_STATUS
+        self.awaiting_rom: bool = False
+        self.has_send_death: bool = False
 
-async def disconnect(self, allow_autoreconnect: bool = False) -> None:
-    """
-    Disconnect the client from the server and reset game state variables.
-    :param allow_autoreconnect: Allow the client to auto-reconnect to the server. Defaults to `False`.
-    """
-    self.auth = None
-    self.salvage_locations_map = {}
-    self.current_stage_name = ""
-    self.visited_stage_names = None
-    await super().disconnect(allow_autoreconnect)
+    async def disconnect(self, allow_autoreconnect: bool = False) -> None:
+        """
+        Disconnect the client from the server and reset game state variables.
+        :param allow_autoreconnect: Allow the client to auto-reconnect to the server. Defaults to `False`.
+        """
+        self.auth = None
+        self.salvage_locations_map = {}
+        self.current_stage_name = ""
+        self.visited_stage_names = None
+        await super().disconnect(allow_autoreconnect)
 
-async def server_auth(self, password_requested: bool = False) -> None:
-    """
-    Authenticate with the Archipelago server.
+    async def server_auth(self, password_requested: bool = False) -> None:
+        """
+        Authenticate with the Archipelago server.
 
-    :param password_requested: Whether the server requires a password. Defaults to `False`.
-    """
-    if password_requested and not self.password:
-        await super().server_auth(password_requested)
-    if not self.auth:
-        if self.awaiting_rom:
+        :param password_requested: Whether the server requires a password. Defaults to `False`.
+        """
+        if password_requested and not self.password:
+            await super().server_auth(password_requested)
+        if not self.auth:
+            if self.awaiting_rom:
+                return
+            self.awaiting_rom = True
+            logger.info("Awaiting connection to Dolphin to get player information.")
             return
-        self.awaiting_rom = True
-        logger.info("Awaiting connection to Dolphin to get player information.")
-        return
-    await self.send_connect()
+        await self.send_connect()
 
-def make_gui(self) -> type["kvui.GameManager"]:
-    """
-    Initialize the GUI for Pikmin client.
-    :return: The client's GUI.
-    """
-    ui = super().make_gui()
-    ui.base_title = "Archipelago Pikmin Client"
-    return ui
+    def make_gui(self) -> type["kvui.GameManager"]:
+        """
+        Initialize the GUI for Pikmin client.
+        :return: The client's GUI.
+        """
+        ui = super().make_gui()
+        ui.base_title = "Archipelago Pikmin Client"
+        return ui
 
 async def dolphin_sync_task(ctx: PikminContext) -> None:
     """
@@ -176,6 +180,12 @@ def main(connect: Optional[str] = None, password: Optional[str] = None) -> None:
 
         if ctx.dolphin_sync_task:
             await ctx.dolphin_sync_task
+    
+    import colorama
+
+    colorama.init()
+    asyncio.run(_main(connect, password))
+    colorama.deinit()
 
 if __name__ == "__main__":
     parser = get_base_parser()
