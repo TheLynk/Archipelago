@@ -17,6 +17,7 @@ class PikminLocationType(Enum):
     """
 
     SHIP_PART = auto()
+    PIKMIN_NUMBER = auto()
     WALL = auto()
     BRIDGE = auto()
     LAND = auto()
@@ -84,7 +85,7 @@ class PikminLocation(Location):
 LOCATION_TABLE: dict[str, PikminLocationData] = {
     # Crash Site
     "Crash Site - Crash on PNF-404": PikminLocationData(
-        0, PikminFlag.ALWAYS, "Crash Site", 0xB, PikminLocationType.SHIP_PART, 5
+        0, PikminFlag.ALWAYS, "Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 5, 0x803D6CF7
     ),
 
     # Defeat Ganondorf
