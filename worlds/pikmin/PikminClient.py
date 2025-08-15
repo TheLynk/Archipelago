@@ -1,282 +1,183 @@
-#!/usr/bin/env python3
-"""
-Client Pikmin pour Archipelago
-Connecte le jeu Pikmin au serveur Archipelago
-"""
-
 import asyncio
-import json
 import time
-from typing import Dict, List, Optional, Set, Tuple
-import subprocess
-import os
-from dataclasses import dataclass, field
+import traceback
+import logging
+from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, logger, server_loop
+from NetUtils import ClientStatus
+import dolphin_memory_engine
+from typing import TYPE_CHECKING, Any, Optional
+import Utils
 
-from NetUtils import ClientCommandProcessor, CommonContext, server_loop
-from CommonClient import ClientCommandProcessor as CCP, CommonContext as CC, get_base_parser, gui_enabled, logger, \
-    server_loop
-from Utils import async_start
 
-# Configuration du jeu
-GAME_NAME = "Pikmin"
-SYSTEM_MESSAGE_TAG = "AP"
+if TYPE_CHECKING:
+    import kvui
 
-# Constantes pour les objets/lieux Pikmin
-SHIP_PARTS = [
-    "Main Engine", "Positron Generator", "Eternal Fuel Dynamo", "Interstellar Radio",
-    "Bowsprit", "Chronos Reactor", "Gluon Drive", "Zirconium Rotor", "Automatic Gear",
-    "Space Float", "Repair-type Bolt", "Shock Absorber", "Analog Computer",
-    "Extraordinary Bolt", "Engine", "Whirlpool Generator", "Pilot's Seat",
-    "Massage Girdle", "Radiation Canopy", "Gravity Jumper", "Sagittarius",
-    "Geiger Counter", "Libra", "Nova Blaster", "Magnetic Flux Controller",
-    "Chronos Reactor", "Anti-Dioxin Filter", "UV Lamp", "Secret Safe"
-]
+CONNECTION_REFUSED_GAME_STATUS = (
+    "Dolphin failed to connect. Please load a randomized ROM for The Wind Waker. Trying again in 5 seconds..."
+)
+CONNECTION_REFUSED_SAVE_STATUS = (
+    "Dolphin failed to connect. Please load into the save file. Trying again in 5 seconds..."
+)
+CONNECTION_LOST_STATUS = (
+    "Dolphin connection was lost. Please restart your emulator and make sure The Wind Waker is running."
+)
+CONNECTION_CONNECTED_STATUS = "Dolphin connected successfully."
+CONNECTION_INITIAL_STATUS = "Dolphin connection has not been initiated."
 
-AREAS = [
-    "The Impact Site", "The Forest of Hope", "The Forest Navel", 
-    "The Distant Spring", "The Final Trial"
-]
+# Adresse mémoire des Pikmin rouges (PAL)
+RED_PIKMIN_ADDRESS = 0x803D6CF7
 
-PIKMIN_TYPES = [
-    "Red Pikmin", "Blue Pikmin", "Yellow Pikmin"
-]
-
-@dataclass
 class PikminContext(CommonContext):
-    """Context pour le client Pikmin"""
-    game = GAME_NAME
-    command_processor = None
-    
-    # État du jeu
-    collected_parts: Set[str] = field(default_factory=set)
-    current_area: Optional[str] = None
-    current_day: int = 1
-    pikmin_counts: Dict[str, int] = field(default_factory=lambda: {
-        "Red Pikmin": 0,
-        "Blue Pikmin": 0,
-        "Yellow Pikmin": 0
-    })
-    
-    # Connexion au jeu
-    game_process: Optional[subprocess.Popen] = None
-    memory_reader: Optional['MemoryReader'] = None
-    
-    def __post_init__(self):
-        super().__post_init__()
-        self.command_processor = PikminCommandProcessor(self)
+    game = "Pikmin"
+    items_handling = 0b000  # On ne gère pas encore les locations
 
-
-class PikminCommandProcessor(ClientCommandProcessor):
-    """Processeur de commandes pour le client Pikmin"""
-    
-    def __init__(self, ctx: PikminContext):
-        super().__init__(ctx)
-        self.ctx = ctx
-    
-    def _cmd_status(self):
-        """Affiche le statut actuel du jeu"""
-        logger.info(f"Jour actuel: {self.ctx.current_day}")
-        logger.info(f"Zone actuelle: {self.ctx.current_area}")
-        logger.info(f"Pièces collectées: {len(self.ctx.collected_parts)}/30")
-        logger.info(f"Pikmin: Rouge={self.ctx.pikmin_counts['Red Pikmin']}, "
-                   f"Bleu={self.ctx.pikmin_counts['Blue Pikmin']}, "
-                   f"Jaune={self.ctx.pikmin_counts['Yellow Pikmin']}")
-    
-    def _cmd_collect(self, part_name: str = ""):
-        """Simule la collecte d'une pièce de vaisseau"""
-        if not part_name:
-            logger.info("Usage: !collect <nom_de_la_piece>")
-            return
-        
-        if part_name in SHIP_PARTS:
-            self.ctx.collected_parts.add(part_name)
-            logger.info(f"Pièce collectée: {part_name}")
-            # Notifier le serveur
-            asyncio.create_task(self._send_location_check(part_name))
-        else:
-            logger.info(f"Pièce inconnue: {part_name}")
-    
-    async def _send_location_check(self, part_name: str):
-        """Envoie un check de localisation au serveur"""
-        if self.ctx.server and self.ctx.server.socket:
-            location_id = hash(part_name) % (2**53)  # Génère un ID unique
-            await self.ctx.send_msgs([{
-                "cmd": "LocationChecks",
-                "locations": [location_id]
-            }])
-
-
-class MemoryReader:
-    """Classe pour lire la mémoire du jeu Pikmin"""
-    
-    def __init__(self, process: subprocess.Popen):
-        self.process = process
-        self.last_read_time = 0
-        self.read_interval = 0.1  # Lire toutes les 100ms
-    
-    def read_game_state(self) -> Dict:
-        """Lit l'état actuel du jeu depuis la mémoire"""
-        current_time = time.time()
-        if current_time - self.last_read_time < self.read_interval:
-            return {}
-        
-        self.last_read_time = current_time
-        
-        # TODO: Implémentation de la lecture mémoire réelle
-        # Ceci nécessiterait une analyse de la mémoire du jeu
-        return {
-            "current_day": 1,
-            "current_area": "The Impact Site",
-            "collected_parts": [],
-            "pikmin_counts": {
-                "Red Pikmin": 0,
-                "Blue Pikmin": 0,
-                "Yellow Pikmin": 0
-            }
-        }
-
-
-class PikminClient:
-    """Client principal pour Pikmin"""
-    
-    def __init__(self, server_address: str = "localhost", server_port: int = 38281):
-        self.server_address = server_address
-        self.server_port = server_port
-        self.context = PikminContext(server_address, server_port)
-        self.running = False
-    
-    async def start(self):
-        """Démarre le client"""
-        self.running = True
-        logger.info("Démarrage du client Pikmin...")
-        
-        # Recherche du processus du jeu
-        await self._find_game_process()
-        
-        # Boucle principale
-        await self._main_loop()
-    
-    async def _find_game_process(self):
-        """Recherche le processus du jeu Pikmin"""
-        # TODO: Rechercher le processus réel du jeu
-        # Pour l'instant, on simule
-        logger.info("Recherche du processus Pikmin...")
-        await asyncio.sleep(1)
-        logger.info("Processus Pikmin trouvé (simulé)")
-    
-    async def _main_loop(self):
-        """Boucle principale du client"""
-        while self.running:
+    async def game_watcher(self):
+        """Boucle qui lit le nombre de Pikmin rouges et l'affiche toutes les secondes."""
+        while not self.exit_event.is_set():
             try:
-                # Lire l'état du jeu
-                if self.context.memory_reader:
-                    game_state = self.context.memory_reader.read_game_state()
-                    await self._process_game_state(game_state)
-                
-                # Traitement des messages du serveur
-                await self._process_server_messages()
-                
-                await asyncio.sleep(0.1)  # 100ms
-                
+                # Hooker Dolphin si ce n'est pas déjà fait
+                if not dme.is_hooked():
+                    dme.hook()
+
+                if dme.is_hooked():
+                    red_count = dme.read_u8(RED_PIKMIN_ADDRESS)
+                    print(f"Pikmin rouges actuellement : {red_count}")
             except Exception as e:
-                logger.error(f"Erreur dans la boucle principale: {e}")
-                await asyncio.sleep(1)
-    
-    async def _process_game_state(self, game_state: Dict):
-        """Traite l'état du jeu reçu"""
-        if not game_state:
+                print(f"Erreur lecture RAM : {e}")
+
+            await asyncio.sleep(1)  # toutes les secondes
+
+def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
+        """
+        Initialize the TWW context.
+
+        :param server_address: Address of the Archipelago server.
+        :param password: Password for server authentication.
+        """
+
+        super().__init__(server_address, password)
+
+async def disconnect(self, allow_autoreconnect: bool = False) -> None:
+    """
+    Disconnect the client from the server and reset game state variables.
+    :param allow_autoreconnect: Allow the client to auto-reconnect to the server. Defaults to `False`.
+    """
+    self.auth = None
+    self.salvage_locations_map = {}
+    self.current_stage_name = ""
+    self.visited_stage_names = None
+    await super().disconnect(allow_autoreconnect)
+
+async def server_auth(self, password_requested: bool = False) -> None:
+    """
+    Authenticate with the Archipelago server.
+
+    :param password_requested: Whether the server requires a password. Defaults to `False`.
+    """
+    if password_requested and not self.password:
+        await super().server_auth(password_requested)
+    if not self.auth:
+        if self.awaiting_rom:
             return
-        
-        # Vérifier les changements d'état
-        if "current_day" in game_state:
-            if game_state["current_day"] != self.context.current_day:
-                self.context.current_day = game_state["current_day"]
-                logger.info(f"Nouveau jour: {self.context.current_day}")
-        
-        if "current_area" in game_state:
-            if game_state["current_area"] != self.context.current_area:
-                self.context.current_area = game_state["current_area"]
-                logger.info(f"Nouvelle zone: {self.context.current_area}")
-        
-        # Vérifier les nouvelles pièces collectées
-        if "collected_parts" in game_state:
-            new_parts = set(game_state["collected_parts"]) - self.context.collected_parts
-            for part in new_parts:
-                await self._on_part_collected(part)
-    
-    async def _on_part_collected(self, part_name: str):
-        """Appelé quand une pièce est collectée"""
-        self.context.collected_parts.add(part_name)
-        logger.info(f"Pièce collectée: {part_name}")
-        
-        # Envoyer au serveur Archipelago
-        if self.context.server and self.context.server.socket:
-            location_id = hash(part_name) % (2**53)
-            await self.context.send_msgs([{
-                "cmd": "LocationChecks",
-                "locations": [location_id]
-            }])
-    
-    async def _process_server_messages(self):
-        """Traite les messages du serveur"""
-        # Cette méthode sera appelée par le CommonContext
-        pass
-    
-    async def on_package(self, cmd: str, args: dict):
-        """Traite les paquets reçus du serveur"""
-        if cmd == "ReceivedItems":
-            await self._handle_received_items(args)
-        elif cmd == "LocationInfo":
-            await self._handle_location_info(args)
-    
-    async def _handle_received_items(self, args: dict):
-        """Traite les objets reçus du serveur"""
-        items = args.get("items", [])
-        for item in items:
-            item_name = item.get("item", "")
-            player_name = item.get("player", "")
-            logger.info(f"Objet reçu: {item_name} de {player_name}")
-            
-            # TODO: Donner l'objet au joueur dans le jeu
-            await self._give_item_to_player(item_name)
-    
-    async def _give_item_to_player(self, item_name: str):
-        """Donne un objet au joueur dans le jeu"""
-        # TODO: Implémentation pour modifier la mémoire du jeu
-        logger.info(f"Donner l'objet au joueur: {item_name}")
-    
-    async def _handle_location_info(self, args: dict):
-        """Traite les informations de localisation"""
-        locations = args.get("locations", [])
-        for location in locations:
-            logger.info(f"Info de localisation: {location}")
+        self.awaiting_rom = True
+        logger.info("Awaiting connection to Dolphin to get player information.")
+        return
+    await self.send_connect()
 
+def make_gui(self) -> type["kvui.GameManager"]:
+    """
+    Initialize the GUI for The Wind Waker client.
+    :return: The client's GUI.
+    """
+    ui = super().make_gui()
+    ui.base_title = "Archipelago The Wind Waker Client"
+    return ui
 
-def create_pikmin_parser():
-    """Crée le parser d'arguments pour le client Pikmin"""
-    parser = get_base_parser(description="Client Pikmin pour Archipelago")
-    parser.add_argument('--game-path', type=str, help='Chemin vers le jeu Pikmin')
-    return parser
+async def dolphin_sync_task(ctx: PikminContext) -> None:
+    """
+    The task loop for managing the connection to Dolphin.
 
+    While connected, read the emulator's memory to look for any relevant changes made by the player in the game.
 
-async def main():
-    """Fonction principale"""
-    parser = create_pikmin_parser()
-    args = parser.parse_args()
-    
-    # Créer et démarrer le client
-    client = PikminClient(args.connect, args.port)
-    
-    try:
-        await client.start()
-    except KeyboardInterrupt:
-        logger.info("Arrêt du client...")
-        client.running = False
+    :param ctx: The Wind Waker client context.
+    """
+    logger.info("Starting Dolphin connector. Use /dolphin for status information.")
+    sleep_time = 0.0
+    while not ctx.exit_event.is_set():
+        if sleep_time > 0.0:
+            try:
+                # ctx.watcher_event gets set when receiving ReceivedItems or LocationInfo, or when shutting down.
+                await asyncio.wait_for(ctx.watcher_event.wait(), sleep_time)
+            except asyncio.TimeoutError:
+                pass
+            sleep_time = 0.0
+        ctx.watcher_event.clear()
 
+        try:
+            if dolphin_memory_engine.is_hooked() and ctx.dolphin_status == CONNECTION_CONNECTED_STATUS:
+                sleep_time = 0.1
+            else:
+                if ctx.dolphin_status == CONNECTION_CONNECTED_STATUS:
+                    logger.info("Connection to Dolphin lost, reconnecting...")
+                    ctx.dolphin_status = CONNECTION_LOST_STATUS
+                logger.info("Attempting to connect to Dolphin...")
+                dolphin_memory_engine.hook()
+                if dolphin_memory_engine.is_hooked():
+                    if dolphin_memory_engine.read_bytes(0x80000000, 6) != b"GZLE99":
+                        logger.info(CONNECTION_REFUSED_GAME_STATUS)
+                        ctx.dolphin_status = CONNECTION_REFUSED_GAME_STATUS
+                        dolphin_memory_engine.un_hook()
+                        sleep_time = 5
+                    else:
+                        logger.info(CONNECTION_CONNECTED_STATUS)
+                        ctx.dolphin_status = CONNECTION_CONNECTED_STATUS
+                        ctx.locations_checked = set()
+                else:
+                    logger.info("Connection to Dolphin failed, attempting again in 5 seconds...")
+                    ctx.dolphin_status = CONNECTION_LOST_STATUS
+                    await ctx.disconnect()
+                    sleep_time = 5
+                    continue
+        except Exception:
+            dolphin_memory_engine.un_hook()
+            logger.info("Connection to Dolphin failed, attempting again in 5 seconds...")
+            logger.error(traceback.format_exc())
+            ctx.dolphin_status = CONNECTION_LOST_STATUS
+            await ctx.disconnect()
+            sleep_time = 5
+            continue
+
+def main(connect: Optional[str] = None, password: Optional[str] = None) -> None:
+    """
+    Run the main async loop for Pikmin client.
+
+    :param connect: Address of the Archipelago server.
+    :param password: Password for server authentication.
+    """
+    Utils.init_logging("Pikmin Client")
+
+    async def _main(connect: Optional[str], password: Optional[str]) -> None:
+        ctx = PikminContext(connect, password)
+        ctx.server_task = asyncio.create_task(server_loop(ctx), name="ServerLoop")
+        if gui_enabled:
+            ctx.run_gui()
+        ctx.run_cli()
+        await asyncio.sleep(1)
+
+        ctx.dolphin_sync_task = asyncio.create_task(dolphin_sync_task(ctx), name="DolphinSync")
+
+        await ctx.exit_event.wait()
+        # Wake the sync task, if it is currently sleeping, so it can start shutting down when it sees that the
+        # exit_event is set.
+        ctx.watcher_event.set()
+        ctx.server_address = None
+
+        await ctx.shutdown()
+
+        if ctx.dolphin_sync_task:
+            await ctx.dolphin_sync_task
 
 if __name__ == "__main__":
-    if gui_enabled:
-        # TODO: Implémenter l'interface graphique
-        logger.info("Interface graphique non implémentée")
-    else:
-        asyncio.run(main())
+    parser = get_base_parser()
+    args = parser.parse_args()
+    main(args.connect, args.password)
