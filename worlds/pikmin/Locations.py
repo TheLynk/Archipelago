@@ -79,7 +79,7 @@ class PikminLocation(Location):
         :param code: The unique code for the location.
         :return: The computed Archipelago ID.
         """
-        base_id: int = 2326528
+        base_id: int = 159159
         return base_id + code
 
 LOCATION_TABLE: dict[str, PikminLocationData] = {

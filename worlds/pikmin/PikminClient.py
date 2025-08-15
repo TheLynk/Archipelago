@@ -24,10 +24,42 @@ CONNECTION_LOST_STATUS = (
 CONNECTION_CONNECTED_STATUS = "Dolphin connected successfully."
 CONNECTION_INITIAL_STATUS = "Dolphin connection has not been initiated."
 
+# This is the address that holds the player's slot name.
+# This way, the player does not have to manually authenticate their slot name.
+SLOT_NAME_ADDR = 0x803FE8A0
+
 # Adresse mémoire des Pikmin rouges (PAL)
 RED_PIKMIN_ADDRESS = 0x803D6CF7
 
+class TWWCommandProcessor(ClientCommandProcessor):
+    """
+    Command Processor for Pikmin client commands.
+
+    This class handles commands specific to Pikmin.
+    """
+    def __init__(self, ctx: CommonContext):
+        """
+        Initialize the command processor with the provided context.
+
+        :param ctx: Context for the client.
+        """
+        super().__init__(ctx)
+
+    def _cmd_dolphin(self) -> None:
+        """
+        Display the current Dolphin emulator connection status.
+        """
+        if isinstance(self.ctx, PikminContext):
+            logger.info(f"Dolphin Status: {self.ctx.dolphin_status}")
+
 class PikminContext(CommonContext):
+    """
+    The context for The Wind Waker client.
+
+    This class manages all interactions with the Dolphin emulator and the Archipelago server for The Wind Waker.
+    """
+
+    command_processor = TWWCommandProcessor
     game: str = "Pikmin"
     items_handling = 0b000  # On ne gère pas encore les locations
 
@@ -97,6 +129,16 @@ class PikminContext(CommonContext):
         ui.base_title = "Archipelago Pikmin Client"
         return ui
 
+def read_string(console_address: int, strlen: int) -> str:
+    """
+    Read a string from Dolphin memory.
+
+    :param console_address: Address to start reading from.
+    :param strlen: Length of the string to read.
+    :return: The string.
+    """
+    return dolphin_memory_engine.read_bytes(console_address, strlen).split(b"\0", 1)[0].decode()
+
 async def dolphin_sync_task(ctx: PikminContext) -> None:
     """
     The task loop for managing the connection to Dolphin.
@@ -120,6 +162,15 @@ async def dolphin_sync_task(ctx: PikminContext) -> None:
         try:
             if dolphin_memory_engine.is_hooked() and ctx.dolphin_status == CONNECTION_CONNECTED_STATUS:
                 sleep_time = 0.1
+            
+                if ctx.slot is not None:
+                    continue
+                else:
+                    if not ctx.auth:
+                        ctx.auth = read_string(SLOT_NAME_ADDR, 0x40)
+                    if ctx.awaiting_rom:
+                        await ctx.server_auth()
+                sleep_time = 0.1
             else:
                 if ctx.dolphin_status == CONNECTION_CONNECTED_STATUS:
                     logger.info("Connection to Dolphin lost, reconnecting...")
@@ -127,7 +178,7 @@ async def dolphin_sync_task(ctx: PikminContext) -> None:
                 logger.info("Attempting to connect to Dolphin...")
                 dolphin_memory_engine.hook()
                 if dolphin_memory_engine.is_hooked():
-                    if dolphin_memory_engine.read_bytes(0x80000000, 6) != b"GZLE99":
+                    if dolphin_memory_engine.read_bytes(0x80000000, 6) != b"GPIP01":
                         logger.info(CONNECTION_REFUSED_GAME_STATUS)
                         ctx.dolphin_status = CONNECTION_REFUSED_GAME_STATUS
                         dolphin_memory_engine.un_hook()
