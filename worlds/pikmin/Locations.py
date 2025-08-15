@@ -90,7 +90,7 @@ LOCATION_TABLE: dict[str, PikminLocationData] = {
 
     # Defeat Ganondorf
     "Land to the Space": PikminLocationData(
-        None, PikminFlag.ALWAYS, "World Map", 0x8, PikminLocationType.LAND, 64
+        None, PikminFlag.ALWAYS, "World Map", 0x8, PikminLocationType.LAND, 64,
     ),
 }
 

@@ -2,12 +2,15 @@ import asyncio
 import time
 import traceback
 import logging
+
 from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, logger, server_loop
 from NetUtils import ClientStatus
+
 import dolphin_memory_engine
 from typing import TYPE_CHECKING, Any, Optional
 import Utils
 
+from .ReadWrite import read_byte, read_2byte, read_4byte, read_string, write_byte, write_2byte, write_4byte, write_string
 
 if TYPE_CHECKING:
     import kvui
@@ -24,14 +27,24 @@ CONNECTION_LOST_STATUS = (
 CONNECTION_CONNECTED_STATUS = "Dolphin connected successfully."
 CONNECTION_INITIAL_STATUS = "Dolphin connection has not been initiated."
 
+# This address is used to check/set the player's health for DeathLink.
+CURR_HEALTH_ADDR = 0x803C4C0A
+
 # This is the address that holds the player's slot name.
 # This way, the player does not have to manually authenticate their slot name.
 SLOT_NAME_ADDR = 0x803FE8A0
 
-# Adresse mémoire des Pikmin rouges (PAL)
-RED_PIKMIN_ADDRESS = 0x803D6CF7
+LOCATION_MAP_ADDR = 0x808130B0
 
-class TWWCommandProcessor(ClientCommandProcessor):
+DAYS_ADDR = 0x803A2937
+
+# Adresse mémoire des Pikmin rouges, jaune et bleu (PAL)
+RED_PIKMIN_ADDRESS = 0x803D6CF7
+YELLOW_PIKMIN_ADDRESS = 0x803D6CFB
+BLUE_PIKMIN_ADDRESS = 0x803D6CF3
+
+
+class PikminCommandProcessor(ClientCommandProcessor):
     """
     Command Processor for Pikmin client commands.
 
@@ -51,6 +64,21 @@ class TWWCommandProcessor(ClientCommandProcessor):
         """
         if isinstance(self.ctx, PikminContext):
             logger.info(f"Dolphin Status: {self.ctx.dolphin_status}")
+    
+    def _cmd_loc(self) -> None:
+        """
+        Display the current Locations player.
+        """
+        if isinstance(self.ctx, PikminContext):
+            logger.info(f"Location Map: {self.ctx.location_map}")
+    
+    def _cmd_day(self) -> None:
+        """
+        Set day to 1.
+        """
+        if isinstance(self.ctx, PikminContext):
+            write_byte(DAYS_ADDR, 1)
+            logger.info(f"Day set 1")
 
 class PikminContext(CommonContext):
     """
@@ -59,25 +87,9 @@ class PikminContext(CommonContext):
     This class manages all interactions with the Dolphin emulator and the Archipelago server for The Wind Waker.
     """
 
-    command_processor = TWWCommandProcessor
+    command_processor = PikminCommandProcessor
     game: str = "Pikmin"
     items_handling = 0b000  # On ne gère pas encore les locations
-
-    async def game_watcher(self):
-        """Boucle qui lit le nombre de Pikmin rouges et l'affiche toutes les secondes."""
-        while not self.exit_event.is_set():
-            try:
-                # Hooker Dolphin si ce n'est pas déjà fait
-                if not dme.is_hooked():
-                    dme.hook()
-
-                if dme.is_hooked():
-                    red_count = dme.read_u8(RED_PIKMIN_ADDRESS)
-                    print(f"Pikmin rouges actuellement : {red_count}")
-            except Exception as e:
-                print(f"Erreur lecture RAM : {e}")
-
-            await asyncio.sleep(1)  # toutes les secondes
 
     def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
         """
@@ -129,16 +141,6 @@ class PikminContext(CommonContext):
         ui.base_title = "Archipelago Pikmin Client"
         return ui
 
-def read_string(console_address: int, strlen: int) -> str:
-    """
-    Read a string from Dolphin memory.
-
-    :param console_address: Address to start reading from.
-    :param strlen: Length of the string to read.
-    :return: The string.
-    """
-    return dolphin_memory_engine.read_bytes(console_address, strlen).split(b"\0", 1)[0].decode()
-
 async def dolphin_sync_task(ctx: PikminContext) -> None:
     """
     The task loop for managing the connection to Dolphin.
@@ -161,6 +163,7 @@ async def dolphin_sync_task(ctx: PikminContext) -> None:
 
         try:
             if dolphin_memory_engine.is_hooked() and ctx.dolphin_status == CONNECTION_CONNECTED_STATUS:
+                ctx.location_map = read_string(LOCATION_MAP_ADDR, 0x40)
                 sleep_time = 0.1
             
                 if ctx.slot is not None:

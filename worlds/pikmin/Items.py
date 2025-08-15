@@ -54,10 +54,11 @@ class PikminItem(Item):
         :param code: The unique code for the item.
         :return: The computed Archipelago ID.
         """
-        base_id: int = 2322432
+        base_id: int = 159159
         return base_id + code
 
 ITEM_TABLE: dict[str, PikminItemData] = {
     "Red Pikmin":                 PikminItemData("Item",      IC.useful,                       0,  1, 0x20),
+    "Main Engine":              PikminItemData("Item",         IC.progression,             1, 1,None),
     "Victory":                   PikminItemData("Event",     IC.progression,               None,  1, None),
 }
