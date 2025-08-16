@@ -23,8 +23,8 @@ def generate_itempool(world: "PikminWorld") -> None:
     for item in precollected_items:
         multiworld.push_precollected(item_factory(item, world))
 
-    # Place a "Victory" item on "Land to the Space" for the spoiler log.
-    world.get_location("Land to the Space").place_locked_item(item_factory("Victory", world))
+    # NOTE: Ne pas placer l'item Victory ici car les locations n'existent pas encore
+    # Cela sera fait dans set_rules() ou post_fill()
 
     # Create the pool of the remaining shuffled items.
     items = item_factory(pool, world)
@@ -46,8 +46,9 @@ def get_pool_core(world: "PikminWorld") -> tuple[list[str], list[str]]:
     progression_pool: list[str] = []
     useful_pool: list[str] = []
     filler_pool: list[str] = []
+    
     for item, data in ITEM_TABLE.items():
-        if data.type == "Item":
+        if data.type == "Item" or data.type in ["Ship Part", "Area", "Pikmin Type", "Upgrade", "Consumable", "Food", "Utility"]:
             adjusted_classification = world.item_classification_overrides.get(item)
             classification = data.classification if adjusted_classification is None else adjusted_classification
 
@@ -69,12 +70,13 @@ def get_pool_core(world: "PikminWorld") -> tuple[list[str], list[str]]:
     pool.extend([world.get_filler_item_name() for _ in excluded_locations])
 
     # The remaining of items left to place should be the same as the number of non-excluded locations in the world.
+    # Note: On retire 1 pour la location "Land to the Space" qui recevra l'item Victory
     nonexcluded_locations = [
         location
         for location in world.multiworld.get_locations(world.player)
-        if location.name not in world.options.exclude_locations
+        if location.name not in world.options.exclude_locations and location.name != "Land to the Space"
     ]
-    num_items_left_to_place = len(nonexcluded_locations) - 1
+    num_items_left_to_place = len(nonexcluded_locations)
 
     # All progression items are added to the item pool.
     if len(progression_pool) > num_items_left_to_place:

@@ -206,16 +206,37 @@ class PikminWorld(World):
 
         regions: dict[str, Region] = {}
 
-        # Crée chaque région si elle n’existe pas encore
+        # Crée d'abord toutes les régions nécessaires
+        region_names = set()
         for name, data in LOCATION_TABLE.items():
-            if data.region not in regions:
-                region = Region(data.region, player, multiworld)
-                multiworld.regions.append(region)
-                regions[data.region] = region
+            region_names.add(data.region)
 
-            # Ajoute la location à la région correspondante
-            location = PikminLocation(player, name, regions[data.region], data)
-            regions[data.region].locations.append(location)
+        # Crée les régions
+        for region_name in region_names:
+            region = Region(region_name, player, multiworld)
+            multiworld.regions.append(region)
+            regions[region_name] = region
+
+        # Ajoute chaque location à sa région correspondante
+        for name, data in LOCATION_TABLE.items():
+            if data.region in regions:
+                location = PikminLocation(player, name, regions[data.region], data)
+                regions[data.region].locations.append(location)
+            else:
+                print(f"Warning: Region {data.region} not found for location {name}")
+
+        # Connecte les régions entre elles (logique de base)
+        # Vous pouvez ajuster ces connexions selon vos besoins
+        if "The Crash Site" in regions and "The Impact Site" in regions:
+            regions["The Crash Site"].connect(regions["The Impact Site"])
+        if "The Impact Site" in regions and "The Forest of Hope" in regions:
+            regions["The Impact Site"].connect(regions["The Forest of Hope"])
+        if "The Forest of Hope" in regions and "The Forest Navel" in regions:
+            regions["The Forest of Hope"].connect(regions["The Forest Navel"])
+        if "The Forest Navel" in regions and "The Distant Spring" in regions:
+            regions["The Forest Navel"].connect(regions["The Distant Spring"])
+        if "The Distant Spring" in regions and "The Final Trial" in regions:
+            regions["The Distant Spring"].connect(regions["The Final Trial"])
     
     def set_rules(self) -> None:
         """
@@ -223,6 +244,31 @@ class PikminWorld(World):
         """
         # Set the access rules for all progression locations.
         set_rules(self)
+        
+        # Place the Victory item on "Land to the Space" after locations are created
+        try:
+            victory_location = self.multiworld.get_location("Land to the Space", self.player)
+            victory_item = self.create_item("Victory")
+            victory_location.place_locked_item(victory_item)
+        except KeyError:
+            print(f"Warning: Could not find location 'Land to the Space' for player {self.player}")
+            # Créer la location si elle n'existe pas
+            from BaseClasses import Location
+            crash_site_region = None
+            for region in self.multiworld.get_regions(self.player):
+                if region.name == "The Crash Site":
+                    crash_site_region = region
+                    break
+            
+            if crash_site_region:
+                from .Locations import PikminLocationData, PikminFlag, PikminLocationType
+                victory_location_data = PikminLocationData(
+                    None, PikminFlag.ALWAYS, "The Crash Site", 0x8, PikminLocationType.LAND, 1
+                )
+                victory_location = PikminLocation(self.player, "Land to the Space", crash_site_region, victory_location_data)
+                crash_site_region.locations.append(victory_location)
+                victory_item = self.create_item("Victory")
+                victory_location.place_locked_item(victory_item)
 
     def generate_output(self, output_directory: str) -> None:
         """
