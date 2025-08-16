@@ -151,6 +151,14 @@ class PikminContext(CommonContext):
         ui.base_title = "Archipelago Pikmin Client"
         return ui
 
+def check_ingame() -> bool:
+    """
+    Check if the player is currently in-game.
+
+    :return: `True` if the player is in-game, otherwise `False`.
+    """
+    return read_string(LOCATION_MAP_ADDRESS, 35) not in ["", "sea_T", "Name"]
+
 async def dolphin_sync_task(ctx: PikminContext) -> None:
     """
     The task loop for managing the connection to Dolphin.

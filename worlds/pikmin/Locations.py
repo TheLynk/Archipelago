@@ -19,6 +19,7 @@ class PikminLocationType(Enum):
 
     SHIP_PART = auto()
     PIKMIN_NUMBER = auto()
+    VISIT = auto()
     WALL = auto()
     BRIDGE = auto()
     LAND = auto()
@@ -85,9 +86,7 @@ class PikminLocation(Location):
 
 LOCATION_TABLE: dict[str, PikminLocationData] = {
     # Crash Site
-    "Crash Site - Crash on PNF-404": PikminLocationData(
-        0, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
-    ),
+    "Crash Site - Crash on PNF-404": PikminLocationData(        0, PikminFlag.ALWAYS, "The Crash Site", 0x808130B8 , PikminLocationType.VISIT, 0x0, 0x808130B8    ),
 
     # Pikmin Red
     "Pikmin Red - 10": PikminLocationData(

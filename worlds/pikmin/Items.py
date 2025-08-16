@@ -86,19 +86,16 @@ ITEM_TABLE: dict[str, PikminItemData] = {
     "Main Engine":                      PikminItemData("Item",      IC.progression,               0, 1,None),
 
     #New Area
-    """
-    "The Impact Site":                  PikminItemData("Item",      IC.progression,               30, 1,None),"""
+    "The Impact Site":                  PikminItemData("Item",      IC.progression,               30, 1,None),
     "The Forest Of Hope":               PikminItemData("Item",      IC.progression,               31, 1,None),
-    """
     "The Forest Navel":                 PikminItemData("Item",      IC.progression,               32, 1,None),
     "The Distant Spring":               PikminItemData("Item",      IC.progression,               33, 1,None),
-    "The Final Trial":                  PikminItemData("Item",      IC.progression,               34, 1,None),"""
+    "The Final Trial":                  PikminItemData("Item",      IC.progression,               34, 1,None),
 
     #Pikmin
     "Unlock Red Pikmin":                PikminItemData("Item",      IC.progression,               35,  1, 0x81242804),
     "Unlock Yellow Pikmin":             PikminItemData("Item",      IC.progression,               36,  1, 0x81242804),
-    """
-    "Unlock Blue Pikmin":               PikminItemData("Item",      IC.progression,               37,  1, 0x81242804),"""
+    "Unlock Blue Pikmin":               PikminItemData("Item",      IC.progression,               37,  1, 0x81242804),
 
     #Filler
     "Carrot Pikpik":                    PikminItemData("Item",      IC.filler,                    38,  1, None),
