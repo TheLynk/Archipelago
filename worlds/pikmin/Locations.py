@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false
 from enum import Enum, Flag, auto
 from typing import TYPE_CHECKING, NamedTuple, Optional
 
@@ -85,12 +86,53 @@ class PikminLocation(Location):
 LOCATION_TABLE: dict[str, PikminLocationData] = {
     # Crash Site
     "Crash Site - Crash on PNF-404": PikminLocationData(
-        0, PikminFlag.ALWAYS, "Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 5, 0x803D6CF7
+        0, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
     ),
 
-    # Defeat Ganondorf
+    # Pikmin Red
+    "Pikmin Red - 10": PikminLocationData(
+        1, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    "Pikmin Red - 20": PikminLocationData(
+        2, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    "Pikmin Red - 30": PikminLocationData(
+        3, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    "Pikmin Red - 40": PikminLocationData(
+        4, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    "Pikmin Red - 50": PikminLocationData(
+        5, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    "Pikmin Red - 60": PikminLocationData(
+        6, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    "Pikmin Red - 70": PikminLocationData(
+        7, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    "Pikmin Red - 80": PikminLocationData(
+        8, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    "Pikmin Red - 90": PikminLocationData(
+        9, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    "Pikmin Red - 100": PikminLocationData(
+        10, PikminFlag.ALWAYS, "The Crash Site", 0x0, PikminLocationType.PIKMIN_NUMBER, 0, 0x803D6CF7
+    ),
+
+    # Escape PNF-404
     "Land to the Space": PikminLocationData(
-        None, PikminFlag.ALWAYS, "World Map", 0x8, PikminLocationType.LAND, 64,
+        None, PikminFlag.ALWAYS, "The Crash Site", 0x8, PikminLocationType.LAND, 1,
     ),
 }
 

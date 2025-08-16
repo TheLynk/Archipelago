@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false
 import asyncio
 import time
 import traceback
@@ -10,7 +11,7 @@ import dolphin_memory_engine
 from typing import TYPE_CHECKING, Any, Optional
 import Utils
 
-from .ReadWrite import read_byte, read_2byte, read_4byte, read_string, write_byte, write_2byte, write_4byte, write_string
+from .ReadWrite import *
 
 if TYPE_CHECKING:
     import kvui
@@ -28,21 +29,31 @@ CONNECTION_CONNECTED_STATUS = "Dolphin connected successfully."
 CONNECTION_INITIAL_STATUS = "Dolphin connection has not been initiated."
 
 # This address is used to check/set the player's health for DeathLink.
-CURR_HEALTH_ADDR = 0x803C4C0A
+CURR_HEALTH_ADDRESS = 0x803C4C0A
 
 # This is the address that holds the player's slot name.
 # This way, the player does not have to manually authenticate their slot name.
-SLOT_NAME_ADDR = 0x803FE8A0
+SLOT_NAME_ADDRESS = 0x803FE8A0
 
-LOCATION_MAP_ADDR = 0x808130B0
+LOCATION_MAP_ADDRESS = 0x808130B8
 
-DAYS_ADDR = 0x803A2937
+DAYS_ADDRESS = 0x803A2937
 
 # Adresse mémoire des Pikmin rouges, jaune et bleu (PAL)
 RED_PIKMIN_ADDRESS = 0x803D6CF7
 YELLOW_PIKMIN_ADDRESS = 0x803D6CFB
 BLUE_PIKMIN_ADDRESS = 0x803D6CF3
 
+# Adresse mémoire des Onion (PAL)
+# Blue = 9
+# Red = 18
+# Red + Blue = 27
+# Yellow = 36
+# Yellow + Blue = 45
+# Red + Yellow = 54
+# Red + Yellow + Blue = 63
+
+ONION_PIKMIN_ADRESS = 0x81242804
 
 class PikminCommandProcessor(ClientCommandProcessor):
     """
@@ -77,14 +88,14 @@ class PikminCommandProcessor(ClientCommandProcessor):
         Set day to 1.
         """
         if isinstance(self.ctx, PikminContext):
-            write_byte(DAYS_ADDR, 1)
+            write_byte(DAYS_ADDRESS, 1)
             logger.info(f"Day set 1")
 
 class PikminContext(CommonContext):
     """
-    The context for The Wind Waker client.
+    The context for Pikmin client.
 
-    This class manages all interactions with the Dolphin emulator and the Archipelago server for The Wind Waker.
+    This class manages all interactions with the Dolphin emulator and the Archipelago server for Pikmin.
     """
 
     command_processor = PikminCommandProcessor
@@ -111,7 +122,6 @@ class PikminContext(CommonContext):
         :param allow_autoreconnect: Allow the client to auto-reconnect to the server. Defaults to `False`.
         """
         self.auth = None
-        self.salvage_locations_map = {}
         self.current_stage_name = ""
         self.visited_stage_names = None
         await super().disconnect(allow_autoreconnect)
@@ -163,14 +173,14 @@ async def dolphin_sync_task(ctx: PikminContext) -> None:
 
         try:
             if dolphin_memory_engine.is_hooked() and ctx.dolphin_status == CONNECTION_CONNECTED_STATUS:
-                ctx.location_map = read_string(LOCATION_MAP_ADDR, 0x40)
+                ctx.location_map = read_string(LOCATION_MAP_ADDRESS, 0x40)
                 sleep_time = 0.1
             
                 if ctx.slot is not None:
                     continue
                 else:
                     if not ctx.auth:
-                        ctx.auth = read_string(SLOT_NAME_ADDR, 0x40)
+                        ctx.auth = read_string(SLOT_NAME_ADDRESS, 0x40)
                     if ctx.awaiting_rom:
                         await ctx.server_auth()
                 sleep_time = 0.1
