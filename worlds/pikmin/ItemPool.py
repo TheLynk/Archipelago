@@ -23,9 +23,6 @@ def generate_itempool(world: "PikminWorld") -> None:
     for item in precollected_items:
         multiworld.push_precollected(item_factory(item, world))
 
-    # NOTE: Ne pas placer l'item Victory ici car les locations n'existent pas encore
-    # Cela sera fait dans set_rules() ou post_fill()
-
     # Create the pool of the remaining shuffled items.
     items = item_factory(pool, world)
     world.random.shuffle(items)
@@ -48,7 +45,11 @@ def get_pool_core(world: "PikminWorld") -> tuple[list[str], list[str]]:
     filler_pool: list[str] = []
     
     for item, data in ITEM_TABLE.items():
-        if data.type == "Item" or data.type in ["Ship Part", "Area", "Pikmin Type", "Upgrade", "Consumable", "Food", "Utility"]:
+        # Skip the Victory item - it will be placed manually
+        if item == "Victory":
+            continue
+            
+        if data.type in ["Ship Part", "Area", "Pikmin Type", "Upgrade", "Consumable", "Food", "Utility"]:
             adjusted_classification = world.item_classification_overrides.get(item)
             classification = data.classification if adjusted_classification is None else adjusted_classification
 
@@ -69,11 +70,11 @@ def get_pool_core(world: "PikminWorld") -> tuple[list[str], list[str]]:
     excluded_locations = world.progress_locations.intersection(world.options.exclude_locations)
     pool.extend([world.get_filler_item_name() for _ in excluded_locations])
 
-    # The remaining of items left to place should be the same as the number of non-excluded locations in the world.
-    # Note: On retire 1 pour la location "Land to the Space" qui recevra l'item Victory
+    # Calculate the number of locations excluding the Victory location
+    all_locations = world.multiworld.get_locations(world.player)
     nonexcluded_locations = [
         location
-        for location in world.multiworld.get_locations(world.player)
+        for location in all_locations
         if location.name not in world.options.exclude_locations and location.name != "Land to the Space"
     ]
     num_items_left_to_place = len(nonexcluded_locations)

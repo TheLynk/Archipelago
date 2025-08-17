@@ -57,8 +57,8 @@ class PikminCommandProcessor(ClientCommandProcessor):
             red_count = read_byte(RED_PIKMIN_ADDRESS)
             yellow_count = read_byte(YELLOW_PIKMIN_ADDRESS)  
             blue_count = read_byte(BLUE_PIKMIN_ADDRESS)
-            total_pikmin_count_follow = red_count + yellow_count + blue_count
 
+            total_pikmin_count_follow = red_count + yellow_count + blue_count
             total_pikmin_count = read_2byte(TOTAL_PIKMIN_ADRESS)
 
             logger.info(f"Pikmin | Red : {red_count}, Yellow : {yellow_count}, Blue : {blue_count}")
@@ -69,14 +69,14 @@ class PikminCommandProcessor(ClientCommandProcessor):
         if isinstance(self.ctx, PikminContext):
             write_byte(DAYS_ADDRESS, 2)
             logger.info(f"Day set 2")
-    
+
+    """    
     def _cmd_check(self) -> None:
-        """Manually trigger location checking for debugging."""
+        "" "Manually trigger location checking for debugging."" "
         if isinstance(self.ctx, PikminContext):
             logger.info("Manually checking locations...")
             asyncio.create_task(self.ctx.check_all_locations())
 
-    """
     def _cmd_test_location(self) -> None:
         "" "Test sending a specific location to the server."" "
         if isinstance(self.ctx, PikminContext):
@@ -229,10 +229,6 @@ class PikminContext(CommonContext):
                 elif item_name in ["The Impact Site", "The Forest Of Hope", "The Forest Navel", 
                                   "The Distant Spring", "The Final Trial"]:
                     self.unlock_area(item_name)
-                elif item_name == "Nectar":
-                    self.give_nectar()
-                elif item_name == "Carrot Pikpik":
-                    self.give_carrot_pikpik()
                     
                 logger.info(f"Received {item_name} from {self.player_names.get(item_player, 'Unknown')}")
                 
@@ -292,32 +288,6 @@ class PikminContext(CommonContext):
         except Exception as e:
             logger.error(f"Error giving ship part {part_name}: {e}")
 
-    """
-    def give_nectar(self) -> None:
-        "" "Give nectar to the player (increase Pikmin in field)."" "
-        try:
-            # Exemple: ajouter quelques Pikmin rouges
-            current_red = read_byte(RED_PIKMIN_ADDRESS)
-            if current_red < 100:  # Cap à 100
-                write_byte(RED_PIKMIN_ADDRESS, min(current_red + 5, 100))
-                logger.info("Gave nectar - added 5 Red Pikmin")
-                
-        except Exception as e:
-            logger.error(f"Error giving nectar: {e}")
-
-    def give_carrot_pikpik(self) -> None:
-        "" "Give carrot pikpik to the player (filler item)."" "
-        try:
-            # Exemple: augmenter légèrement le nombre de Pikmin
-            current_red = read_byte(RED_PIKMIN_ADDRESS)
-            if current_red < 100:
-                write_byte(RED_PIKMIN_ADDRESS, min(current_red + 1, 100))
-                logger.info("Gave Carrot Pikpik - added 1 Red Pikmin")
-                
-        except Exception as e:
-            logger.error(f"Error giving carrot pikpik: {e}")
-    """
-
     def check_pikmin_milestones(self) -> Set[int]:
         """Check Pikmin count milestones and return newly achieved location IDs."""
         new_locations = set()
@@ -369,6 +339,25 @@ class PikminContext(CommonContext):
                                 logger.info(f"Achieved milestone: {location_name} (AP ID: {ap_id})")
                     else:
                         logger.warning(f"Location {location_name} not found in LOCATION_TABLE")
+
+            # Check Blue Pikmin milestones
+            for milestone in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:
+                if (current_blue >= milestone and 
+                    self.previous_pikmin_counts["blue"] < milestone):
+                    # Find the location ID for this milestone
+                    location_name = f"Pikmin Blue - {milestone}"
+                    if debug_mode == "true":
+                        logger.debug(f"Checking location: {location_name}")
+
+                    if location_name in LOCATION_TABLE:
+                        location_data = LOCATION_TABLE[location_name]
+                        if location_data.code is not None:
+                            ap_id = PikminLocation.get_apid(location_data.code)
+                            new_locations.add(ap_id)
+                            if debug_mode == "true":
+                                logger.info(f"Achieved milestone: {location_name} (AP ID: {ap_id})")
+                    else:
+                        logger.warning(f"Location {location_name} not found in LOCATION_TABLE")
             
             # Update previous counts
             self.previous_pikmin_counts["red"] = current_red
@@ -386,7 +375,7 @@ class PikminContext(CommonContext):
         
         try:
             # Hypothetical ship parts checking - vous devrez adapter selon vos adresses réelles
-            for i in range(30):  # Supposons 30 ship parts maximum
+            for i in range(30): 
                 ship_part_address = SHIP_PARTS_BASE_ADDRESS + i
                 if read_byte(ship_part_address) == 1 and i not in self.ship_parts_collected:
                     self.ship_parts_collected.add(i)
@@ -463,9 +452,9 @@ class PikminContext(CommonContext):
             
             # Check different types of locations
             new_location_ids.update(self.check_pikmin_milestones())
-            new_location_ids.update(self.check_ship_parts())
+            """new_location_ids.update(self.check_ship_parts())
             new_location_ids.update(self.check_walls_and_bridges())
-            new_location_ids.update(self.check_bosses())
+            new_location_ids.update(self.check_bosses())"""
             
             # Send newly found locations to server one by one
             for location_id in new_location_ids:

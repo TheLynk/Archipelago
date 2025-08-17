@@ -37,28 +37,6 @@ class PikminLogic(LogicMixin):
             "The Final Trial": "The Final Trial"
         }
         return self.has(area_items.get(area_name, ""), player)
-    
-    def _pikmin_can_break_walls(self, wall_type: str, player: int) -> bool:
-        """Check if player can break specific wall types."""
-        if wall_type == "red":
-            return self._pikmin_has_red_pikmin(player)
-        elif wall_type == "yellow":
-            return self._pikmin_has_yellow_pikmin(player)
-        elif wall_type == "blue":
-            return self._pikmin_has_blue_pikmin(player)
-        return False
-    
-    def _pikmin_can_defeat_boss(self, boss_name: str, player: int) -> bool:
-        """Check if player can defeat specific bosses."""
-        boss_requirements = {
-            "Armored Cannon Beetle": self._pikmin_has_red_pikmin(player),
-            "Burrowing Snagret": self._pikmin_has_yellow_pikmin(player),
-            "Smoky Progg": self._pikmin_has_blue_pikmin(player),
-            "Emperor Bulblax": (self._pikmin_has_red_pikmin(player) and 
-                              self._pikmin_has_yellow_pikmin(player) and 
-                              self._pikmin_has_blue_pikmin(player))
-        }
-        return boss_requirements.get(boss_name, False)
 
 def set_rules(world: "PikminWorld") -> None:
     """
@@ -70,58 +48,80 @@ def set_rules(world: "PikminWorld") -> None:
     # Victory condition - need Main Engine to complete
     multiworld.completion_condition[player] = lambda state: state.has("Main Engine", player)
     
-    # Area access rules
-    set_rule(multiworld.get_location("Impact Site - Engine", player), 
-             lambda state: state._pikmin_can_access_area("The Impact Site", player))
+    # Impact Site locations
+    impact_locations = [
+        "Impact Site - Main Engine",
+        "Impact Site - Positron Generator"
+    ]
     
-    # Forest of Hope access and requirements
-    for location_name in ["Forest of Hope - Eternal Fuel Dynamo", "Forest of Hope - Whimsical Radar",
-                         "Forest of Hope - Extraordinary Bolt", "Forest of Hope - Nova Blaster",
-                         "Forest of Hope - Radiation Canopy"]:
+    for location_name in impact_locations:
+        if location_name in world.location_name_to_id:
+            set_rule(multiworld.get_location(location_name, player), 
+                     lambda state: state._pikmin_can_access_area("The Impact Site", player))
+    
+    # Forest of Hope locations - need Red Pikmin
+    forest_hope_locations = [
+        "Forest of Hope - Eternal Fuel Dynamo",
+        "Forest of Hope - Extraordinary Bolt", 
+        "Forest of Hope - Whimsical Radar",
+        "Forest of Hope - Radiation Canopy",
+        "Forest of Hope - Sagittarius",
+        "Forest of Hope - Shock Absorber",
+        "Forest of Hope - Nova Blaster"
+    ]
+    
+    for location_name in forest_hope_locations:
         if location_name in world.location_name_to_id:
             set_rule(multiworld.get_location(location_name, player),
                      lambda state: (state._pikmin_can_access_area("The Forest of Hope", player) and
                                    state._pikmin_has_red_pikmin(player)))
     
-    # Red wall requirements
-    for location_name in ["Forest of Hope - Red Wall 1", "Forest of Hope - Red Wall 2"]:
-        if location_name in world.location_name_to_id:
-            set_rule(multiworld.get_location(location_name, player),
-                     lambda state: (state._pikmin_can_access_area("The Forest of Hope", player) and
-                                   state._pikmin_can_break_walls("red", player)))
+    # Forest Navel locations - need Yellow Pikmin
+    forest_navel_locations = [
+        "Forest Navel - Geiger Counter",
+        "Forest Navel - Automatic Gear",
+        "Forest Navel - #1 Ionium Jet", 
+        "Forest Navel - Anti-Dioxin Filter",
+        "Forest Navel - Omega Stabilizer",
+        "Forest Navel - Gravity Jumper",
+        "Forest Navel - Analog Computer",
+        "Forest Navel - Guard Satellite",
+        "Forest Navel - Libra",
+        "Forest Navel - Space Float"
+    ]
     
-    # Forest Navel requirements
-    for location_name in ["Forest Navel - Geiger Counter", "Forest Navel - Radiation Canopy",
-                         "Forest Navel - Bowsprit", "Forest Navel - Gravity Jumper", "Forest Navel - Libra"]:
+    for location_name in forest_navel_locations:
         if location_name in world.location_name_to_id:
             set_rule(multiworld.get_location(location_name, player),
                      lambda state: (state._pikmin_can_access_area("The Forest Navel", player) and
                                    state._pikmin_has_yellow_pikmin(player)))
     
-    # Yellow wall requirements
-    if "Forest Navel - Yellow Wall 1" in world.location_name_to_id:
-        set_rule(multiworld.get_location("Forest Navel - Yellow Wall 1", player),
-                 lambda state: (state._pikmin_can_access_area("The Forest Navel", player) and
-                               state._pikmin_can_break_walls("yellow", player)))
+    # Distant Spring locations - need Blue Pikmin for water areas
+    distant_spring_locations = [
+        "Distant Spring - Repair-type Bolt",
+        "Distant Spring - Gluon Drive",
+        "Distant Spring - Zirconium Rotor", 
+        "Distant Spring - Interstellar Radio",
+        "Distant Spring - Pilot's Seat",
+        "Distant Spring - #2 Ionium Jet",
+        "Distant Spring - Bowsprit",
+        "Distant Spring - Chronos Reactor",
+        "Distant Spring - Massage Machine",
+        "Distant Spring - UV Lamp"
+    ]
     
-    # Distant Spring requirements (need Blue Pikmin for water areas)
-    for location_name in ["Distant Spring - Chronos Reactor", "Distant Spring - Gluon Drive",
-                         "Distant Spring - Zirconium Rotor", "Distant Spring - Repair-type Bolt",
-                         "Distant Spring - Pilot's Seat"]:
+    for location_name in distant_spring_locations:
         if location_name in world.location_name_to_id:
             set_rule(multiworld.get_location(location_name, player),
                      lambda state: (state._pikmin_can_access_area("The Distant Spring", player) and
                                    state._pikmin_has_blue_pikmin(player)))
     
-    # Blue wall requirements
-    if "Distant Spring - Blue Wall 1" in world.location_name_to_id:
-        set_rule(multiworld.get_location("Distant Spring - Blue Wall 1", player),
-                 lambda state: (state._pikmin_can_access_area("The Distant Spring", player) and
-                               state._pikmin_can_break_walls("blue", player)))
+    # Final Trial locations - need all Pikmin types
+    final_trial_locations = [
+        "Final Trial - Secret Safe"
+    ]
     
-    # Final Trial requirements (need all Pikmin types)
-    for location_name in ["Final Trial - UV Lamp", "Final Trial - Interstellar Radio",
-                         "Final Trial - Bowsprit", "Final Trial - Secret Safe"]:
+    for location_name in final_trial_locations:
         if location_name in world.location_name_to_id:
             set_rule(multiworld.get_location(location_name, player),
                      lambda state: (state._pikmin_can_access_area("The Final Trial", player) and
@@ -129,26 +129,24 @@ def set_rules(world: "PikminWorld") -> None:
                                    state._pikmin_has_yellow_pikmin(player) and
                                    state._pikmin_has_blue_pikmin(player)))
     
-    # Boss defeat requirements
-    boss_locations = {
-        "Forest of Hope - Armored Cannon Beetle Defeated": ("The Forest of Hope", "Armored Cannon Beetle"),
-        "Forest Navel - Burrowing Snagret Defeated": ("The Forest Navel", "Burrowing Snagret"), 
-        "Distant Spring - Smoky Progg Defeated": ("The Distant Spring", "Smoky Progg"),
-        "Final Trial - Emperor Bulblax Defeated": ("The Final Trial", "Emperor Bulblax")
-    }
-    
-    for location_name, (area, boss) in boss_locations.items():
-        if location_name in world.location_name_to_id:
-            set_rule(multiworld.get_location(location_name, player),
-                     lambda state, a=area, b=boss: (state._pikmin_can_access_area(a, player) and
-                                                    state._pikmin_can_defeat_boss(b, player)))
-    
     # Pikmin number milestones - require appropriate Pikmin type
     red_pikmin_locations = [f"Pikmin Red - {i}" for i in range(10, 101, 10)]
     for location_name in red_pikmin_locations:
         if location_name in world.location_name_to_id:
             set_rule(multiworld.get_location(location_name, player),
                      lambda state: state._pikmin_has_red_pikmin(player))
+    
+    yellow_pikmin_locations = [f"Pikmin Yellow - {i}" for i in range(10, 101, 10)]
+    for location_name in yellow_pikmin_locations:
+        if location_name in world.location_name_to_id:
+            set_rule(multiworld.get_location(location_name, player),
+                     lambda state: state._pikmin_has_yellow_pikmin(player))
+    
+    blue_pikmin_locations = [f"Pikmin Blue - {i}" for i in range(10, 101, 10)]
+    for location_name in blue_pikmin_locations:
+        if location_name in world.location_name_to_id:
+            set_rule(multiworld.get_location(location_name, player),
+                     lambda state: state._pikmin_has_blue_pikmin(player))
 
 def set_completion_rules(world: "PikminWorld") -> None:
     """

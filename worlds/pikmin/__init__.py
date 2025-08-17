@@ -250,6 +250,7 @@ class PikminWorld(World):
             victory_location = self.multiworld.get_location("Land to the Space", self.player)
             victory_item = self.create_item("Victory")
             victory_location.place_locked_item(victory_item)
+            print(f"Victory item placed at 'Land to the Space' for player {self.player}")
         except KeyError:
             print(f"Warning: Could not find location 'Land to the Space' for player {self.player}")
             # Créer la location si elle n'existe pas
@@ -269,6 +270,7 @@ class PikminWorld(World):
                 crash_site_region.locations.append(victory_location)
                 victory_item = self.create_item("Victory")
                 victory_location.place_locked_item(victory_item)
+                print(f"Created and placed Victory location for player {self.player}")
 
     def generate_output(self, output_directory: str) -> None:
         """
@@ -342,11 +344,11 @@ class PikminWorld(World):
             return self.filler_pool.pop()
 
         # Use the same weights for filler items used in the base randomizer.
-        filler_consumables = ["Nectar"]
+        filler_consumables = ["Carrot Pikpik"]
         filler_weights = [1]
-        """if not strict:
+        if not strict:
             filler_consumables.append("Carrot Pikpik")
-            filler_weights.append(15)"""
+            filler_weights.append(15)
 
         return self.multiworld.random.choices(filler_consumables, weights=filler_weights, k=1)[0]
         
