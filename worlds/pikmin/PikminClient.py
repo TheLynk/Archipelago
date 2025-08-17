@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 # Adresses mémoire importantes
 LOCATION_MAP_ADDRESS = 0x808130B8
 DAYS_ADDRESS = 0x803A2937
-SLOT_NAME_ADDRESS = 0x803FE8A0
 TOTAL_PIKMIN_ADRESS = 0x803D6CF0
 
 # Adresses des Pikmin (PAL)
@@ -26,6 +25,10 @@ RED_PIKMIN_ADDRESS = 0x803D6CF7
 YELLOW_PIKMIN_ADDRESS = 0x803D6CFB  
 BLUE_PIKMIN_ADDRESS = 0x803D6CF3
 ONION_PIKMIN_ADDRESS = 0x81242804
+
+# Custom Adresse pour écriture et lecture
+SLOT_NAME_ADDRESS = 0x803FE8A0
+DEBUG_MODE_ADDRESS = 0x803FE8B0
 
 # Adresses des ship parts (à adapter selon votre mapping)
 SHIP_PARTS_BASE_ADDRESS = 0x803A0000  # Base hypothétique, à ajuster
@@ -73,8 +76,9 @@ class PikminCommandProcessor(ClientCommandProcessor):
             logger.info("Manually checking locations...")
             asyncio.create_task(self.ctx.check_all_locations())
 
+    """
     def _cmd_test_location(self) -> None:
-        """Test sending a specific location to the server."""
+        "" "Test sending a specific location to the server."" "
         if isinstance(self.ctx, PikminContext):
             # Test avec la location "Pikmin Red - 10"
             location_name = "Pikmin Red - 10"
@@ -88,6 +92,32 @@ class PikminCommandProcessor(ClientCommandProcessor):
                     logger.info(f"Location {location_name} has no code")
             else:
                 logger.info(f"Location {location_name} not found in LOCATION_TABLE")
+    """
+
+    def _cmd_debug(self) -> None:
+        """check status debug mode"""
+        debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
+        logger.info(f"{debug_mode}")
+
+    def _cmd_toggle_debug(self) -> None:
+        """Switch "no debug" to "debug" And "debug" to "no debug" """
+        debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
+        if debug_mode != "false":
+            if debug_mode != "true":
+                write_string(DEBUG_MODE_ADDRESS, "false")
+                debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
+                logger.info(f"Debug Mode is not set but is set to FALSE")
+
+        if debug_mode == "false":
+            write_string(DEBUG_MODE_ADDRESS, "true")
+            logger.info(f"Debug Mode is TRUE now")
+            
+        else:
+            write_string(DEBUG_MODE_ADDRESS, "false")
+            logger.info(f"Debug Mode is FALSE now")
+        
+        debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
+
 
 class PikminContext(CommonContext):
     """Context for Pikmin client."""
@@ -113,7 +143,7 @@ class PikminContext(CommonContext):
         self.last_location_check_time: float = 0
         self.location_check_interval: float = 0.5  # Check every 500ms
         
-        # Track sent locations to avoid duplicates
+        # Track send locations to avoid duplicates
         self.sent_locations: Set[int] = set()
 
     async def disconnect(self, allow_autoreconnect: bool = False) -> None:
@@ -146,6 +176,9 @@ class PikminContext(CommonContext):
 
     async def send_location_check(self, location_id: int) -> None:
         """Send a single location check to the server."""
+
+        debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
+        
         if not self.server or not self.slot:
             logger.warning("Cannot send location check: not connected to server")
             return
@@ -167,7 +200,8 @@ class PikminContext(CommonContext):
                     location_name = name
                     break
             
-            logger.info(f"Sent location check: {location_name} (ID: {location_id})")
+            if debug_mode == "true":
+                logger.info(f"Send location check: {location_name} (ID: {location_id})")
             
         except Exception as e:
             logger.error(f"Error sending location check for ID {location_id}: {e}")
@@ -258,8 +292,9 @@ class PikminContext(CommonContext):
         except Exception as e:
             logger.error(f"Error giving ship part {part_name}: {e}")
 
+    """
     def give_nectar(self) -> None:
-        """Give nectar to the player (increase Pikmin in field)."""
+        "" "Give nectar to the player (increase Pikmin in field)."" "
         try:
             # Exemple: ajouter quelques Pikmin rouges
             current_red = read_byte(RED_PIKMIN_ADDRESS)
@@ -271,7 +306,7 @@ class PikminContext(CommonContext):
             logger.error(f"Error giving nectar: {e}")
 
     def give_carrot_pikpik(self) -> None:
-        """Give carrot pikpik to the player (filler item)."""
+        "" "Give carrot pikpik to the player (filler item)."" "
         try:
             # Exemple: augmenter légèrement le nombre de Pikmin
             current_red = read_byte(RED_PIKMIN_ADDRESS)
@@ -281,18 +316,21 @@ class PikminContext(CommonContext):
                 
         except Exception as e:
             logger.error(f"Error giving carrot pikpik: {e}")
+    """
 
     def check_pikmin_milestones(self) -> Set[int]:
         """Check Pikmin count milestones and return newly achieved location IDs."""
         new_locations = set()
+        debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
         
         try:
             current_red = read_byte(RED_PIKMIN_ADDRESS)
             current_yellow = read_byte(YELLOW_PIKMIN_ADDRESS)
             current_blue = read_byte(BLUE_PIKMIN_ADDRESS)
             
-            logger.debug(f"Current Pikmin counts - Red: {current_red}, Yellow: {current_yellow}, Blue: {current_blue}")
-            logger.debug(f"Previous Pikmin counts - Red: {self.previous_pikmin_counts['red']}, Yellow: {self.previous_pikmin_counts['yellow']}, Blue: {self.previous_pikmin_counts['blue']}")
+            if debug_mode == "true":
+                logger.debug(f"Current Pikmin counts - Red: {current_red}, Yellow: {current_yellow}, Blue: {current_blue}")
+                logger.debug(f"Previous Pikmin counts - Red: {self.previous_pikmin_counts['red']}, Yellow: {self.previous_pikmin_counts['yellow']}, Blue: {self.previous_pikmin_counts['blue']}")
             
             # Check red Pikmin milestones
             for milestone in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:
@@ -300,13 +338,35 @@ class PikminContext(CommonContext):
                     self.previous_pikmin_counts["red"] < milestone):
                     # Find the location ID for this milestone
                     location_name = f"Pikmin Red - {milestone}"
-                    logger.debug(f"Checking location: {location_name}")
+                    if debug_mode == "true":
+                        logger.debug(f"Checking location: {location_name}")
+
                     if location_name in LOCATION_TABLE:
                         location_data = LOCATION_TABLE[location_name]
                         if location_data.code is not None:
                             ap_id = PikminLocation.get_apid(location_data.code)
                             new_locations.add(ap_id)
-                            logger.info(f"Achieved milestone: {location_name} (AP ID: {ap_id})")
+                            if debug_mode == "true":
+                                logger.info(f"Achieved milestone: {location_name} (AP ID: {ap_id})")
+                    else:
+                        logger.warning(f"Location {location_name} not found in LOCATION_TABLE")
+
+            # Check Yellow Pikmin milestones
+            for milestone in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:
+                if (current_yellow >= milestone and 
+                    self.previous_pikmin_counts["yellow"] < milestone):
+                    # Find the location ID for this milestone
+                    location_name = f"Pikmin Yellow - {milestone}"
+                    if debug_mode == "true":
+                        logger.debug(f"Checking location: {location_name}")
+
+                    if location_name in LOCATION_TABLE:
+                        location_data = LOCATION_TABLE[location_name]
+                        if location_data.code is not None:
+                            ap_id = PikminLocation.get_apid(location_data.code)
+                            new_locations.add(ap_id)
+                            if debug_mode == "true":
+                                logger.info(f"Achieved milestone: {location_name} (AP ID: {ap_id})")
                     else:
                         logger.warning(f"Location {location_name} not found in LOCATION_TABLE")
             
@@ -427,7 +487,7 @@ async def dolphin_sync_task(ctx: PikminContext) -> None:
     """Main sync task for Dolphin connection and game state monitoring."""
     logger.info("Starting Dolphin connector. Use /dolphin for status information.")
     sleep_time = 0.0
-    
+
     while not ctx.exit_event.is_set():
         if sleep_time > 0.0:
             try:
@@ -454,6 +514,10 @@ async def dolphin_sync_task(ctx: PikminContext) -> None:
                     # Try to get authentication from game
                     try:
                         ctx.auth = read_string(SLOT_NAME_ADDRESS, 0x40).strip()
+                        if ctx.auth == read_string(SLOT_NAME_ADDRESS, 0x40).strip() is not set:
+                            ctx.auth = "Player1"
+                            write_string(SLOT_NAME_ADDRESS, "Player1")
+                            
                         if ctx.auth and ctx.awaiting_rom:
                             await ctx.server_auth()
                     except:
