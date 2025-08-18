@@ -27,8 +27,8 @@ BLUE_PIKMIN_ADDRESS = 0x803D6CF3
 ONION_PIKMIN_ADDRESS = 0x81242804
 
 # Custom Adresse pour écriture et lecture
-SLOT_NAME_ADDRESS = 0x803FE8A0
-DEBUG_MODE_ADDRESS = 0x803FE8B0
+SLOT_NAME_ADDRESS = 0x7E000000
+DEBUG_MODE_ADDRESS = 0x7E000010
 
 # Adresses des ship parts (à adapter selon votre mapping)
 SHIP_PARTS_BASE_ADDRESS = 0x803A0000  # Base hypothétique, à ajuster
