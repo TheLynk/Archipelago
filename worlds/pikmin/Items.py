@@ -131,3 +131,7 @@ item_name_groups = {
     "Useful": USEFUL_ITEMS,
     "Filler": FILLER_ITEMS,
 }
+
+LOOKUP_ID_TO_NAME: dict[int, str] = {
+    PikminItem.get_apid(data.code): item for item, data in ITEM_TABLE.items() if data.code is not None
+}
