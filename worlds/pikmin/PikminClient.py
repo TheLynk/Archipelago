@@ -27,8 +27,8 @@ BLUE_PIKMIN_ADDRESS = 0x803D6CF3
 ONION_PIKMIN_ADDRESS = 0x81242804
 
 # Custom Adresse pour écriture et lecture
-SLOT_NAME_ADDRESS = 0x7E000000
-DEBUG_MODE_ADDRESS = 0x7E000010
+SLOT_NAME_ADDRESS = 0x800001A0
+DEBUG_MODE_ADDRESS = 0x800001B0
 
 # Adresses des ship parts (à adapter selon votre mapping)
 SHIP_PARTS_BASE_ADDRESS = 0x803A0000  # Base hypothétique, à ajuster
@@ -240,7 +240,7 @@ class PikminContext(CommonContext):
         """Unlock a specific Pikmin type in game."""
         try:
             # Set the appropriate bit in the Onion address
-            current_onion_state = read_4byte(ONION_PIKMIN_ADDRESS)
+            current_onion_state = read_byte(ONION_PIKMIN_ADDRESS)
             
             if pikmin_type == "red":
                 new_state = current_onion_state | 18  # Red Onion bit
@@ -251,7 +251,7 @@ class PikminContext(CommonContext):
             else:
                 return
                 
-            write_4byte(ONION_PIKMIN_ADDRESS, new_state)
+            write_byte(ONION_PIKMIN_ADDRESS, new_state)
             logger.info(f"Unlocked {pikmin_type} Pikmin")
             
         except Exception as e:
