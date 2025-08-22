@@ -2,6 +2,7 @@ import asyncio
 import time
 import traceback
 import logging
+import re
 from typing import TYPE_CHECKING, Any, Optional, Set, Dict
 
 from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, logger, server_loop
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
     import kvui
 
 # Adresses mémoire importantes
-LOCATION_MAP_ADDRESS = 0x808130B8
+LOCATION_MAP_ADDRESS = 0x808130B0
 DAYS_ADDRESS = 0x803A2937
 TOTAL_PIKMIN_ADRESS = 0x803D6CF0
 
@@ -27,8 +28,8 @@ BLUE_PIKMIN_ADDRESS = 0x803D6CF3
 ONION_PIKMIN_ADDRESS = 0x81242804
 
 # Custom Adresse pour écriture et lecture
-SLOT_NAME_ADDRESS = 0x800001A0
-DEBUG_MODE_ADDRESS = 0x800001B0
+SLOT_NAME_ADDRESS = 0x7E000000
+DEBUG_MODE_ADDRESS = 0x7E000010
 
 # Adresses des ship parts (à adapter selon votre mapping)
 SHIP_PARTS_BASE_ADDRESS = 0x803A0000  # Base hypothétique, à ajuster
@@ -94,6 +95,81 @@ class PikminCommandProcessor(ClientCommandProcessor):
         
         debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
 
+    def _cmd_test_unlock(self) -> None:
+        """Test unlocking different Pikmin types."""
+        if isinstance(self.ctx, PikminContext):
+            import sys
+            
+            # Get the color argument
+            args = sys.argv if hasattr(sys, 'argv') else []
+            color = "red"  # default
+            
+            # Simple argument parsing for testing
+            try:
+                # Look for color in command line or default to red
+                if len(args) > 1 and args[-1] in ["red", "yellow", "blue"]:
+                    color = args[-1]
+            except:
+                pass
+                
+            logger.info(f"Testing {color} Pikmin unlock...")
+            
+            # Show current onion state
+            current_state = read_byte(ONION_PIKMIN_ADDRESS)
+            logger.info(f"Current onion state: {current_state:08X}")
+            
+            # Test unlock
+            success = self.ctx.unlock_pikmin_type(color)
+            
+            # Show new state
+            new_state = read_byte(ONION_PIKMIN_ADDRESS)
+            logger.info(f"New onion state: {new_state:08X}")
+            logger.info(f"Unlock {'successful' if success else 'failed'}")
+
+    def _cmd_onion_state(self) -> None:
+        """Display current onion state for debugging."""
+        try:
+            current_state = read_byte(ONION_PIKMIN_ADDRESS)
+            logger.info(f"Onion state: {current_state:08X} ({current_state})")
+            logger.info(f"Target state: {self.ctx.target_onion_state:08X} ({self.ctx.target_onion_state})")
+            logger.info(f"Control active: {self.ctx.onion_control_active}")
+            
+            # Decode the bits
+            red_unlocked = bool(current_state & 0x12)
+            yellow_unlocked = bool(current_state & 0x24)
+            blue_unlocked = bool(current_state & 0x09)
+            
+            logger.info(f"Current state - Red: {'✓' if red_unlocked else '✗'}, Yellow: {'✓' if yellow_unlocked else '✗'}, Blue: {'✓' if blue_unlocked else '✗'}")
+            logger.info(f"Tracked unlocks: {', '.join(sorted(self.ctx.unlocked_pikmin_types)) if self.ctx.unlocked_pikmin_types else 'None'}")
+            
+        except Exception as e:
+            logger.error(f"Error reading onion state: {e}")
+
+    def _cmd_reset_onions(self) -> None:
+        """Reset onion control and clear all unlocked types."""
+        if isinstance(self.ctx, PikminContext):
+            self.ctx.unlocked_pikmin_types.clear()
+            self.ctx.target_onion_state = 0
+            self.ctx.onion_control_active = False
+            
+            # Write 0 to onion address to clear everything
+            write_byte(ONION_PIKMIN_ADDRESS, 0)
+            
+            logger.info("🔓 Onion control reset - all types locked")
+            
+    def _cmd_force_onion_write(self) -> None:
+        """Force an immediate onion state write."""
+        if isinstance(self.ctx, PikminContext):
+            try:
+                target = self.ctx.calculate_target_onion_state()
+                write_byte(ONION_PIKMIN_ADDRESS, target)
+                
+                current = read_byte(ONION_PIKMIN_ADDRESS)
+                logger.info(f"Forced onion write - Target: {target:08X}, Result: {current:08X}")
+                
+            except Exception as e:
+                logger.error(f"Error forcing onion write: {e}")
+
 
 class PikminContext(CommonContext):
     """Context for Pikmin client."""
@@ -121,6 +197,13 @@ class PikminContext(CommonContext):
         
         # Track send locations to avoid duplicates
         self.sent_locations: Set[int] = set()
+        
+        # Pikmin unlock state management
+        self.unlocked_pikmin_types: Set[str] = set()  # Track which types we've unlocked
+        self.onion_control_active: bool = False  # Whether we're controlling onion state
+        self.last_onion_write_time: float = 0
+        self.onion_write_interval: float = 1.0  # Write every 1 second
+        self.target_onion_state: int = 0  # The state we want to maintain
 
     async def disconnect(self, allow_autoreconnect: bool = False) -> None:
         """Disconnect from server and reset game state."""
@@ -130,6 +213,12 @@ class PikminContext(CommonContext):
         self.walls_broken.clear()
         self.bosses_defeated.clear()
         self.sent_locations.clear()
+        
+        # Reset Pikmin unlock state
+        self.unlocked_pikmin_types.clear()
+        self.onion_control_active = False
+        self.target_onion_state = 0
+        
         await super().disconnect(allow_autoreconnect)
 
     async def server_auth(self, password_requested: bool = False) -> None:
@@ -213,81 +302,179 @@ class PikminContext(CommonContext):
             return
             
         try:
-            # Process each received item
-            for network_item in self.items_received:
+            debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
+            
+            # Track items we've already processed to avoid duplicates
+            if not hasattr(self, 'processed_items_count'):
+                self.processed_items_count = 0
+            
+            # Only process new items
+            new_items = self.items_received[self.processed_items_count:]
+            
+            for network_item in new_items:
                 item_name = network_item.item
                 item_player = network_item.player
+                player_name = self.player_names.get(item_player, f"Player {item_player}")
                 
                 # Handle different item types
+                success = False
                 if item_name == "Unlock Red Pikmin":
-                    self.unlock_pikmin_type("red")
+                    success = self.unlock_pikmin_type("red")
                 elif item_name == "Unlock Yellow Pikmin":
-                    self.unlock_pikmin_type("yellow")
+                    success = self.unlock_pikmin_type("yellow")
                 elif item_name == "Unlock Blue Pikmin":
-                    self.unlock_pikmin_type("blue")
-                elif item_name == "Main Engine":
-                    self.give_ship_part("Main Engine")
-                elif item_name in ["The Impact Site", "The Forest Of Hope", "The Forest Navel", 
-                                  "The Distant Spring", "The Final Trial"]:
-                    self.unlock_area(item_name)
-                    
-                logger.info(f"Received {item_name} from {self.player_names.get(item_player, 'Unknown')}")
+                    success = self.unlock_pikmin_type("blue")
+                elif "Pikmin" in item_name and any(color in item_name for color in ["Red", "Yellow", "Blue"]):
+                    # Handle Pikmin count items (if you have them)
+                    success = self.give_pikmin_from_item(item_name)
+                else:
+                    # Handle other items (ship parts, upgrades, etc.)
+                    success = self.handle_other_items(item_name)
+                
+                if success:
+                    logger.info(f"Applied {item_name} from {player_name}")
+                    if debug_mode == "true":
+                        logger.debug(f"Item {item_name} successfully processed")
+                else:
+                    logger.warning(f"Failed to apply {item_name} from {player_name}")
+                
+            # Update processed items count
+            self.processed_items_count = len(self.items_received)
                 
         except Exception as e:
             logger.error(f"Error handling received items: {e}")
+            if debug_mode == "true":
+                logger.error(f"Full traceback: {traceback.format_exc()}")
 
-    def unlock_pikmin_type(self, pikmin_type: str) -> None:
+    def calculate_target_onion_state(self) -> int:
+        """Calculate the target onion state based on unlocked Pikmin types."""
+        state = 0
+        
+        if "red" in self.unlocked_pikmin_types:
+            state |= 0x12  # Red onion bits
+        if "yellow" in self.unlocked_pikmin_types:
+            state |= 0x24  # Yellow onion bits  
+        if "blue" in self.unlocked_pikmin_types:
+            state |= 0x09  # Blue onion bits
+            
+        return state
+
+    async def maintain_onion_state(self) -> None:
+        """Maintain control over the onion state to prevent game interference."""
+        current_time = time.time()
+        
+        # Only write every second to avoid spam
+        if current_time - self.last_onion_write_time < self.onion_write_interval:
+            return
+            
+        self.last_onion_write_time = current_time
+        
+        try:
+            debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
+            
+            # Calculate what the onion state should be
+            target_state = self.calculate_target_onion_state()
+            
+            # Read current state
+            current_state = read_byte(ONION_PIKMIN_ADDRESS)
+            
+            # Always enforce our target state
+            if current_state != target_state:
+                write_byte(ONION_PIKMIN_ADDRESS, target_state)
+                
+                if debug_mode == "true":
+                    logger.debug(f"Onion state corrected: {current_state:08X} → {target_state:08X}")
+                    logger.debug(f"Unlocked types: {', '.join(self.unlocked_pikmin_types) if self.unlocked_pikmin_types else 'None'}")
+            
+            self.target_onion_state = target_state
+            
+        except Exception as e:
+            logger.error(f"Error maintaining onion state: {e}")
+
+    def start_onion_control(self) -> None:
+        """Start controlling the onion state."""
+        if not self.onion_control_active:
+            self.onion_control_active = True
+            logger.info("Onion state control activated")
+
+    def unlock_pikmin_type(self, pikmin_type: str) -> bool:
         """Unlock a specific Pikmin type in game."""
         try:
-            # Set the appropriate bit in the Onion address
-            current_onion_state = read_byte(ONION_PIKMIN_ADDRESS)
+            debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
             
-            if pikmin_type == "red":
-                new_state = current_onion_state | 18  # Red Onion bit
-            elif pikmin_type == "yellow":
-                new_state = current_onion_state | 36  # Yellow Onion bit  
-            elif pikmin_type == "blue":
-                new_state = current_onion_state | 9   # Blue Onion bit
-            else:
-                return
+            # Start onion control if not already active
+            self.start_onion_control()
+            
+            # Check if already unlocked
+            if pikmin_type in self.unlocked_pikmin_types:
+                if debug_mode == "true":
+                    logger.debug(f"{pikmin_type.title()} Pikmin already unlocked")
+                return True
+            
+            # Add to unlocked types
+            self.unlocked_pikmin_types.add(pikmin_type)
+            
+            # Calculate and apply new onion state
+            new_target_state = self.calculate_target_onion_state()
+            write_byte(ONION_PIKMIN_ADDRESS, new_target_state)
+            
+            # Verify the write was successful
+            verified_state = read_byte(ONION_PIKMIN_ADDRESS)
+            
+            if debug_mode == "true":
+                logger.debug(f"Onion state updated: {self.target_onion_state:08X} → {new_target_state:08X}")
+                logger.debug(f"Verified state: {verified_state:08X}")
+            
+            self.target_onion_state = new_target_state
+            
+            if verified_state == new_target_state:
+                logger.info(f"Successfully unlocked {pikmin_type.title()} Pikmin!")
+                logger.info(f"Currently unlocked: {', '.join(sorted(self.unlocked_pikmin_types))}")
                 
-            write_byte(ONION_PIKMIN_ADDRESS, new_state)
-            logger.info(f"Unlocked {pikmin_type} Pikmin")
-            
+                # Optional: Give some starting Pikmin of this type
+                self.give_starting_pikmin(pikmin_type)
+                return True
+            else:
+                logger.error(f"Failed to verify {pikmin_type} Pikmin unlock")
+                # Remove from unlocked types if verification failed
+                self.unlocked_pikmin_types.discard(pikmin_type)
+                return False
+                
         except Exception as e:
             logger.error(f"Error unlocking {pikmin_type} Pikmin: {e}")
+            # Remove from unlocked types if error occurred
+            self.unlocked_pikmin_types.discard(pikmin_type)
+            return False
 
-    def unlock_area(self, area_name: str) -> None:
-        """Unlock access to a specific area."""
+    def give_starting_pikmin(self, pikmin_type: str) -> None:
+        """Give some starting Pikmin when a type is first unlocked."""
         try:
-            # Cette fonction dépend de comment vous gérez l'ouverture des zones
-            # Vous devrez identifier les adresses mémoire appropriées
-            area_addresses = {
-                "The Impact Site": 0x803A3000,
-                "The Forest Of Hope": 0x803A3001,
-                "The Forest Navel": 0x803A3002,
-                "The Distant Spring": 0x803A3003,
-                "The Final Trial": 0x803A3004
-            }
+            debug_mode = read_string(DEBUG_MODE_ADDRESS, 16)
+            starting_count = 5  # Give 5 Pikmin to start
             
-            if area_name in area_addresses:
-                write_byte(area_addresses[area_name], 1)
-                logger.info(f"Unlocked area: {area_name}")
-                
+            if pikmin_type == "red":
+                current_count = read_byte(RED_PIKMIN_ADDRESS)
+                if current_count < starting_count:
+                    write_byte(RED_PIKMIN_ADDRESS, starting_count)
+                    if debug_mode == "true":
+                        logger.debug(f"Gave {starting_count} red Pikmin (was {current_count})")
+                        
+            elif pikmin_type == "yellow":
+                current_count = read_byte(YELLOW_PIKMIN_ADDRESS)
+                if current_count < starting_count:
+                    write_byte(YELLOW_PIKMIN_ADDRESS, starting_count)
+                    if debug_mode == "true":
+                        logger.debug(f"Gave {starting_count} yellow Pikmin (was {current_count})")
+                        
+            elif pikmin_type == "blue":
+                current_count = read_byte(BLUE_PIKMIN_ADDRESS)
+                if current_count < starting_count:
+                    write_byte(BLUE_PIKMIN_ADDRESS, starting_count)
+                    if debug_mode == "true":
+                        logger.debug(f"Gave {starting_count} blue Pikmin (was {current_count})")
+                        
         except Exception as e:
-            logger.error(f"Error unlocking area {area_name}: {e}")
-
-    def give_ship_part(self, part_name: str) -> None:
-        """Give a specific ship part to the player."""
-        try:
-            # Vous devrez mapper les noms des ship parts aux adresses mémoire
-            if part_name == "Main Engine":
-                # Adresse hypothétique pour le Main Engine
-                write_byte(0x803A4000, 1)
-                logger.info(f"Gave ship part: {part_name}")
-                
-        except Exception as e:
-            logger.error(f"Error giving ship part {part_name}: {e}")
+            logger.error(f"Error giving starting {pikmin_type} Pikmin: {e}")
 
     def check_pikmin_milestones(self) -> Set[int]:
         """Check Pikmin count milestones and return newly achieved location IDs."""
@@ -390,54 +577,6 @@ class PikminContext(CommonContext):
             
         return new_locations
 
-    def check_walls_and_bridges(self) -> Set[int]:
-        """Check for newly broken walls and built bridges."""
-        new_locations = set()
-        
-        try:
-            # Exemple de vérification des murs - à adapter selon vos adresses
-            # Vous devrez identifier les adresses mémoire pour chaque mur/pont
-            wall_addresses = {
-                200: 0x803A1000,  # Forest of Hope - Red Wall 1
-                201: 0x803A1001,  # Forest of Hope - Red Wall 2
-                # Ajoutez d'autres adresses...
-            }
-            
-            for location_code, address in wall_addresses.items():
-                if read_byte(address) == 1 and location_code not in self.walls_broken:
-                    self.walls_broken.add(location_code)
-                    location_id = PikminLocation.get_apid(location_code)
-                    new_locations.add(location_id)
-                    
-        except Exception as e:
-            logger.error(f"Error checking walls and bridges: {e}")
-            
-        return new_locations
-
-    def check_bosses(self) -> Set[int]:
-        """Check for newly defeated bosses."""
-        new_locations = set()
-        
-        try:
-            # Exemple de vérification des boss - à adapter
-            boss_addresses = {
-                400: 0x803A2000,  # Armored Cannon Beetle
-                401: 0x803A2001,  # Burrowing Snagret
-                402: 0x803A2002,  # Smoky Progg
-                403: 0x803A2003,  # Emperor Bulblax
-            }
-            
-            for location_code, address in boss_addresses.items():
-                if read_byte(address) == 1 and location_code not in self.bosses_defeated:
-                    self.bosses_defeated.add(location_code)
-                    location_id = PikminLocation.get_apid(location_code)
-                    new_locations.add(location_id)
-                    
-        except Exception as e:
-            logger.error(f"Error checking bosses: {e}")
-            
-        return new_locations
-
     async def check_all_locations(self) -> None:
         """Check all location types for changes."""
         current_time = time.time()
@@ -453,9 +592,6 @@ class PikminContext(CommonContext):
             
             # Check different types of locations
             new_location_ids.update(self.check_pikmin_milestones())
-            """new_location_ids.update(self.check_ship_parts())
-            new_location_ids.update(self.check_walls_and_bridges())
-            new_location_ids.update(self.check_bosses())"""
             
             # Send newly found locations to server one by one
             for location_id in new_location_ids:
@@ -465,11 +601,27 @@ class PikminContext(CommonContext):
         except Exception as e:
             logger.error(f"Error in check_all_locations: {e}")
 
+    async def manage_game_state(self) -> None:
+        """Manage overall game state including onion control."""
+        try:
+            # Always maintain onion state control when connected and authenticated
+            if self.onion_control_active:
+                await self.maintain_onion_state()
+                
+            # Check for location updates
+            await self.check_all_locations()
+            
+            # Handle received items
+            await self.handle_received_items()
+            
+        except Exception as e:
+            logger.error(f"Error in manage_game_state: {e}")
+
 def check_ingame() -> bool:
     """Check if player is currently in-game."""
     try:
-        location_map = read_string(LOCATION_MAP_ADDRESS, 35)
-        return location_map not in ["", "sea_T", "Name"]
+        location_map = read_string(LOCATION_MAP_ADDRESS, 37)
+        return location_map in ["courses/courses/practice/practice.mod", "courses/courses/stage1/forest.mod", "courses/stage2/cave.mod", "courses/courses/stage3/yakusima.mod", "courses/laststage/garden.mod"]
     except:
         return False
 
@@ -494,11 +646,8 @@ async def dolphin_sync_task(ctx: PikminContext) -> None:
                 
                 # Check if we're in game and authenticated
                 if ctx.slot is not None and check_ingame():
-                    # Monitor game state and check for new locations
-                    await ctx.check_all_locations()
-                    
-                    # Handle received items
-                    await ctx.handle_received_items()
+                    # Use the new unified game state management
+                    await ctx.manage_game_state()
                     
                 elif not ctx.auth:
                     # Try to get authentication from game
@@ -542,6 +691,14 @@ async def dolphin_sync_task(ctx: PikminContext) -> None:
                         ctx.ship_parts_collected.clear()
                         ctx.walls_broken.clear()
                         ctx.bosses_defeated.clear()
+                        
+                        # Reset Pikmin unlock tracking
+                        ctx.unlocked_pikmin_types.clear()
+                        ctx.onion_control_active = False
+                        ctx.target_onion_state = 0
+                        
+                        # Start onion control immediately
+                        ctx.start_onion_control()
                         
                         # Reset previous counts to current values to avoid false positives
                         try:
