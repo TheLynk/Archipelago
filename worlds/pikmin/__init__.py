@@ -281,7 +281,7 @@ class PikminWorld(World):
         multiworld = self.multiworld
         player = self.player
 
-                # Output seed name and slot number to seed RNG in randomizer client.
+        # Output seed name and slot number to seed RNG in randomizer client.
         output_data = {
             "Version": list(VERSION),
             "Seed": multiworld.seed_name,
@@ -351,7 +351,6 @@ class PikminWorld(World):
             filler_weights.append(15)
 
         return self.multiworld.random.choices(filler_consumables, weights=filler_weights, k=1)[0]
-        
     
     def fill_slot_data(self) -> Mapping[str, Any]:
         """
@@ -365,3 +364,16 @@ class PikminWorld(World):
         slot_data = self.options.get_slot_data_dict()
 
         return slot_data
+
+    @classmethod 
+    def stage_write_spoiler(cls, world: "MultiWorld", spoiler_handle) -> None:
+        """
+        Write Pikmin-specific spoiler information.
+        """
+        pass
+
+    def write_spoiler(self, spoiler_handle) -> None:
+        """
+        Write Pikmin-specific spoiler information for this player.
+        """
+        pass

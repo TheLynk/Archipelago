@@ -5,7 +5,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional, Set, Dict
 
 from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, logger, server_loop
-from NetUtils import ClientStatus
+from NetUtils import ClientStatus, NetworkItem
 import dolphin_memory_engine
 import Utils
 
@@ -69,30 +69,6 @@ class PikminCommandProcessor(ClientCommandProcessor):
         if isinstance(self.ctx, PikminContext):
             write_byte(DAYS_ADDRESS, 2)
             logger.info(f"Day set 2")
-
-    """    
-    def _cmd_check(self) -> None:
-        "" "Manually trigger location checking for debugging."" "
-        if isinstance(self.ctx, PikminContext):
-            logger.info("Manually checking locations...")
-            asyncio.create_task(self.ctx.check_all_locations())
-
-    def _cmd_test_location(self) -> None:
-        "" "Test sending a specific location to the server."" "
-        if isinstance(self.ctx, PikminContext):
-            # Test avec la location "Pikmin Red - 10"
-            location_name = "Pikmin Red - 10"
-            if location_name in LOCATION_TABLE:
-                location_data = LOCATION_TABLE[location_name]
-                if location_data.code is not None:
-                    location_id = PikminLocation.get_apid(location_data.code)
-                    logger.info(f"Testing location {location_name} with AP ID {location_id}")
-                    asyncio.create_task(self.ctx.send_location_check(location_id))
-                else:
-                    logger.info(f"Location {location_name} has no code")
-            else:
-                logger.info(f"Location {location_name} not found in LOCATION_TABLE")
-    """
 
     def _cmd_debug(self) -> None:
         """check status debug mode"""
@@ -167,6 +143,31 @@ class PikminContext(CommonContext):
             logger.info("Awaiting connection to Dolphin to get player information.")
             return
         await self.send_connect()
+
+    def on_package(self, cmd: str, args: dict) -> None:
+        """Handle incoming network packages including DataPackage."""
+        if cmd == "Connected":
+            # Store slot data and handle connection
+            if "slot_data" in args:
+                self.slot_data = args["slot_data"]
+            
+            # Request DataPackage for our game if not already cached
+            asyncio.create_task(self.send_msgs([{
+                "cmd": "GetDataPackage", 
+                "games": [self.game]
+            }]))
+            
+        elif cmd == "DataPackage":
+            # Handle DataPackage response
+            if "data" in args and "games" in args["data"]:
+                game_data = args["data"]["games"]
+                if self.game in game_data:
+                    # Cache the datapackage data
+                    self.stored_data.update(game_data[self.game])
+                    logger.info(f"DataPackage loaded for {self.game}")
+        
+        # Call parent handler for other commands
+        super().on_package(cmd, args)
 
     def make_gui(self) -> type["kvui.GameManager"]:
         """Initialize GUI for Pikmin client."""
