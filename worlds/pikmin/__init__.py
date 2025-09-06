@@ -1,0 +1,129 @@
+from typing import ClassVar
+
+from BaseClasses import Item, ItemClassification, Location, Region
+from worlds.AutoWorld import World
+from worlds.LauncherComponents import launch_subprocess, Type, components, Component
+from .P1Data import *
+from .P1Macros import *
+from .P1Options import P1Options
+from .P1Web import P1Web
+
+
+def run_client() -> None:
+    from .P1Client import run_client
+
+    launch_subprocess(run_client, name="PikminClient")
+
+
+components.append(
+    Component(
+        "Pikmin Client",
+        func=run_client,
+        component_type=Type.CLIENT,
+    )
+)
+
+
+class P1World(World):
+    """Pikmin 1 yay"""
+
+    game: ClassVar[str] = "Pikmin"
+
+    web: ClassVar[P1Web] = P1Web()
+
+    options_dataclass = P1Options
+    options: P1Options
+
+    origin_region_name: str = "The Impact Site"
+
+    item_name_to_id: ClassVar[dict[str, int]] = {
+        name: data.ap_id for name, data in ALL_PARTS.items()
+    }
+
+    location_name_to_id: ClassVar[dict[str, int]] = {
+        f"{name} Location": data.ap_id for name, data in ALL_PARTS.items()
+    }
+
+    def create_item(self, name: str) -> "P1Item":
+        return P1Item(name, ItemClassification.progression, ALL_PARTS[name].ap_id, self.player)
+
+    def create_event(self, name: str) -> "P1Item":
+        return P1Item(name, ItemClassification.progression, None, self.player)
+
+    def set_event(self, region: str, location: str, item: str, rule: Callable[[CollectionState], bool]) -> None:
+        region = self.get_region(region)
+        location = P1Location(self.player, location, None, region)
+        location.access_rule = rule
+        region.locations.append(location)
+        location.place_locked_item(self.create_event(item))
+
+    def create_regions(self) -> None:
+        menu = Region("Area Select", self.player, self.multiworld)
+        self.multiworld.regions.append(menu)
+
+        regions: dict[str, Region] = {}
+
+        for area in Area.__args__:
+            regions[area] = Region(area, self.player, self.multiworld)
+            self.multiworld.regions.append(regions[area])
+
+            # leaving impact site requires one part (to end the tutorial day)
+            regions[area].connect(menu, f"Leave {area}",
+                                  (lambda state: state.has_from_list(ALL_PARTS.keys(), self.player, 1))
+                                  if area == "The Impact Site" else None)
+            menu.connect(regions[area], f"Enter {area}",
+                         lambda state, area=area: can_access[area](state, self.player))
+
+        for name, data in ALL_PARTS.items():
+            regions[data.area].locations.append(
+                P1Location(self.player, f"{name} Location", data.ap_id, regions[data.area]))
+
+    def create_items(self) -> None:
+        """
+        Method for creating and submitting items to the itempool. Items and Regions must *not* be created and submitted
+        to the MultiWorld after this step. If items need to be placed during pre_fill use `get_pre_fill_items`.
+        """
+        items = []
+
+        for part in ALL_PARTS:
+            items.append(self.create_item(part))
+
+        if self.options.first_part_is_local:
+            self.get_location("Main Engine Location").place_locked_item(
+                items.pop(self.multiworld.random.randint(0, len(items) - 1)))
+
+        if self.options.last_part_is_local:
+            self.get_location("Secret Safe Location").place_locked_item(
+                items.pop(self.multiworld.random.randint(0, len(items) - 1)))
+
+        self.multiworld.itempool += items
+
+    def set_rules(self) -> None:
+        """Method for setting the rules on the World's regions and locations."""
+
+        # alternative way of implementing local locations but this leads to randomization failures relatively often,
+        # probably due to Pikmin having so few items compared to other games, therefore sometimes not having any ship
+        # parts left that can be placed into these locations
+        # if self.options.first_part_is_local:
+        #     self.get_location("Main Engine Location").item_rule = lambda item: item.name in ALL_PARTS.keys()
+        #
+        # if self.options.last_part_is_local:
+        #     self.get_location("Secret Safe Location").item_rule = lambda item: item.name in ALL_PARTS.keys()
+
+        for name, data in ALL_PARTS.items():
+            self.get_location(f"{name} Location").access_rule = lambda state, data=data: \
+                (not data.required_types.red or can_obtain_reds(state, self.player)) \
+                and (not data.required_types.yellow or can_obtain_yellows(state, self.player)) \
+                and (not data.required_types.blue or can_obtain_blues(state, self.player))
+
+        self.set_event("The Final Trial", "Collect All Ship Parts", "Victory", lambda state: \
+            state.has_from_list(ALL_PARTS.keys(), self.player, 30))
+        self.multiworld.completion_condition[self.player] = lambda state: state.has("Victory", self.player)
+
+
+class P1Item(Item):
+    game = P1World.game
+
+
+class P1Location(Location):
+    game = P1World.game
