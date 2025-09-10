@@ -12,16 +12,16 @@ from .P1Data import *
 if TYPE_CHECKING:
     import kvui
 
-UNLOCKED_AREAS: MemoryAddress = mem(0x803A2803)  # byte
+UNLOCKED_AREAS: MemoryAddress = mem(0x803A2803, 0x8039D983)  # byte
 
-COUNT_TOTAL_PARTS: MemoryAddress = mem(0x812427FF)  # byte
-COUNT_REQUIRED_PARTS: MemoryAddress = mem(0x81242803)  # byte
+COUNT_TOTAL_PARTS: MemoryAddress = mem(0x812427FF, 0x81249DE7)  # byte
+COUNT_REQUIRED_PARTS: MemoryAddress = mem(0x81242803, 0x81249DEB)  # byte
 
-# COUNT_LOCAL_PARTS_1: MemoryAddress = mem(0x81242807)  # byte
-# COUNT_LOCAL_PARTS_2: MemoryAddress = mem(0x81242808)  # byte
-# COUNT_LOCAL_PARTS_3: MemoryAddress = mem(0x81242809)  # byte
-# COUNT_LOCAL_PARTS_4: MemoryAddress = mem(0x8124280A)  # byte
-# COUNT_LOCAL_PARTS_5: MemoryAddress = mem(0x8124280B)  # byte
+# COUNT_LOCAL_PARTS_1: MemoryAddress = mem(0x81242807, 0x81249DEF)  # byte
+# COUNT_LOCAL_PARTS_2: MemoryAddress = mem(0x81242808, 0x81249DF0)  # byte
+# COUNT_LOCAL_PARTS_3: MemoryAddress = mem(0x81242809, 0x81249DF1)  # byte
+# COUNT_LOCAL_PARTS_4: MemoryAddress = mem(0x8124280A, 0x81249DF2)  # byte
+# COUNT_LOCAL_PARTS_5: MemoryAddress = mem(0x8124280B, 0x81249DF3)  # byte
 #
 # TIME_HOURS: MemoryAddress = mem(0x803A2930)  # word, daytime is 7-18, day ends >= 19, night mode (moon icon) <= 6
 # TIME_MINUTES: MemoryAddress = mem(0x803A2924)  # word, explore how exactly this works
@@ -120,7 +120,7 @@ async def dolphin_loop(ctx: P1Context):
                 continue
             else:
                 game = dme.read_bytes(0x80000000, 6)
-                if game not in [b"GPIP01"]:
+                if game not in [b"GPIP01", b"GPIE01"]:
                     ctx.dolphin_status_text = "Connected - Wrong Game"
                     continue
 
