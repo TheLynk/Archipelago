@@ -185,6 +185,19 @@ class P1World(World):
                 location.access_rule = lambda state, parts=5: \
                     state.has_from_list(ALL_PARTS.keys(), self.player, parts)
 
+    def fill_slot_data(self) -> dict:
+        """Send data to the client including Pikmin location IDs"""
+        pikmin_locations = {}
+        
+        # Map all Pikmin locations to their IDs
+        for loc_name, loc_id in self.location_name_to_id.items():
+            if "Pikmin:" in loc_name:
+                pikmin_locations[loc_name] = loc_id
+        
+        return {
+            "pikmin_locations": pikmin_locations,
+        }
+
 
 class P1Item(Item):
     game = P1World.game

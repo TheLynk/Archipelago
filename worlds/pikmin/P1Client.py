@@ -56,6 +56,10 @@ class P1Context(CommonContext):
         
         # Track Pikmin counts for location checking
         self.pikmin_counts = {"red": 0, "yellow": 0, "blue": 0}
+        self.pikmin_location_ids = {}  # Maps location names to their AP IDs
+        self.last_red_count = 0
+        self.last_yellow_count = 0
+        self.last_blue_count = 0
 
     def make_gui(self) -> "type[kvui.GameManager]":
         return P1UI
@@ -103,44 +107,89 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
         yellow_count = dme.read_byte(addresses["yellow"])
         blue_count = dme.read_byte(addresses["blue"])
         
-        # Update counts (could be used for future features like dynamic location checking)
+        locations_to_check = []
+        
+        # Check Red Pikmin locations
+        if red_count > ctx.last_red_count:
+            for threshold in range(ctx.last_red_count + 1, red_count + 1):
+                location_name = f"Red Pikmin: {threshold}"
+                location_id = ctx.pikmin_location_ids.get(location_name)
+                if location_id and location_id not in ctx.checked_locations:
+                    locations_to_check.append(location_id)
+            ctx.last_red_count = red_count
+        
+        # Check Yellow Pikmin locations
+        if yellow_count > ctx.last_yellow_count:
+            for threshold in range(ctx.last_yellow_count + 1, yellow_count + 1):
+                location_name = f"Yellow Pikmin: {threshold}"
+                location_id = ctx.pikmin_location_ids.get(location_name)
+                if location_id and location_id not in ctx.checked_locations:
+                    locations_to_check.append(location_id)
+            ctx.last_yellow_count = yellow_count
+        
+        # Check Blue Pikmin locations
+        if blue_count > ctx.last_blue_count:
+            for threshold in range(ctx.last_blue_count + 1, blue_count + 1):
+                location_name = f"Blue Pikmin: {threshold}"
+                location_id = ctx.pikmin_location_ids.get(location_name)
+                if location_id and location_id not in ctx.checked_locations:
+                    locations_to_check.append(location_id)
+            ctx.last_blue_count = blue_count
+        
+        # Check all locations that should be checked
+        if locations_to_check:
+            ctx.locations_checked.update(locations_to_check)
+            await ctx.check_locations(locations_to_check)
+            logger.info(f"Checked {len(locations_to_check)} Pikmin locations")
+        
+        # Update counts for UI/logging
         ctx.pikmin_counts["red"] = red_count
         ctx.pikmin_counts["yellow"] = yellow_count
         ctx.pikmin_counts["blue"] = blue_count
         
     except Exception as e:
-        logger.debug(f"Error reading Pikmin counts: {e}")
+        logger.debug(f"Error handling Pikmin locations: {e}")
 
 
 async def handle_areas(ctx: P1Context, game: Game):
-    total = len(ctx.items_received)
+    # Count only real ship parts, not fillers (Carrot Pikpik)
+    ship_parts_count = 0
+    for item in ctx.items_received:
+        # Use lookup_in_data to get item name from ID
+        item_name = ctx.slot_data.get("item_names", {}).get(item.item, "") if hasattr(ctx, 'slot_data') and ctx.slot_data else ""
+        
+        # If not in slot_data, try a simpler approach: just count total - carrot pikpik count
+        # Since we know Carrot Pikpik has AP ID 71999
+        if item.item != 71999:  # 71999 is Carrot Pikpik
+            ship_parts_count += 1
+    
     total_required = 0
 
-    if total >= 30:  # lazy: this makes olimar succeed once all parts have been collected
+    if ship_parts_count >= 30:  # Olimar succeeds once all 30 parts have been collected
         total_required = 25
 
         if not ctx.finished_game:
             await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
-            # TODO is sending this msg guaranteed to succeed?
             ctx.finished_game = True
 
     areas = 0b00001
-    if total >= 1:
+    if ship_parts_count >= 1:
         areas += 0b00010
-    if total >= 5:
+    if ship_parts_count >= 5:
         areas += 0b00100
-    if total >= 12:
+    if ship_parts_count >= 12:
         areas += 0b01000
-    if total >= 29:
+    if ship_parts_count >= 29:
         areas += 0b10000
 
-    dme.write_byte(COUNT_TOTAL_PARTS[game], total)
+    dme.write_byte(COUNT_TOTAL_PARTS[game], ship_parts_count)
     dme.write_byte(COUNT_REQUIRED_PARTS[game], total_required)
     dme.write_byte(UNLOCKED_AREAS[game], areas)
 
 
 async def dolphin_loop(ctx: P1Context):
     game_version = None
+    pikmin_locations_initialized = False
 
     while not ctx.exit_event.is_set():
         try:
@@ -149,11 +198,39 @@ async def dolphin_loop(ctx: P1Context):
             pass
 
         ctx.watcher_event.clear()
+        
+        # Initialize Pikmin location IDs from server (do this once when connected)
+        if not pikmin_locations_initialized:
+            logger.debug(f"Trying to initialize Pikmin locations...")
+            
+            # Try to get Pikmin location info from slot_data
+            if hasattr(ctx, 'slot_data') and ctx.slot_data:
+                pikmin_locs = ctx.slot_data.get('pikmin_locations', {})
+                if pikmin_locs:
+                    ctx.pikmin_location_ids = pikmin_locs
+                    logger.info(f"✓ Loaded {len(ctx.pikmin_location_ids)} Pikmin locations from slot_data")
+                    pikmin_locations_initialized = True
+                else:
+                    logger.debug(f"No pikmin_locations in slot_data, using fallback...")
+            
+            # Fallback: Generate all possible Pikmin location IDs
+            if not pikmin_locations_initialized:
+                PIKMIN_ID_START = 71500
+                next_id = PIKMIN_ID_START
+                
+                # Generate all possible Pikmin location IDs (100 per color)
+                for color in ["Red", "Yellow", "Blue"]:
+                    for threshold in range(1, 101):
+                        location_name = f"{color} Pikmin: {threshold}"
+                        ctx.pikmin_location_ids[location_name] = next_id
+                        next_id += 1
+                
+                logger.info(f"✓ Generated {len(ctx.pikmin_location_ids)} Pikmin location IDs (fallback)")
+                pikmin_locations_initialized = True
 
         try:
-            # could maybe just do the else branch and check for game there
             if not dme.is_hooked():
-                dme.hook()  # silently fails?
+                dme.hook()
             if not dme.is_hooked():
                 ctx.dolphin_status_text = "Disconnected - Hook Failed"
                 continue
@@ -165,7 +242,6 @@ async def dolphin_loop(ctx: P1Context):
 
                 game_version = game
                 ctx.dolphin_status_text = f"Connected - {game.decode()}"
-                # TODO preferably check that the game is in a save file too
         except Exception as e:
             logger.error(e)
             logger.info("Trying to reconnect to Dolphin...")
@@ -176,7 +252,6 @@ async def dolphin_loop(ctx: P1Context):
         await handle_parts(ctx, game_version)
         await handle_pikmin_locations(ctx, game_version)
         await handle_areas(ctx, game_version)
-        # TODO if "DeathLink" in ctx.tags: handle that
 
 
 def run_client() -> None:
