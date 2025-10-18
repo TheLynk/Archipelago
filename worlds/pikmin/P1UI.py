@@ -1,7 +1,6 @@
+from kvui import GameManager, context_type, TooltipLabel
 from kivy.metrics import sp
 from kivy.uix.layout import Layout
-
-from kvui import GameManager, context_type, TooltipLabel
 
 
 class P1UI(GameManager):

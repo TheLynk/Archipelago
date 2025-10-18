@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Dict
+from BaseClasses import ItemClassification
 
 Area = Literal["The Impact Site", "The Forest of Hope", "The Forest Navel", "The Distant Spring", "The Final Trial"]
 Game = Literal[b"GPIJ01", b"GPIE01", b"GPIP01", b"R9IJ01", b"R9IE01", b"R9IP01", b"R9IK01"]
@@ -58,4 +59,14 @@ ALL_PARTS: dict[str, ShipPartData] = {
     "Positron Generator": ShipPartData(71427, mem(0x81241794, 0x81248D7C), 2, RequiredTypes(False, True, True), "The Impact Site"), # un12
     "Analog Computer": ShipPartData(71428, mem(0x81241874, 0x81248E5C), 2, RequiredTypes(True, False, True), "The Forest Navel"), # un13
     "UV Lamp": ShipPartData(71429, mem(0x81241954, 0x81248F3C), 2, RequiredTypes(False, True, False), "The Distant Spring"), # un14
+}
+
+
+# ====================================================================
+# FILLER ITEMS - Dummy items to balance locations and items during
+# randomizer generation. They don't affect gameplay on the emulator.
+# ====================================================================
+
+FILLER_ITEMS: Dict[str, None] = {
+    "Carrot Pikpik": None,
 }

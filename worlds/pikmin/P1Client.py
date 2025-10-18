@@ -17,6 +17,19 @@ UNLOCKED_AREAS: MemoryAddress = mem(0x803A2803, 0x8039D983)  # byte
 COUNT_TOTAL_PARTS: MemoryAddress = mem(0x812427FF, 0x81249DE7)  # byte
 COUNT_REQUIRED_PARTS: MemoryAddress = mem(0x81242803, 0x81249DEB)  # byte
 
+# Pikmin memory addresses for PAL version
+PIKMIN_ADDRESSES_PAL = {
+    "red": 0x803D6CF7,
+    "yellow": 0x803D6CFB,
+    "blue": 0x803D6CF3,
+}
+
+# TODO: Add NTSC-U and other versions
+PIKMIN_ADDRESSES = {
+    b"GPIP01": PIKMIN_ADDRESSES_PAL,  # PAL
+    b"GPIE01": PIKMIN_ADDRESSES_PAL,  # NTSC-U (verify addresses)
+}
+
 # COUNT_LOCAL_PARTS_1: MemoryAddress = mem(0x81242807, 0x81249DEF)  # byte
 # COUNT_LOCAL_PARTS_2: MemoryAddress = mem(0x81242808, 0x81249DF0)  # byte
 # COUNT_LOCAL_PARTS_3: MemoryAddress = mem(0x81242809, 0x81249DF1)  # byte
@@ -40,6 +53,9 @@ class P1Context(CommonContext):
     def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
         super().__init__(server_address, password)
         self.dolphin_status_text = "Disconnected"
+        
+        # Track Pikmin counts for location checking
+        self.pikmin_counts = {"red": 0, "yellow": 0, "blue": 0}
 
     def make_gui(self) -> "type[kvui.GameManager]":
         return P1UI
@@ -72,6 +88,29 @@ async def handle_parts(ctx: P1Context, game: Game):
     # and becomes 1/2, then we set it to 3, never noticing that it got collected (it can't ever get collected again)
     # currently doing neither so that parts on the ship == locations checked instead of items received or sth mixed
     # consider only updating the latter case (or both) in menus/paused once we can detect that
+
+
+async def handle_pikmin_locations(ctx: P1Context, game: Game):
+    """Handle Pikmin collection location checking"""
+    try:
+        if game not in PIKMIN_ADDRESSES:
+            return
+        
+        addresses = PIKMIN_ADDRESSES[game]
+        
+        # Read current Pikmin counts
+        red_count = dme.read_byte(addresses["red"])
+        yellow_count = dme.read_byte(addresses["yellow"])
+        blue_count = dme.read_byte(addresses["blue"])
+        
+        # Update counts (could be used for future features like dynamic location checking)
+        ctx.pikmin_counts["red"] = red_count
+        ctx.pikmin_counts["yellow"] = yellow_count
+        ctx.pikmin_counts["blue"] = blue_count
+        
+    except Exception as e:
+        logger.debug(f"Error reading Pikmin counts: {e}")
+
 
 async def handle_areas(ctx: P1Context, game: Game):
     total = len(ctx.items_received)
@@ -135,6 +174,7 @@ async def dolphin_loop(ctx: P1Context):
             continue
 
         await handle_parts(ctx, game_version)
+        await handle_pikmin_locations(ctx, game_version)
         await handle_areas(ctx, game_version)
         # TODO if "DeathLink" in ctx.tags: handle that
 
