@@ -113,7 +113,7 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
         if red_count > ctx.last_red_count:
             for threshold in range(ctx.last_red_count + 1, red_count + 1):
                 location_name = f"Red Pikmin: {threshold}"
-                location_id = ctx.pikmin_location_ids.get(location_name)
+                location_id = PIKMIN_LOCATIONS_MAP.get(location_name)
                 if location_id and location_id not in ctx.checked_locations:
                     locations_to_check.append(location_id)
             ctx.last_red_count = red_count
@@ -122,7 +122,7 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
         if yellow_count > ctx.last_yellow_count:
             for threshold in range(ctx.last_yellow_count + 1, yellow_count + 1):
                 location_name = f"Yellow Pikmin: {threshold}"
-                location_id = ctx.pikmin_location_ids.get(location_name)
+                location_id = PIKMIN_LOCATIONS_MAP.get(location_name)
                 if location_id and location_id not in ctx.checked_locations:
                     locations_to_check.append(location_id)
             ctx.last_yellow_count = yellow_count
@@ -131,7 +131,7 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
         if blue_count > ctx.last_blue_count:
             for threshold in range(ctx.last_blue_count + 1, blue_count + 1):
                 location_name = f"Blue Pikmin: {threshold}"
-                location_id = ctx.pikmin_location_ids.get(location_name)
+                location_id = PIKMIN_LOCATIONS_MAP.get(location_name)
                 if location_id and location_id not in ctx.checked_locations:
                     locations_to_check.append(location_id)
             ctx.last_blue_count = blue_count
@@ -199,34 +199,12 @@ async def dolphin_loop(ctx: P1Context):
 
         ctx.watcher_event.clear()
         
-        # Initialize Pikmin location IDs from server (do this once when connected)
+        # Initialize Pikmin location IDs from P1Data.py map
         if not pikmin_locations_initialized:
-            logger.debug(f"Trying to initialize Pikmin locations...")
-            
-            # Try to get Pikmin location info from slot_data
-            if hasattr(ctx, 'slot_data') and ctx.slot_data:
-                pikmin_locs = ctx.slot_data.get('pikmin_locations', {})
-                if pikmin_locs:
-                    ctx.pikmin_location_ids = pikmin_locs
-                    logger.info(f"✓ Loaded {len(ctx.pikmin_location_ids)} Pikmin locations from slot_data")
-                    pikmin_locations_initialized = True
-                else:
-                    logger.debug(f"No pikmin_locations in slot_data, using fallback...")
-            
-            # Fallback: Generate all possible Pikmin location IDs
-            if not pikmin_locations_initialized:
-                PIKMIN_ID_START = 71500
-                next_id = PIKMIN_ID_START
-                
-                # Generate all possible Pikmin location IDs (100 per color)
-                for color in ["Red", "Yellow", "Blue"]:
-                    for threshold in range(1, 101):
-                        location_name = f"{color} Pikmin: {threshold}"
-                        ctx.pikmin_location_ids[location_name] = next_id
-                        next_id += 1
-                
-                logger.info(f"✓ Generated {len(ctx.pikmin_location_ids)} Pikmin location IDs (fallback)")
-                pikmin_locations_initialized = True
+            # Use the complete map from P1Data.py
+            ctx.pikmin_location_ids = PIKMIN_LOCATIONS_MAP.copy()
+            logger.info(f"✓ Loaded {len(ctx.pikmin_location_ids)} Pikmin location IDs from P1Data")
+            pikmin_locations_initialized = True
 
         try:
             if not dme.is_hooked():

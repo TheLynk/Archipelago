@@ -45,9 +45,7 @@ class P1World(World):
     # Use AP ID 71999 for all Carrot Pikpik instances (they all share the same ID)
     item_name_to_id["Carrot Pikpik"] = 71999
 
-    location_name_to_id: ClassVar[dict[str, int]] = {
-        f"{name} Location": data.ap_id for name, data in ALL_PARTS.items()
-    }
+    location_name_to_id: ClassVar[dict[str, int]] = ALL_LOCATIONS.copy()
     
     # Will be populated with Pikmin locations if enabled
     pikmin_locations: dict[str, PikminLocationData] = {}
@@ -184,19 +182,6 @@ class P1World(World):
                 # Blue: need at least 5 ship parts
                 location.access_rule = lambda state, parts=5: \
                     state.has_from_list(ALL_PARTS.keys(), self.player, parts)
-
-    def fill_slot_data(self) -> dict:
-        """Send data to the client including Pikmin location IDs"""
-        pikmin_locations = {}
-        
-        # Map all Pikmin locations to their IDs
-        for loc_name, loc_id in self.location_name_to_id.items():
-            if "Pikmin:" in loc_name:
-                pikmin_locations[loc_name] = loc_id
-        
-        return {
-            "pikmin_locations": pikmin_locations,
-        }
 
 
 class P1Item(Item):

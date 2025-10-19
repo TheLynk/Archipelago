@@ -70,3 +70,35 @@ ALL_PARTS: dict[str, ShipPartData] = {
 FILLER_ITEMS: Dict[str, None] = {
     "Carrot Pikpik": None,
 }
+
+
+# ====================================================================
+# PIKMIN LOCATIONS - Complete mapping of all possible Pikmin locations
+# to their AP IDs. Generated sequentially starting from 71500.
+# Format: "Color Pikmin: threshold": AP_ID
+# ====================================================================
+
+PIKMIN_LOCATIONS_MAP: Dict[str, int] = {}
+
+# Generate all Pikmin location IDs (300 total: 100 per color)
+_next_id = 71500
+for _color in ["Red", "Yellow", "Blue"]:
+    for _threshold in range(1, 101):
+        _location_name = f"{_color} Pikmin: {_threshold}"
+        PIKMIN_LOCATIONS_MAP[_location_name] = _next_id
+        _next_id += 1
+
+# Clean up temporary variables
+del _next_id, _color, _threshold, _location_name
+
+
+# ====================================================================
+# ALL_LOCATIONS - Complete mapping of all locations (ship parts + pikmin)
+# ====================================================================
+
+ALL_LOCATIONS: Dict[str, int] = {
+    # Ship part locations
+    **{f"{name} Location": data.ap_id for name, data in ALL_PARTS.items()},
+    # Pikmin locations
+    **PIKMIN_LOCATIONS_MAP,
+}
