@@ -3,13 +3,15 @@ from Options import DefaultOnToggle, Toggle, Range, PerGameCommonOptions
 
 
 class EnablePikminLocations(Toggle):
-    """Enable generation of locations based on Pikmin collection thresholds"""
+    """Enable generation of locations based on Pikmin collection thresholds
+    Total Max Locations : 300"""
     display_name = "Enable Pikmin Collection Locations"
     default = False
 
 
 class RedPikminLocationsEnabled(Toggle):
-    """Enable Red Pikmin collection locations (no ship part requirements)"""
+    """Enable Red Pikmin collection locations (no ship part requirements)
+    Total Max Locations : 100"""
     display_name = "Red Pikmin Locations"
     default = True
 
@@ -23,7 +25,8 @@ class RedPikminInterval(Range):
 
 
 class YellowPikminLocationsEnabled(Toggle):
-    """Enable Yellow Pikmin collection locations (requires 1 ship part)"""
+    """Enable Yellow Pikmin collection locations (requires 1 ship part)
+    Total Max Locations : 100"""
     display_name = "Yellow Pikmin Locations"
     default = True
 
@@ -37,7 +40,8 @@ class YellowPikminInterval(Range):
 
 
 class BluePikminLocationsEnabled(Toggle):
-    """Enable Blue Pikmin collection locations (requires 5 ship parts)"""
+    """Enable Blue Pikmin collection locations (requires 5 ship parts)
+    Total Max Locations : 100"""
     display_name = "Blue Pikmin Locations"
     default = True
 
