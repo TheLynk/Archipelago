@@ -27,9 +27,9 @@ PIKMIN_ADDRESSES = {
         "blue": 0x803D6CF3,
     },
     b"GPIE01": {  # NTSC-U
-        "red": 0x803D6CF7,      # TODO: Verify NTSC-U addresses
-        "yellow": 0x803D6CFB,
-        "blue": 0x803D6CF3,
+        "red": 0x803D1E77,
+        "yellow": 0x803D1E7B,
+        "blue": 0x803D1E73,
     },
 }
 
