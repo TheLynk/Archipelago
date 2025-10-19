@@ -146,7 +146,7 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
         if locations_to_check:
             ctx.locations_checked.update(locations_to_check)
             await ctx.check_locations(locations_to_check)
-            logger.info(f"Checked {len(locations_to_check)} Pikmin locations")
+            #logger.info(f"Checked {len(locations_to_check)} Pikmin locations")
         
         # Update counts for UI/logging
         ctx.pikmin_counts["red"] = red_count
@@ -209,7 +209,7 @@ async def dolphin_loop(ctx: P1Context):
         if not pikmin_locations_initialized:
             # Use the complete map from P1Data.py
             ctx.pikmin_location_ids = PIKMIN_LOCATIONS_MAP.copy()
-            logger.info(f"✓ Loaded {len(ctx.pikmin_location_ids)} Pikmin location IDs from P1Data")
+            #logger.info(f"✓ Loaded {len(ctx.pikmin_location_ids)} Pikmin location IDs from P1Data")
             pikmin_locations_initialized = True
 
         try:
