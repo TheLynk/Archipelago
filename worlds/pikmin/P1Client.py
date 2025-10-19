@@ -24,10 +24,16 @@ PIKMIN_ADDRESSES_PAL = {
     "blue": 0x803D6CF3,
 }
 
+PIKMIN_ADDRESSES_NTSC_U = {
+    "red": 0x803D1E77,
+    "yellow": 0x803D1E7B,
+    "blue": 0x803D1E73,
+}
+
 # TODO: Add NTSC-U and other versions
 PIKMIN_ADDRESSES = {
     b"GPIP01": PIKMIN_ADDRESSES_PAL,  # PAL
-    b"GPIE01": PIKMIN_ADDRESSES_PAL,  # NTSC-U (verify addresses)
+    b"GPIE01": PIKMIN_ADDRESSES_NTSC_U,  # NTSC-U (verify addresses)
 }
 
 # COUNT_LOCAL_PARTS_1: MemoryAddress = mem(0x81242807, 0x81249DEF)  # byte
