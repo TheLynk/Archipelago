@@ -150,6 +150,15 @@ class P1World(World):
     def set_rules(self) -> None:
         """Method for setting the rules on the World's regions and locations."""
 
+        # alternative way of implementing local locations but this leads to randomization failures relatively often,
+        # probably due to Pikmin having so few items compared to other games, therefore sometimes not having any ship
+        # parts left that can be placed into these locations
+        # if self.options.first_part_is_local:
+        #     self.get_location("Main Engine Location").item_rule = lambda item: item.name in ALL_PARTS.keys()
+        #
+        # if self.options.last_part_is_local:
+        #     self.get_location("Secret Safe Location").item_rule = lambda item: item.name in ALL_PARTS.keys()
+
         # Set rules for standard ship part locations
         for name, data in ALL_PARTS.items():
             self.get_location(f"{name} Location").access_rule = lambda state, data=data: \

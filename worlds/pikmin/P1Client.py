@@ -165,7 +165,7 @@ async def handle_areas(ctx: P1Context, game: Game):
     
     total_required = 0
 
-    if ship_parts_count >= 30:  # Olimar succeeds once all 30 parts have been collected
+    if ship_parts_count >= 30:  # lazy: this makes olimar succeed once all parts have been collected
         total_required = 25
 
         if not ctx.finished_game:
@@ -207,8 +207,9 @@ async def dolphin_loop(ctx: P1Context):
             pikmin_locations_initialized = True
 
         try:
+            # could maybe just do the else branch and check for game there
             if not dme.is_hooked():
-                dme.hook()
+                dme.hook() # silently fails?
             if not dme.is_hooked():
                 ctx.dolphin_status_text = "Disconnected - Hook Failed"
                 continue
@@ -220,6 +221,7 @@ async def dolphin_loop(ctx: P1Context):
 
                 game_version = game
                 ctx.dolphin_status_text = f"Connected - {game.decode()}"
+                # TODO preferably check that the game is in a save file too
         except Exception as e:
             logger.error(e)
             logger.info("Trying to reconnect to Dolphin...")
@@ -230,6 +232,7 @@ async def dolphin_loop(ctx: P1Context):
         await handle_parts(ctx, game_version)
         await handle_pikmin_locations(ctx, game_version)
         await handle_areas(ctx, game_version)
+        # TODO if "DeathLink" in ctx.tags: handle that
 
 
 def run_client() -> None:
