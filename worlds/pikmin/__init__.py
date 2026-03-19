@@ -45,8 +45,15 @@ class P1World(World):
     # Use AP ID 71999 for all Carrot Pikpik instances (they all share the same ID)
     item_name_to_id["Carrot Pikpik"] = 71999
 
-    location_name_to_id: ClassVar[dict[str, int]] = ALL_LOCATIONS.copy()
-    
+    # ALL 300 possible Pikmin locations are registered at class level, exactly like PowerWash Simulator
+    # registers all its percentsanity locations. The server knows all IDs but only the locations
+    # actually created in create_regions() (based on player options/interval) are active in the run.
+    # The client must filter using ctx.missing_locations to only send IDs the server expects.
+    location_name_to_id: ClassVar[dict[str, int]] = {
+        **ALL_LOCATIONS,
+        **PIKMIN_LOCATIONS_MAP,
+    }
+
     # Will be populated with Pikmin locations if enabled
     pikmin_locations: dict[str, PikminLocationData] = {}
 
@@ -94,8 +101,6 @@ class P1World(World):
     def _create_pikmin_locations(self, regions: dict[str, Region]) -> None:
         """Generate and add Pikmin collection locations to regions"""
         generator = PikminLocationGenerator()
-        
-        # Generate locations based on options
         self.pikmin_locations = generator.generate_locations(
             enable=self.options.enable_pikmin_locations.value,
             red_enabled=self.options.red_pikmin_locations_enabled.value,
@@ -105,16 +110,14 @@ class P1World(World):
             blue_enabled=self.options.blue_pikmin_locations_enabled.value,
             blue_interval=self.options.blue_pikmin_interval.value,
         )
-        
-        # Add all generated locations to location_name_to_id
-        for loc_name, loc_data in self.pikmin_locations.items():
-            self.location_name_to_id[loc_name] = loc_data.ap_id
-        
-        # Place locations in The Impact Site region (they're checked via memory)
+
         impact_site = regions["The Impact Site"]
-        for loc_name, loc_data in self.pikmin_locations.items():
+        for loc_name in self.pikmin_locations:
+            # Always use the ID from PIKMIN_LOCATIONS_MAP (the ClassVar source of truth),
+            # NOT the sequential ID from PikminLocationGenerator which won't match.
+            loc_id = PIKMIN_LOCATIONS_MAP[loc_name]
             impact_site.locations.append(
-                P1Location(self.player, loc_name, loc_data.ap_id, impact_site)
+                P1Location(self.player, loc_name, loc_id, impact_site)
             )
 
     def create_items(self) -> None:
@@ -135,9 +138,11 @@ class P1World(World):
             self.get_location("Secret Safe Location").place_locked_item(
                 items.pop(self.multiworld.random.randint(0, len(items) - 1)))
 
-        # Calculate how many filler items are needed
-        # Count total locations in this world
-        total_locations = len(self.location_name_to_id)
+        # Calculate how many filler items are needed based on ACTUAL created locations,
+        # not location_name_to_id (which contains all 300 potential Pikmin locations).
+        ship_part_locations = len(ALL_PARTS)  # always 30
+        pikmin_location_count = len(self.pikmin_locations) if self.options.enable_pikmin_locations else 0
+        total_locations = ship_part_locations + pikmin_location_count
         total_items = len(items)
         fillers_needed = max(0, total_locations - total_items)
         

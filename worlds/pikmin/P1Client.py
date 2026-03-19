@@ -105,54 +105,58 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
     try:
         if game not in PIKMIN_ADDRESSES:
             return
-        
+
         addresses = PIKMIN_ADDRESSES[game]
-        
+
         # Read current Pikmin counts
         red_count = dme.read_byte(addresses["red"])
         yellow_count = dme.read_byte(addresses["yellow"])
         blue_count = dme.read_byte(addresses["blue"])
-        
+
+        # Only act if counts have changed since last tick
+        if (red_count == ctx.last_red_count
+                and yellow_count == ctx.last_yellow_count
+                and blue_count == ctx.last_blue_count):
+            return
+
+        ctx.last_red_count = red_count
+        ctx.last_yellow_count = yellow_count
+        ctx.last_blue_count = blue_count
+
+        current_counts = {
+            "red": red_count,
+            "yellow": yellow_count,
+            "blue": blue_count,
+        }
+
+        # Build reverse map once: ap_id -> (color, threshold)
+        id_to_pikmin: dict[int, tuple[str, int]] = {}
+        for loc_name, loc_id in PIKMIN_LOCATIONS_MAP.items():
+            parts = loc_name.split(" Pikmin: ")
+            if len(parts) == 2:
+                id_to_pikmin[loc_id] = (parts[0].lower(), int(parts[1]))
+
         locations_to_check = []
-        
-        # Check Red Pikmin locations
-        if red_count > ctx.last_red_count:
-            for threshold in range(ctx.last_red_count + 1, red_count + 1):
-                location_name = f"Red Pikmin: {threshold}"
-                location_id = PIKMIN_LOCATIONS_MAP.get(location_name)
-                if location_id and location_id not in ctx.checked_locations:
-                    locations_to_check.append(location_id)
-            ctx.last_red_count = red_count
-        
-        # Check Yellow Pikmin locations
-        if yellow_count > ctx.last_yellow_count:
-            for threshold in range(ctx.last_yellow_count + 1, yellow_count + 1):
-                location_name = f"Yellow Pikmin: {threshold}"
-                location_id = PIKMIN_LOCATIONS_MAP.get(location_name)
-                if location_id and location_id not in ctx.checked_locations:
-                    locations_to_check.append(location_id)
-            ctx.last_yellow_count = yellow_count
-        
-        # Check Blue Pikmin locations
-        if blue_count > ctx.last_blue_count:
-            for threshold in range(ctx.last_blue_count + 1, blue_count + 1):
-                location_name = f"Blue Pikmin: {threshold}"
-                location_id = PIKMIN_LOCATIONS_MAP.get(location_name)
-                if location_id and location_id not in ctx.checked_locations:
-                    locations_to_check.append(location_id)
-            ctx.last_blue_count = blue_count
-        
-        # Check all locations that should be checked
+
+        # Iterate ONLY over locations the SERVER registered for this player.
+        # ctx.missing_locations is the authoritative list — it only contains IDs
+        # actually created during generation (respecting the interval).
+        # ctx.check_locations() internally skips already-checked locations.
+        for loc_id in ctx.missing_locations:
+            if loc_id not in id_to_pikmin:
+                continue
+            color, threshold = id_to_pikmin[loc_id]
+            if current_counts[color] >= threshold:
+                locations_to_check.append(loc_id)
+
         if locations_to_check:
-            ctx.locations_checked.update(locations_to_check)
             await ctx.check_locations(locations_to_check)
-            #logger.info(f"Checked {len(locations_to_check)} Pikmin locations")
-        
+
         # Update counts for UI/logging
         ctx.pikmin_counts["red"] = red_count
         ctx.pikmin_counts["yellow"] = yellow_count
         ctx.pikmin_counts["blue"] = blue_count
-        
+
     except Exception as e:
         logger.debug(f"Error handling Pikmin locations: {e}")
 
@@ -195,7 +199,6 @@ async def handle_areas(ctx: P1Context, game: Game):
 
 async def dolphin_loop(ctx: P1Context):
     game_version = None
-    pikmin_locations_initialized = False
 
     while not ctx.exit_event.is_set():
         try:
@@ -204,13 +207,6 @@ async def dolphin_loop(ctx: P1Context):
             pass
 
         ctx.watcher_event.clear()
-        
-        # Initialize Pikmin location IDs from P1Data.py map
-        if not pikmin_locations_initialized:
-            # Use the complete map from P1Data.py
-            ctx.pikmin_location_ids = PIKMIN_LOCATIONS_MAP.copy()
-            #logger.info(f"✓ Loaded {len(ctx.pikmin_location_ids)} Pikmin location IDs from P1Data")
-            pikmin_locations_initialized = True
 
         try:
             # could maybe just do the else branch and check for game there

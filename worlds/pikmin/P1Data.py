@@ -93,12 +93,15 @@ del _next_id, _color, _threshold, _location_name
 
 
 # ====================================================================
-# ALL_LOCATIONS - Complete mapping of all locations (ship parts + pikmin)
+# ALL_LOCATIONS - Complete mapping of ship part locations only.
+# Pikmin locations are added dynamically at generation time via
+# location_name_to_id in P1World, based on player options.
+# Including all 300 Pikmin locations here unconditionally caused a
+# checksum mismatch because Archipelago hashes location_name_to_id
+# at class definition time, but the actual locations created in
+# create_regions() depend on options — leading to a corrupted multidata.
 # ====================================================================
 
 ALL_LOCATIONS: Dict[str, int] = {
-    # Ship part locations
-    **{f"{name} Location": data.ap_id for name, data in ALL_PARTS.items()},
-    # Pikmin locations
-    **PIKMIN_LOCATIONS_MAP,
+    f"{name} Location": data.ap_id for name, data in ALL_PARTS.items()
 }
