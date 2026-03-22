@@ -65,10 +65,139 @@ class FirstPartIsLocal(DefaultOnToggle):
 class LastPartIsLocal(DefaultOnToggle):
     """
     Force collecting the Secret Safe to give a ship part.
-    Since you complete Pikmin 1 by collecting the last ship part, it could be give a required item for another player.
+    Since you complete Pikmin 1 by collecting the last ship part, it could give a required item for another player.
     This option prevents this, so other players won't ever need to wait for Pikmin to finish.
     """
     display_name = "Local Last Part"
+
+
+# ====================================================================
+# FILLER WEIGHTS
+# Each option controls the weight (likelihood) of that filler item
+# appearing in the item pool. A weight of 0 disables the item entirely.
+# ====================================================================
+
+class TrapPercentage(Range):
+    """Percentage of filler items that are traps. Default is 0%."""
+    display_name = "Trap Percentage"
+    range_start = 0
+    range_end = 100
+    default = 0
+
+
+class Weight1RedPikmin(Range):
+    """Weight for 1 Red Pikmin filler items."""
+    display_name = "1 Red Pikmin Weight"
+    range_start = 0
+    range_end = 100
+    default = 10
+
+
+class Count5RedPikmin(Range):
+    """Number of 5 Red Pikmin filler items to include in the pool (0-5)."""
+    display_name = "5 Red Pikmin Count"
+    range_start = 0
+    range_end = 5
+    default = 3
+
+
+class Count10RedPikmin(Range):
+    """Number of 10 Red Pikmin filler items to include in the pool (0-5)."""
+    display_name = "10 Red Pikmin Count"
+    range_start = 0
+    range_end = 5
+    default = 2
+
+
+class Include25RedPikmin(Toggle):
+    """Include one 25 Red Pikmin filler item in the pool."""
+    display_name = "Include 25 Red Pikmin"
+    default = False
+
+
+class Weight1YellowPikmin(Range):
+    """Weight for 1 Yellow Pikmin filler items."""
+    display_name = "1 Yellow Pikmin Weight"
+    range_start = 0
+    range_end = 100
+    default = 10
+
+
+class Count5YellowPikmin(Range):
+    """Number of 5 Yellow Pikmin filler items to include in the pool (0-5)."""
+    display_name = "5 Yellow Pikmin Count"
+    range_start = 0
+    range_end = 5
+    default = 3
+
+
+class Count10YellowPikmin(Range):
+    """Number of 10 Yellow Pikmin filler items to include in the pool (0-5)."""
+    display_name = "10 Yellow Pikmin Count"
+    range_start = 0
+    range_end = 5
+    default = 2
+
+
+class Include25YellowPikmin(Toggle):
+    """Include one 25 Yellow Pikmin filler item in the pool."""
+    display_name = "Include 25 Yellow Pikmin"
+    default = False
+
+
+class Weight1BluePikmin(Range):
+    """Weight for 1 Blue Pikmin filler items."""
+    display_name = "1 Blue Pikmin Weight"
+    range_start = 0
+    range_end = 100
+    default = 10
+
+
+class Count5BluePikmin(Range):
+    """Number of 5 Blue Pikmin filler items to include in the pool (0-5)."""
+    display_name = "5 Blue Pikmin Count"
+    range_start = 0
+    range_end = 5
+    default = 3
+
+
+class Count10BluePikmin(Range):
+    """Number of 10 Blue Pikmin filler items to include in the pool (0-5)."""
+    display_name = "10 Blue Pikmin Count"
+    range_start = 0
+    range_end = 5
+    default = 2
+
+
+class Include25BluePikmin(Toggle):
+    """Include one 25 Blue Pikmin filler item in the pool."""
+    display_name = "Include 25 Blue Pikmin"
+    default = False
+
+
+# Trap weights (traps not yet implemented, weights reserved for future use)
+class WeightTimeTrap(Range):
+    """Weight for Time Trap items (reduces remaining day time)."""
+    display_name = "Time Trap Weight"
+    range_start = 0
+    range_end = 100
+    default = 0
+
+
+class WeightEndDayTrap(Range):
+    """Weight for End Day Trap items (forces end of current day)."""
+    display_name = "End Day Trap Weight"
+    range_start = 0
+    range_end = 100
+    default = 0
+
+
+class WeightDamageTrap(Range):
+    """Weight for Damage Trap items (deals damage to Pikmin)."""
+    display_name = "Damage Trap Weight"
+    range_start = 0
+    range_end = 100
+    default = 0
 
 
 @dataclass
@@ -82,3 +211,19 @@ class P1Options(PerGameCommonOptions):
     blue_pikmin_interval: BluePikminInterval
     first_part_is_local: FirstPartIsLocal
     last_part_is_local: LastPartIsLocal
+    trap_percentage: TrapPercentage
+    weight_1_red_pikmin: Weight1RedPikmin
+    count_5_red_pikmin: Count5RedPikmin
+    count_10_red_pikmin: Count10RedPikmin
+    include_25_red_pikmin: Include25RedPikmin
+    weight_1_yellow_pikmin: Weight1YellowPikmin
+    count_5_yellow_pikmin: Count5YellowPikmin
+    count_10_yellow_pikmin: Count10YellowPikmin
+    include_25_yellow_pikmin: Include25YellowPikmin
+    weight_1_blue_pikmin: Weight1BluePikmin
+    count_5_blue_pikmin: Count5BluePikmin
+    count_10_blue_pikmin: Count10BluePikmin
+    include_25_blue_pikmin: Include25BluePikmin
+    weight_time_trap: WeightTimeTrap
+    weight_end_day_trap: WeightEndDayTrap
+    weight_damage_trap: WeightDamageTrap

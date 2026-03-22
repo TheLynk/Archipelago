@@ -63,12 +63,50 @@ ALL_PARTS: dict[str, ShipPartData] = {
 
 
 # ====================================================================
-# FILLER ITEMS - Dummy items to balance locations and items during
-# randomizer generation. They don't affect gameplay on the emulator.
+# ONION ADDRESSES - Pikmin count stored in each Onion (PAL)
 # ====================================================================
 
-FILLER_ITEMS: Dict[str, None] = {
-    "Carrot Pikpik": None,
+ONION_ADDRESSES: dict[str, MemoryAddress] = {
+    "red":    mem(0x803D6D27, 0x803D1EA7),  # PAL / NTSC-U (a confirmer NTSC-U)
+    "yellow": mem(0x803D6D2B, 0x803D1EAB),
+    "blue":   mem(0x803D6D23, 0x803D1EA3),
+}
+
+
+# ====================================================================
+# FILLER ITEMS - Items that interact with the game
+# ====================================================================
+
+FILLER_ITEMS: dict[str, int] = {
+    # Pikmin bonus items — spawn directly in the corresponding Onion
+    "Red Pikmin":      71800,
+    "5 Red Pikmin":    71801,
+    "10 Red Pikmin":   71802,
+    "25 Red Pikmin":   71803,
+    "Yellow Pikmin":   71804,
+    "5 Yellow Pikmin": 71805,
+    "10 Yellow Pikmin":71806,
+    "25 Yellow Pikmin":71807,
+    "Blue Pikmin":     71808,
+    "5 Blue Pikmin":   71809,
+    "10 Blue Pikmin":  71810,
+    "25 Blue Pikmin":  71811,
+}
+
+# Map item name -> (color, count) for client-side handling
+PIKMIN_BONUS_ITEMS: dict[str, tuple[str, int]] = {
+    "Red Pikmin":       ("red",    1),
+    "5 Red Pikmin":     ("red",    5),
+    "10 Red Pikmin":    ("red",   10),
+    "25 Red Pikmin":    ("red",   25),
+    "Yellow Pikmin":    ("yellow", 1),
+    "5 Yellow Pikmin":  ("yellow", 5),
+    "10 Yellow Pikmin": ("yellow",10),
+    "25 Yellow Pikmin": ("yellow",25),
+    "Blue Pikmin":      ("blue",   1),
+    "5 Blue Pikmin":    ("blue",   5),
+    "10 Blue Pikmin":   ("blue",  10),
+    "25 Blue Pikmin":   ("blue",  25),
 }
 
 
@@ -93,15 +131,12 @@ del _next_id, _color, _threshold, _location_name
 
 
 # ====================================================================
-# ALL_LOCATIONS - Complete mapping of ship part locations only.
-# Pikmin locations are added dynamically at generation time via
-# location_name_to_id in P1World, based on player options.
-# Including all 300 Pikmin locations here unconditionally caused a
-# checksum mismatch because Archipelago hashes location_name_to_id
-# at class definition time, but the actual locations created in
-# create_regions() depend on options — leading to a corrupted multidata.
+# ALL_LOCATIONS - Complete mapping of all locations (ship parts + pikmin)
 # ====================================================================
 
 ALL_LOCATIONS: Dict[str, int] = {
-    f"{name} Location": data.ap_id for name, data in ALL_PARTS.items()
+    # Ship part locations
+    **{f"{name} Location": data.ap_id for name, data in ALL_PARTS.items()},
+    # Pikmin locations
+    **PIKMIN_LOCATIONS_MAP,
 }

@@ -2,7 +2,7 @@ from typing import ClassVar, Callable
 
 from BaseClasses import Item, ItemClassification, Location, Region, CollectionState
 from worlds.AutoWorld import World
-from worlds.LauncherComponents import launch_subprocess, Type, components, Component
+from worlds.LauncherComponents import launch_subprocess, Type, components, icon_paths, Component
 from .P1Data import *
 from .P1Macros import *
 from .P1Options import P1Options
@@ -21,8 +21,10 @@ components.append(
         "Pikmin Client",
         func=run_client,
         component_type=Type.CLIENT,
+        icon="Pikmin",
     )
 )
+icon_paths["Pikmin"] = "ap:worlds.pikmin/assets/icon.png"
 
 
 class P1World(World):
@@ -38,12 +40,9 @@ class P1World(World):
     origin_region_name: str = "The Impact Site"
 
     item_name_to_id: ClassVar[dict[str, int]] = {
-        name: data.ap_id for name, data in ALL_PARTS.items()
+        **{name: data.ap_id for name, data in ALL_PARTS.items()},
+        **FILLER_ITEMS,
     }
-    
-    # Add filler item to the item table
-    # Use AP ID 71999 for all Carrot Pikpik instances (they all share the same ID)
-    item_name_to_id["Carrot Pikpik"] = 71999
 
     # ALL 300 possible Pikmin locations are registered at class level, exactly like PowerWash Simulator
     # registers all its percentsanity locations. The server knows all IDs but only the locations
@@ -58,8 +57,8 @@ class P1World(World):
     pikmin_locations: dict[str, PikminLocationData] = {}
 
     def create_item(self, name: str) -> "P1Item":
-        if name == "Carrot Pikpik":
-            return P1Item(name, ItemClassification.filler, 71999, self.player)
+        if name in FILLER_ITEMS:
+            return P1Item(name, ItemClassification.filler, FILLER_ITEMS[name], self.player)
         return P1Item(name, ItemClassification.progression, ALL_PARTS[name].ap_id, self.player)
 
     def create_event(self, name: str) -> "P1Item":
@@ -138,19 +137,65 @@ class P1World(World):
             self.get_location("Secret Safe Location").place_locked_item(
                 items.pop(self.multiworld.random.randint(0, len(items) - 1)))
 
-        # Calculate how many filler items are needed based on ACTUAL created locations,
-        # not location_name_to_id (which contains all 300 potential Pikmin locations).
+        # Calculate how many filler items are needed based on ACTUAL created locations
         ship_part_locations = len(ALL_PARTS)  # always 30
         pikmin_location_count = len(self.pikmin_locations) if self.options.enable_pikmin_locations else 0
         total_locations = ship_part_locations + pikmin_location_count
         total_items = len(items)
         fillers_needed = max(0, total_locations - total_items)
-        
-        # Add filler items to balance locations and items
-        for _ in range(fillers_needed):
-            items.append(P1Item("Carrot Pikpik", ItemClassification.filler, 71999, self.player))
+
+        # Build filler pool based on distribution option
+        filler_pool = self._build_filler_pool(fillers_needed)
+        for name in filler_pool:
+            items.append(self.create_item(name))
 
         self.multiworld.itempool += items
+
+    def _build_filler_pool(self, count: int) -> list[str]:
+        """Build a list of filler item names based on weight options."""
+        if count == 0:
+            return []
+
+        # Items added exactly once if enabled (not weighted)
+        fixed_items: list[str] = []
+        if self.options.include_25_red_pikmin:
+            fixed_items.append("25 Red Pikmin")
+        if self.options.include_25_yellow_pikmin:
+            fixed_items.append("25 Yellow Pikmin")
+        if self.options.include_25_blue_pikmin:
+            fixed_items.append("25 Blue Pikmin")
+        # 10 Pikmin items added N times (count option, max 5)
+        fixed_items += ["10 Red Pikmin"] * self.options.count_10_red_pikmin.value
+        fixed_items += ["10 Yellow Pikmin"] * self.options.count_10_yellow_pikmin.value
+        fixed_items += ["10 Blue Pikmin"] * self.options.count_10_blue_pikmin.value
+        # 5 Pikmin items added N times (count option, max 5)
+        fixed_items += ["5 Red Pikmin"] * self.options.count_5_red_pikmin.value
+        fixed_items += ["5 Yellow Pikmin"] * self.options.count_5_yellow_pikmin.value
+        fixed_items += ["5 Blue Pikmin"] * self.options.count_5_blue_pikmin.value
+
+        # Remaining slots filled by weighted pool
+        remaining = max(0, count - len(fixed_items))
+
+        weights: dict[str, int] = {
+            "Red Pikmin":       self.options.weight_1_red_pikmin.value,
+            "Yellow Pikmin":    self.options.weight_1_yellow_pikmin.value,
+            "Blue Pikmin":      self.options.weight_1_blue_pikmin.value,
+        }
+
+        weights = {k: v for k, v in weights.items() if v > 0}
+        if not weights:
+            weights = {"Red Pikmin": 1, "Yellow Pikmin": 1, "Blue Pikmin": 1}
+
+        trap_count = int(remaining * self.options.trap_percentage.value / 100)
+        filler_count = remaining - trap_count
+
+        names = list(weights.keys())
+        ws = list(weights.values())
+
+        result = fixed_items + self.multiworld.random.choices(names, weights=ws, k=filler_count)
+        # result += ["Time Trap"] * trap_count  # uncomment when traps are added
+
+        return result
 
     def set_rules(self) -> None:
         """Method for setting the rules on the World's regions and locations."""
