@@ -1,3 +1,4 @@
+import logging
 from typing import ClassVar, Callable
 
 from BaseClasses import Item, ItemClassification, Location, Region, CollectionState
@@ -8,6 +9,8 @@ from .P1Macros import *
 from .P1Options import P1Options
 from .P1Web import P1Web
 from .P1PikminLocations import PikminLocationGenerator, PikminLocationData
+
+logger = logging.getLogger(__name__)
 
 
 def run_client() -> None:
@@ -78,6 +81,7 @@ class P1World(World):
         location.place_locked_item(self.create_event(item))
 
     def create_regions(self) -> None:
+        logger.warning(f"[GENERATION] create_regions called, day_cycle_mode option = {self.options.day_cycle_mode.value}")
         menu = Region("Area Select", self.player, self.multiworld)
         self.multiworld.regions.append(menu)
 
@@ -98,7 +102,7 @@ class P1World(World):
         for name, data in ALL_PARTS.items():
             regions[data.area].locations.append(
                 P1Location(self.player, f"{name} Location", data.ap_id, regions[data.area]))
-        
+
         # Create Pikmin collection locations if enabled
         if self.options.enable_pikmin_locations:
             self._create_pikmin_locations(regions)
@@ -234,7 +238,7 @@ class P1World(World):
         """Set access rules for Pikmin collection locations"""
         for loc_name, loc_data in self.pikmin_locations.items():
             location = self.get_location(loc_name)
-            
+
             # Create a rule based on required ship parts
             if loc_data.required_ship_parts == 0:
                 # Red: no requirements
@@ -248,14 +252,15 @@ class P1World(World):
                 location.access_rule = lambda state, parts=5: \
                     state.has_from_list(ALL_PARTS.keys(), self.player, parts)
 
-
     def fill_slot_data(self) -> dict:
-        return {
+        data = {
             "day_cycle_mode":  self.options.day_cycle_mode.value,
             "day_cycle_min":   self.options.day_cycle_min.value,
             "day_cycle_max":   self.options.day_cycle_max.value,
             "day_cycle_fixed": self.options.day_cycle_fixed.value,
         }
+        logger.warning(f"[GENERATION] fill_slot_data called: {data}")
+        return data
 
 
 class P1Item(Item):

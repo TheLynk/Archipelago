@@ -205,9 +205,11 @@ class P1Context(CommonContext):
 
         await self.send_connect()
 
-    async def on_package(self, cmd: str, args: dict) -> None:
-        await super().on_package(cmd, args)
+    def on_package(self, cmd: str, args: dict) -> None:
+        super().on_package(cmd, args)
         if cmd == "Connected":
+            self.slot_data = args.get("slot_data", {})
+            logger.info(f"[DEBUG] slot_data reçu: {self.slot_data}")
             self.load_applied()
 
 
