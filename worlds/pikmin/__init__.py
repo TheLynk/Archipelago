@@ -44,6 +44,12 @@ class P1World(World):
         **FILLER_ITEMS,
     }
 
+    # Item name groups allow players to use !hint Ship Part to get a hint
+    # for a random ship part instead of having to name each one individually
+    item_name_groups: ClassVar[dict[str, set[str]]] = {
+        "Ship Part": set(ALL_PARTS.keys()),
+    }
+
     # ALL 300 possible Pikmin locations are registered at class level, exactly like PowerWash Simulator
     # registers all its percentsanity locations. The server knows all IDs but only the locations
     # actually created in create_regions() (based on player options/interval) are active in the run.
@@ -241,6 +247,15 @@ class P1World(World):
                 # Blue: need at least 5 ship parts
                 location.access_rule = lambda state, parts=5: \
                     state.has_from_list(ALL_PARTS.keys(), self.player, parts)
+
+
+    def fill_slot_data(self) -> dict:
+        return {
+            "day_cycle_mode":  self.options.day_cycle_mode.value,
+            "day_cycle_min":   self.options.day_cycle_min.value,
+            "day_cycle_max":   self.options.day_cycle_max.value,
+            "day_cycle_fixed": self.options.day_cycle_fixed.value,
+        }
 
 
 class P1Item(Item):

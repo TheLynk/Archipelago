@@ -16,6 +16,7 @@ UNLOCKED_AREAS: MemoryAddress = mem(0x803A2803, 0x8039D983)  # byte
 COUNT_TOTAL_PARTS: MemoryAddress = mem(0x812427FF, 0x81249DE7)  # byte
 COUNT_REQUIRED_PARTS: MemoryAddress = mem(0x81242803, 0x81249DEB)  # byte
 TIME_HOURS: MemoryAddress = mem(0x803A2930, 0x803A2930)  # int, 7=morning, >=19=end of day
+DAY_NUMBER: MemoryAddress = mem(0x803A2937, 0x803A2937)  # byte, current day number
 TIME_HOURS: MemoryAddress = mem(0x803A2930, 0x803A2930)  # int, 7=morning, >=19=end of day
 
 
@@ -576,8 +577,49 @@ async def dolphin_loop(ctx: P1Context):
         await handle_parts(ctx, game_version)
         await handle_pikmin_locations(ctx, game_version)
         await handle_pikmin_items(ctx, game_version)
+        await handle_day_cycle(ctx, game_version)
         await handle_areas(ctx, game_version)
         # TODO if "DeathLink" in ctx.tags: handle that
+
+
+async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
+    """Manage the day counter based on the player's day cycle option."""
+    slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+    mode  = slot_data.get("day_cycle_mode",  0)  # 0=normal, 1=custom_range, 2=eternal
+    d_min = slot_data.get("day_cycle_min",   2)
+    d_max = slot_data.get("day_cycle_max",  29)
+    fixed = slot_data.get("day_cycle_fixed",  2)
+
+    try:
+        day = dme.read_byte(DAY_NUMBER[game])
+    except Exception:
+        return
+
+    if ctx.debug_mode:
+        logger.info(f"[DEBUG] Day cycle: day={day} mode={mode}")
+
+    new_day = day
+
+    if mode == 0:  # normal: force 2 if day is 1 or above 29
+        if day == 1 or day > 29:
+            new_day = 2
+
+    elif mode == 1:  # custom range
+        low  = max(2, min(d_min, d_max))
+        high = max(low, d_max)
+        if day < low:
+            new_day = low
+        elif day > high:
+            new_day = low
+
+    elif mode == 2:  # eternal — lock on fixed value
+        new_day = max(2, min(fixed, 29))
+
+    if new_day != day:
+        try:
+            dme.write_byte(DAY_NUMBER[game], new_day)
+        except Exception:
+            pass
 
 
 def run_client() -> None:

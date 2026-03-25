@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from Options import DefaultOnToggle, Toggle, Range, PerGameCommonOptions
+from Options import DefaultOnToggle, Toggle, Range, Choice, PerGameCommonOptions
 
 
 class EnablePikminLocations(Toggle):
@@ -200,6 +200,45 @@ class WeightDamageTrap(Range):
     default = 0
 
 
+class DayCycleMode(Choice):
+    """
+    Controls how the day counter is managed.
+
+    normal       : Day cycles between 2 and 29 (default Pikmin behavior without cheats)
+    custom_range : Day cycles between two values chosen by the player
+    eternal      : Day is locked on a fixed value chosen by the player
+    """
+    display_name = "Day Cycle Mode"
+    option_normal       = 0
+    option_custom_range = 1
+    option_eternal      = 2
+    default = 0
+
+
+class DayCycleMin(Range):
+    """Minimum day number for custom range mode. Only used when Day Cycle Mode is custom_range."""
+    display_name = "Day Cycle Minimum"
+    range_start = 2
+    range_end = 29
+    default = 2
+
+
+class DayCycleMax(Range):
+    """Maximum day number for custom range mode. Only used when Day Cycle Mode is custom_range."""
+    display_name = "Day Cycle Maximum"
+    range_start = 1
+    range_end = 29
+    default = 29
+
+
+class DayCycleFixed(Range):
+    """Fixed day number for eternal mode. Only used when Day Cycle Mode is eternal."""
+    display_name = "Day Cycle Fixed"
+    range_start = 2
+    range_end = 29
+    default = 2
+
+
 @dataclass
 class P1Options(PerGameCommonOptions):
     enable_pikmin_locations: EnablePikminLocations
@@ -227,3 +266,7 @@ class P1Options(PerGameCommonOptions):
     weight_time_trap: WeightTimeTrap
     weight_end_day_trap: WeightEndDayTrap
     weight_damage_trap: WeightDamageTrap
+    day_cycle_mode: DayCycleMode
+    day_cycle_min: DayCycleMin
+    day_cycle_max: DayCycleMax
+    day_cycle_fixed: DayCycleFixed
