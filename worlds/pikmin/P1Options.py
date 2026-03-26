@@ -2,6 +2,29 @@ from dataclasses import dataclass
 from Options import DefaultOnToggle, Toggle, Range, Choice, PerGameCommonOptions
 
 
+# ====================================================================
+# SHIP PART
+# ====================================================================
+class FirstPartIsLocal(DefaultOnToggle):
+    """
+    Force collecting the Main Engine to give a ship part.
+    This can be useful to prevent getting stuck immediately at the start of the game.
+    """
+    display_name = "Local First Part"
+
+
+class LastPartIsLocal(DefaultOnToggle):
+    """
+    Force collecting the Secret Safe to give a ship part.
+    Since you complete Pikmin 1 by collecting the last ship part, it could give a required item for another player.
+    This option prevents this, so other players won't ever need to wait for Pikmin to finish.
+    """
+    display_name = "Local Last Part"
+
+
+# ====================================================================
+# PIKMIN LOCATION
+# ====================================================================
 class EnablePikminLocations(Toggle):
     """Enable generation of locations based on Pikmin collection thresholds
     Total Max Locations : 300"""
@@ -54,36 +77,11 @@ class BluePikminInterval(Range):
     default = 5
 
 
-class FirstPartIsLocal(DefaultOnToggle):
-    """
-    Force collecting the Main Engine to give a ship part.
-    This can be useful to prevent getting stuck immediately at the start of the game.
-    """
-    display_name = "Local First Part"
-
-
-class LastPartIsLocal(DefaultOnToggle):
-    """
-    Force collecting the Secret Safe to give a ship part.
-    Since you complete Pikmin 1 by collecting the last ship part, it could give a required item for another player.
-    This option prevents this, so other players won't ever need to wait for Pikmin to finish.
-    """
-    display_name = "Local Last Part"
-
-
 # ====================================================================
 # FILLER WEIGHTS
 # Each option controls the weight (likelihood) of that filler item
 # appearing in the item pool. A weight of 0 disables the item entirely.
 # ====================================================================
-
-class TrapPercentage(Range):
-    """Percentage of filler items that are traps. Default is 0%."""
-    display_name = "Trap Percentage"
-    range_start = 0
-    range_end = 100
-    default = 0
-
 
 class Weight1RedPikmin(Range):
     """Weight for 1 Red Pikmin filler items."""
@@ -175,6 +173,15 @@ class Include25BluePikmin(Toggle):
     default = False
 
 
+# ====================================================================
+# TRAP (WIP AND DOES NOT WORKING)
+# ====================================================================
+class TrapPercentage(Range):
+    """Percentage of filler items that are traps. Default is 0%."""
+    display_name = "Trap Percentage"
+    range_start = 0
+    range_end = 100
+    default = 0
 # Trap weights (traps not yet implemented, weights reserved for future use)
 class WeightTimeTrap(Range):
     """Weight for Time Trap items (reduces remaining day time)."""
@@ -199,6 +206,10 @@ class WeightDamageTrap(Range):
     range_end = 100
     default = 0
 
+# ====================================================================
+# QALITY OF LIFE (QOL)
+# DAY CYCLE MODE
+# ====================================================================
 
 class DayCycleMode(Choice):
     """
@@ -206,12 +217,12 @@ class DayCycleMode(Choice):
 
     normal       : Day cycles between 2 and 29 (default Pikmin behavior without cheats)
     custom_range : Day cycles between two values chosen by the player
-    eternal      : Day is locked on a fixed value chosen by the player
+    fixed      : Day is locked on a fixed value chosen by the player
     """
     display_name = "Day Cycle Mode"
     option_normal       = 0
     option_custom_range = 1
-    option_eternal      = 2
+    option_fixed      = 2
     default = 0
 
 
@@ -232,7 +243,7 @@ class DayCycleMax(Range):
 
 
 class DayCycleFixed(Range):
-    """Fixed day number for eternal mode. Only used when Day Cycle Mode is eternal."""
+    """Fixed day number for fixed mode. Only used when Day Cycle Mode is Fixed."""
     display_name = "Day Cycle Fixed"
     range_start = 2
     range_end = 29
@@ -241,6 +252,10 @@ class DayCycleFixed(Range):
 
 @dataclass
 class P1Options(PerGameCommonOptions):
+# SHIP PART
+    first_part_is_local: FirstPartIsLocal
+    last_part_is_local: LastPartIsLocal
+# PIKMIN LOCATION
     enable_pikmin_locations: EnablePikminLocations
     red_pikmin_locations_enabled: RedPikminLocationsEnabled
     red_pikmin_interval: RedPikminInterval
@@ -248,9 +263,7 @@ class P1Options(PerGameCommonOptions):
     yellow_pikmin_interval: YellowPikminInterval
     blue_pikmin_locations_enabled: BluePikminLocationsEnabled
     blue_pikmin_interval: BluePikminInterval
-    first_part_is_local: FirstPartIsLocal
-    last_part_is_local: LastPartIsLocal
-    trap_percentage: TrapPercentage
+# FILLER WEIGHTS
     weight_1_red_pikmin: Weight1RedPikmin
     count_5_red_pikmin: Count5RedPikmin
     count_10_red_pikmin: Count10RedPikmin
@@ -263,9 +276,13 @@ class P1Options(PerGameCommonOptions):
     count_5_blue_pikmin: Count5BluePikmin
     count_10_blue_pikmin: Count10BluePikmin
     include_25_blue_pikmin: Include25BluePikmin
+# TRAP (WIP AND DOES NOT WORKING)
+    trap_percentage: TrapPercentage
     weight_time_trap: WeightTimeTrap
     weight_end_day_trap: WeightEndDayTrap
     weight_damage_trap: WeightDamageTrap
+# QALITY OF LIFE (QOL) :
+# - DAY CYCLE MODE
     day_cycle_mode: DayCycleMode
     day_cycle_min: DayCycleMin
     day_cycle_max: DayCycleMax

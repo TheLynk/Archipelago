@@ -587,7 +587,7 @@ async def dolphin_loop(ctx: P1Context):
 async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
     """Manage the day counter based on the player's day cycle option."""
     slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
-    mode  = slot_data.get("day_cycle_mode",  0)  # 0=normal, 1=custom_range, 2=eternal
+    mode  = slot_data.get("day_cycle_mode",  0)  # 0=normal, 1=custom_range, 2=fixed
     d_min = slot_data.get("day_cycle_min",   2)
     d_max = slot_data.get("day_cycle_max",  29)
     fixed = slot_data.get("day_cycle_fixed",  2)
@@ -614,7 +614,7 @@ async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
         elif day > high:
             new_day = low
 
-    elif mode == 2:  # eternal — lock on fixed value
+    elif mode == 2:  # fixed — lock on fixed value
         new_day = max(2, min(fixed, 29))
 
     if new_day != day:
