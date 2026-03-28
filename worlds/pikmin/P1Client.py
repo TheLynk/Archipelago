@@ -180,10 +180,14 @@ class P1Context(CommonContext):
         return f"applied_{self.auth}_{seed}"
 
     def load_applied(self) -> None:
+        key = self._save_key()
+        if ctx.debug_mode:
+            logger.info(f"[DEBUG] load_applied key: {key}")
         try:
             data = Utils.persistent_load().get("pikmin", {}).get(self._save_key(), {})
             self.pikmin_items_applied = {int(k): v for k, v in data.items()}
-            logger.info(f"Loaded {len(self.pikmin_items_applied)} applied Pikmin items")
+            if ctx.debug_mode:
+                logger.info(f"Loaded {len(self.pikmin_items_applied)} applied Pikmin items")
         except Exception as e:
             logger.debug(f"Could not load applied items: {e}")
 
@@ -205,12 +209,13 @@ class P1Context(CommonContext):
 
         await self.send_connect()
 
-    def on_package(self, cmd: str, args: dict) -> None:
-        super().on_package(cmd, args)
-        if cmd == "Connected":
-            self.slot_data = args.get("slot_data", {})
-            logger.info(f"[DEBUG] slot_data reçu: {self.slot_data}")
-            self.load_applied()
+def on_package(self, cmd: str, args: dict) -> None:
+    super().on_package(cmd, args)
+    if cmd == "Connected":
+        self.slot_data = args.get("slot_data", {})
+        if not getattr(self, "seed_name", None):
+            self.seed_name = args.get("seed_name", "unknown")
+        self.load_applied()
 
 
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
