@@ -182,6 +182,7 @@ class TrapPercentage(Range):
     range_start = 0
     range_end = 100
     default = 0
+
 # Trap weights (traps not yet implemented, weights reserved for future use)
 class WeightTimeTrap(Range):
     """Weight for Time Trap items (reduces remaining day time)."""
@@ -206,8 +207,9 @@ class WeightDamageTrap(Range):
     range_end = 100
     default = 0
 
+
 # ====================================================================
-# QALITY OF LIFE (QOL)
+# QUALITY OF LIFE (QOL)
 # DAY CYCLE MODE
 # ====================================================================
 
@@ -217,12 +219,12 @@ class DayCycleMode(Choice):
 
     normal       : Day cycles between 2 and 29 (default Pikmin behavior without cheats)
     custom_range : Day cycles between two values chosen by the player
-    fixed      : Day is locked on a fixed value chosen by the player
+    fixed        : Day is locked on a fixed value chosen by the player
     """
     display_name = "Day Cycle Mode"
     option_normal       = 0
     option_custom_range = 1
-    option_fixed      = 2
+    option_fixed        = 2
     default = 0
 
 
@@ -243,11 +245,28 @@ class DayCycleMax(Range):
 
 
 class DayCycleFixed(Range):
-    """Fixed day number for fixed mode. Only used when Day Cycle Mode is Fixed."""
+    """Fixed day number for fixed mode. Only used when Day Cycle Mode is fixed."""
     display_name = "Day Cycle Fixed"
     range_start = 2
     range_end = 29
     default = 2
+
+
+# ====================================================================
+# SHIP PART HINTS
+# ====================================================================
+
+class ShipPartHintMode(Choice):
+    """
+    Controls what information is displayed when approaching a ship part.
+
+    none : No hint displayed (vanilla behavior)
+    item : Shows what item the ship part location contains
+    """
+    display_name = "Ship Part Hint Mode"
+    option_none = 0
+    option_item = 1
+    default = 1
 
 
 @dataclass
@@ -281,9 +300,11 @@ class P1Options(PerGameCommonOptions):
     weight_time_trap: WeightTimeTrap
     weight_end_day_trap: WeightEndDayTrap
     weight_damage_trap: WeightDamageTrap
-# QALITY OF LIFE (QOL) :
+# QUALITY OF LIFE (QOL)
 # - DAY CYCLE MODE
     day_cycle_mode: DayCycleMode
     day_cycle_min: DayCycleMin
     day_cycle_max: DayCycleMax
     day_cycle_fixed: DayCycleFixed
+# - SHIP PART HINTS
+    ship_part_hint_mode: ShipPartHintMode

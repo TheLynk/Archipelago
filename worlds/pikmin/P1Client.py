@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import TYPE_CHECKING, Optional
 
 import dolphin_memory_engine as dme
@@ -12,12 +13,17 @@ from .P1Data import *
 if TYPE_CHECKING:
     import kvui
 
+SCOUT_RETRY_INTERVAL = 5.0  # seconds between scout retries
+
 UNLOCKED_AREAS: MemoryAddress = mem(0x803A2803, 0x8039D983)  # byte
 COUNT_TOTAL_PARTS: MemoryAddress = mem(0x812427FF, 0x81249DE7)  # byte
 COUNT_REQUIRED_PARTS: MemoryAddress = mem(0x81242803, 0x81249DEB)  # byte
 TIME_HOURS: MemoryAddress = mem(0x803A2930, 0x803A2930)  # int, 7=morning, >=19=end of day
 DAY_NUMBER: MemoryAddress = mem(0x803A2937, 0x803A2937)  # byte, current day number
-TIME_HOURS: MemoryAddress = mem(0x803A2930, 0x803A2930)  # int, 7=morning, >=19=end of day
+
+# Ship part hint text address (PAL) — universal for all parts
+SHIP_PART_TEXT_ADDR = 0x807B100A
+SHIP_PART_TEXT_LENGTH = 500
 
 
 # Pikmin memory addresses for PAL version
@@ -102,13 +108,6 @@ PIKMIN_BONUS_ADDR = {
 ONION_FLAG_RED    = 18
 ONION_FLAG_YELLOW = 36
 ONION_FLAG_BLUE   = 9
-# COUNT_LOCAL_PARTS_2: MemoryAddress = mem(0x81242808, 0x81249DF0)  # byte
-# COUNT_LOCAL_PARTS_3: MemoryAddress = mem(0x81242809, 0x81249DF1)  # byte
-# COUNT_LOCAL_PARTS_4: MemoryAddress = mem(0x8124280A, 0x81249DF2)  # byte
-# COUNT_LOCAL_PARTS_5: MemoryAddress = mem(0x8124280B, 0x81249DF3)  # byte
-#
-# TIME_HOURS: MemoryAddress = mem(0x803A2930)  # word, daytime is 7-18, day ends >= 19, night mode (moon icon) <= 6
-# TIME_MINUTES: MemoryAddress = mem(0x803A2924)  # word, explore how exactly this works
 
 
 class P1CommandProcessor(ClientCommandProcessor):
@@ -120,6 +119,9 @@ class P1CommandProcessor(ClientCommandProcessor):
         self.ctx.debug_mode = not getattr(self.ctx, "debug_mode", False)
         state = "ON" if self.ctx.debug_mode else "OFF"
         logger.info(f"Pikmin debug mode: {state}")
+        if self.ctx.debug_mode:
+            # Reset throttle so the next day cycle log fires immediately
+            self.ctx._last_day_debug_log = 0.0
         return True
 
     def _cmd_crash(self) -> bool:
@@ -174,6 +176,24 @@ class P1Context(CommonContext):
         self.zone_addr_active: dict[str, dict[int, bool]] = {"red": {}, "yellow": {}, "blue": {}}
         # Pending bonus per color waiting for zone addresses to become active
         self.pending_zone_bonus: dict[str, int] = {"red": 0, "yellow": 0, "blue": 0}
+        # Ship part hint tracking
+        self.last_hint_shown: str = ""
+        # Raw bytes of the hint we wrote, so we can re-apply if the game overwrites it
+        self.last_hint_bytes: bytes = b""
+        # Throttle for day cycle debug logs (timestamp of last log)
+        self._last_day_debug_log: float = 0.0
+        # Throttle for NTSC warning (timestamp of last warning)
+        self._last_ntsc_warning: float = 0.0
+        # Scouted locations: loc_id -> {"item_name": str, "player": int}
+        self.scouted_locations: dict[int, dict] = {}
+        # Flag to trigger location scout after connection is fully established
+        self.needs_location_scout: bool = False
+        # Track scout state for retry logic
+        self.scout_sent: bool = False
+        self.scout_sent_time: float = 0.0
+        self.scout_received: bool = False
+        # Track which location hints have been created on the server
+        self.created_hints: set[int] = set()
 
     def _save_key(self) -> str:
         seed = getattr(self, "seed_name", None) or "unknown"
@@ -181,13 +201,13 @@ class P1Context(CommonContext):
 
     def load_applied(self) -> None:
         key = self._save_key()
-        if ctx.debug_mode:
+        if self.debug_mode:
             logger.info(f"[DEBUG] load_applied key: {key}")
         try:
             data = Utils.persistent_load().get("pikmin", {}).get(self._save_key(), {})
             self.pikmin_items_applied = {int(k): v for k, v in data.items()}
-            if ctx.debug_mode:
-                logger.info(f"Loaded {len(self.pikmin_items_applied)} applied Pikmin items")
+            if self.debug_mode:
+                logger.info(f"[DEBUG] Loaded {len(self.pikmin_items_applied)} applied Pikmin items")
         except Exception as e:
             logger.debug(f"Could not load applied items: {e}")
 
@@ -209,13 +229,36 @@ class P1Context(CommonContext):
 
         await self.send_connect()
 
-def on_package(self, cmd: str, args: dict) -> None:
-    super().on_package(cmd, args)
-    if cmd == "Connected":
-        self.slot_data = args.get("slot_data", {})
-        if not getattr(self, "seed_name", None):
-            self.seed_name = args.get("seed_name", "unknown")
-        self.load_applied()
+    def on_package(self, cmd: str, args: dict) -> None:
+        if self.debug_mode:
+            logger.info(f"[DEBUG] on_package cmd={cmd}")
+        super().on_package(cmd, args)
+        if cmd == "Connected":
+            self.slot_data = args.get("slot_data", {})
+            if not getattr(self, "seed_name", None):
+                self.seed_name = args.get("seed_name", "unknown")
+            if self.debug_mode:
+                logger.info(f"[DEBUG] slot_data reçu: {self.slot_data}")
+            self.load_applied()
+            self.needs_location_scout = True  # ← flag, pas d'envoi immédiat
+        elif cmd == "LocationInfo":
+            count = len(args.get("locations", []))
+            if self.debug_mode:
+                logger.info(f"[DEBUG] Received LocationInfo with {count} locations")
+            for item in args["locations"]:
+                loc_id = item.location
+                try:
+                    item_name = self.item_names.lookup_in_slot(item.item, item.player)
+                except Exception:
+                    item_name = str(item.item)
+                self.scouted_locations[loc_id] = {
+                    "item_name": item_name,
+                    "player":    item.player,
+                    "flags":     item.flags if hasattr(item, "flags") else 0,
+                }
+            self.scout_received = True
+            if self.debug_mode:
+                logger.info(f"[DEBUG] Scouted {len(self.scouted_locations)} locations total")
 
 
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
@@ -271,7 +314,6 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         2. Its value has changed since last tick (player interacted with Onion)
         """
         addrs = bonus_addrs.get(color, [])
-        # Get persistent value as reference
         persistent_addr = next((addr for addr, zone in addrs if zone is None), None)
         persistent_val = -1
         if persistent_addr:
@@ -287,10 +329,8 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                 val = int.from_bytes(dme.read_bytes(addr, 2), "big")
                 last = ctx.zone_addr_last_vals[color].get(addr, -1)
 
-                # Activate immediately if value matches persistent save
                 if persistent_val != -1 and val == persistent_val:
                     ctx.zone_addr_active[color][addr] = True
-                # Also activate if value changed since last tick
                 elif last != -1 and val != last:
                     ctx.zone_addr_active[color][addr] = True
 
@@ -365,7 +405,6 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             if was_locked and now_unlocked:
                 amount = ctx.pending_onion_unlock_bonus[color]
                 if amount > 0:
-                    # Apply to zone addresses now that Onion is unlocked
                     zone_addrs = [(addr, zf) for addr, zf in bonus_addrs.get(color, [])
                                   if zf is not None and zf == current_zone]
                     for addr, _ in zone_addrs:
@@ -430,8 +469,6 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             ctx.save_applied()
             if ctx.debug_mode:
                 logger.info(f"[DEBUG] Queued {bonus} {color} Pikmin for zone (not yet active)")
-
-
 
 
 async def handle_parts(ctx: P1Context, game: Game):
@@ -522,7 +559,7 @@ async def handle_areas(ctx: P1Context, game: Game):
 
     # Count only real ship parts received
     ship_parts_count = sum(1 for item in ctx.items_received if item.item in ship_part_ids)
-    
+
     total_required = 0
 
     if ship_parts_count >= 30:  # lazy: this makes olimar succeed once all parts have been collected
@@ -547,48 +584,6 @@ async def handle_areas(ctx: P1Context, game: Game):
     dme.write_byte(UNLOCKED_AREAS[game], areas)
 
 
-async def dolphin_loop(ctx: P1Context):
-    game_version = None
-
-    while not ctx.exit_event.is_set():
-        try:
-            await asyncio.wait_for(ctx.watcher_event.wait(), 1.0)
-        except asyncio.TimeoutError:
-            pass
-
-        ctx.watcher_event.clear()
-
-        try:
-            # could maybe just do the else branch and check for game there
-            if not dme.is_hooked():
-                dme.hook() # silently fails?
-            if not dme.is_hooked():
-                ctx.dolphin_status_text = "Disconnected - Hook Failed"
-                continue
-            else:
-                game = dme.read_bytes(0x80000000, 6)
-                if game not in [b"GPIP01", b"GPIE01"]:
-                    ctx.dolphin_status_text = "Connected - Wrong Game"
-                    continue
-
-                game_version = game
-                ctx.dolphin_status_text = f"Connected - {game.decode()}"
-                # TODO preferably check that the game is in a save file too
-        except Exception as e:
-            logger.error(e)
-            logger.info("Trying to reconnect to Dolphin...")
-            ctx.dolphin_status_text = "??? - Exception Occured"
-            dme.un_hook()
-            continue
-
-        await handle_parts(ctx, game_version)
-        await handle_pikmin_locations(ctx, game_version)
-        await handle_pikmin_items(ctx, game_version)
-        await handle_day_cycle(ctx, game_version)
-        await handle_areas(ctx, game_version)
-        # TODO if "DeathLink" in ctx.tags: handle that
-
-
 async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
     """Manage the day counter based on the player's day cycle option."""
     slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
@@ -603,7 +598,11 @@ async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
         return
 
     if ctx.debug_mode:
-        logger.info(f"[DEBUG] Day cycle: day={day} mode={mode}")
+        import time
+        _now = time.monotonic()
+        if _now - ctx._last_day_debug_log >= 60.0:
+            logger.info(f"[DEBUG] Day cycle: day={day} mode={mode}")
+            ctx._last_day_debug_log = _now
 
     new_day = day
 
@@ -627,6 +626,218 @@ async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
             dme.write_byte(DAY_NUMBER[game], new_day)
         except Exception:
             pass
+
+
+def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
+    """Build the hint as raw bytes, using ESC (0x1B) as GC color code prefix."""
+    loc_id = ALL_PARTS[part_name].ap_id
+
+    if hint_mode == 1:  # item mode: show what this location contains
+        info = ctx.scouted_locations.get(loc_id)
+        if not info:
+            return b""
+        item_name = info["item_name"]
+        player_id = info["player"]
+        player_name = ctx.player_names.get(player_id, str(player_id))
+        flags = info.get("flags", 0)
+
+        # Color by item classification flags
+        if flags & 0b100:       # trap
+            item_color = "ff0000ff"   # red
+        elif flags & 0b010:     # useful
+            item_color = "00ffffff"   # light blue (cyan)
+        elif flags & 0b001:     # progression
+            item_color = "cc00ffff"   # purple
+        else:                   # filler / unknown
+            item_color = "b4ffffff"   # white (default)
+
+        # 0x1B is the GC formatting prefix for color codes
+        text = (
+            f"\x1BCC[ff0000ff]{part_name}\x1BCC[b4ffffff]\n"
+            f"Contains: \x1BCC[{item_color}]{item_name}\x1BCC[b4ffffff]\n"
+            f"For: \x1BCC[ff0000ff]{player_name}\x1BCC[b4ffffff]"
+        )
+        result = text.encode("ascii", errors="replace")
+        # Pad with null bytes to erase remaining original text
+        if len(result) < SHIP_PART_TEXT_LENGTH:
+            result += b"\x00" * (SHIP_PART_TEXT_LENGTH - len(result))
+        return result
+    return b""
+
+
+async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
+    """Detect which ship part text is displayed and replace it with an Archipelago hint.
+    Re-applies the hint every tick as long as the original game text is still visible,
+    so the game cannot permanently overwrite our text."""
+    # Only PAL supported for now (NTSC-U address TBD)
+    if game != b"GPIP01":
+        return
+
+    slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+    hint_mode = slot_data.get("ship_part_hint_mode", 0)
+    if hint_mode == 0:
+        return
+
+    try:
+        raw = dme.read_bytes(SHIP_PART_TEXT_ADDR, SHIP_PART_TEXT_LENGTH)
+    except Exception:
+        return
+
+    # If the buffer is all zeros, no text is currently displayed — reset state
+    if not any(raw):
+        ctx.last_hint_shown = ""
+        ctx.last_hint_bytes = b""
+        return
+
+    # Search each part name in the first line only (before \n)
+    # to avoid matching part names in "Contains:" or "For:" lines
+    first_newline = raw.find(b"\n")
+    first_line = raw[:first_newline] if first_newline != -1 else raw
+    detected_part = None
+    for part_name in ALL_PARTS:
+        if part_name.encode("ascii") in first_line:
+            detected_part = part_name
+            break
+
+    if not detected_part:
+        # No part name found — could be our hint text already written (part name still there)
+        # or something else. If we have an active hint, check if we should keep writing it.
+        if ctx.last_hint_shown and ctx.last_hint_bytes:
+            # Our hint was written but game may have partially overwritten it — re-apply
+            part_bytes = ctx.last_hint_shown.encode("ascii")
+            if part_bytes in raw:
+                try:
+                    dme.write_bytes(SHIP_PART_TEXT_ADDR, ctx.last_hint_bytes)
+                except Exception as e:
+                    logger.debug(f"Error re-applying hint: {e}")
+        return
+
+    # A part name is visible in the raw buffer.
+    # If this is a new part (not the one we already wrote a hint for), build and write the hint.
+    if detected_part != ctx.last_hint_shown:
+        loc_id = ALL_PARTS[detected_part].ap_id
+
+        # Create a real hint on the server (free for own locations)
+        if loc_id not in ctx.created_hints:
+            ctx.created_hints.add(loc_id)
+            await ctx.send_msgs([{
+                "cmd": "CreateHints",
+                "locations": [loc_id],
+                "player": ctx.slot,
+            }])
+            if ctx.debug_mode:
+                logger.info(f"[DEBUG] CreateHints sent for {detected_part} (loc_id={loc_id})")
+
+        hint_bytes = build_hint_bytes(ctx, detected_part, hint_mode)
+        if not hint_bytes:
+            if ctx.debug_mode:
+                logger.info(f"[DEBUG] No hint text for {detected_part} (scouted={len(ctx.scouted_locations)})")
+            return
+
+        ctx.last_hint_shown = detected_part
+        ctx.last_hint_bytes = hint_bytes
+
+        if ctx.debug_mode:
+            logger.info(f"[DEBUG] Writing hint for {detected_part}")
+
+        try:
+            dme.write_bytes(SHIP_PART_TEXT_ADDR, hint_bytes)
+        except Exception as e:
+            logger.debug(f"Error writing hint text: {e}")
+
+    else:
+        # Same part still displayed — re-apply our hint every tick so the game cannot overwrite it
+        if ctx.last_hint_bytes:
+            try:
+                dme.write_bytes(SHIP_PART_TEXT_ADDR, ctx.last_hint_bytes)
+            except Exception as e:
+                logger.debug(f"Error re-applying hint: {e}")
+        elif ctx.scouted_locations:
+            # Scout data arrived late — rebuild the hint now
+            hint_bytes = build_hint_bytes(ctx, detected_part, hint_mode)
+            if hint_bytes:
+                ctx.last_hint_bytes = hint_bytes
+                if ctx.debug_mode:
+                    logger.info(f"[DEBUG] Late hint build for {detected_part}")
+                try:
+                    dme.write_bytes(SHIP_PART_TEXT_ADDR, hint_bytes)
+                except Exception as e:
+                    logger.debug(f"Error writing late hint: {e}")
+
+
+async def dolphin_loop(ctx: P1Context):
+    game_version = None
+
+    while not ctx.exit_event.is_set():
+        try:
+            await asyncio.wait_for(ctx.watcher_event.wait(), 1.0)
+        except asyncio.TimeoutError:
+            pass
+
+        ctx.watcher_event.clear()
+
+        if ctx.needs_location_scout:
+            ctx.needs_location_scout = False
+            ctx.scout_sent = True
+            ctx.scout_sent_time = time.monotonic()
+            ctx.scout_received = False
+            logger.info(f"[DEBUG] Sending LocationScouts with {len(list(ALL_LOCATIONS.values()))} locations")
+            await ctx.send_msgs([{
+                "cmd": "LocationScouts",
+                "locations": list(ALL_LOCATIONS.values()),
+                "create_as_hint": 0,
+            }])
+
+        # Retry scout if no response received after timeout
+        if ctx.scout_sent and not ctx.scout_received:
+            elapsed = time.monotonic() - ctx.scout_sent_time
+            if elapsed >= SCOUT_RETRY_INTERVAL:
+                ctx.scout_sent_time = time.monotonic()
+                logger.info(f"[DEBUG] Retrying LocationScouts (no response after {elapsed:.0f}s, "
+                            f"scouted={len(ctx.scouted_locations)})")
+                await ctx.send_msgs([{
+                    "cmd": "LocationScouts",
+                    "locations": list(ALL_LOCATIONS.values()),
+                    "create_as_hint": 0,
+                }])
+
+        try:
+            if not dme.is_hooked():
+                dme.hook()
+            if not dme.is_hooked():
+                ctx.dolphin_status_text = "Disconnected - Hook Failed"
+                continue
+            else:
+                game = dme.read_bytes(0x80000000, 6)
+                if game not in [b"GPIP01", b"GPIE01"]:
+                    ctx.dolphin_status_text = "Connected - Wrong Game"
+                    continue
+
+                game_version = game
+                ctx.dolphin_status_text = f"Connected - {game.decode()}"
+
+                if game == b"GPIE01":
+                    _now = time.monotonic()
+                    if _now - ctx._last_ntsc_warning >= 60.0:
+                        logger.warning(
+                            "Warning : You use Pikmin NTSC This version does not completely support "
+                            "the risk of bugs and crashes is very high"
+                        )
+                        ctx._last_ntsc_warning = _now
+        except Exception as e:
+            logger.error(e)
+            logger.info("Trying to reconnect to Dolphin...")
+            ctx.dolphin_status_text = "??? - Exception Occured"
+            dme.un_hook()
+            continue
+
+        await handle_parts(ctx, game_version)
+        await handle_pikmin_locations(ctx, game_version)
+        await handle_pikmin_items(ctx, game_version)
+        await handle_day_cycle(ctx, game_version)
+        await handle_ship_part_hints(ctx, game_version)
+        await handle_areas(ctx, game_version)
+        # TODO if "DeathLink" in ctx.tags: handle that
 
 
 def run_client() -> None:
