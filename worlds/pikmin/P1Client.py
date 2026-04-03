@@ -118,10 +118,20 @@ class P1CommandProcessor(ClientCommandProcessor):
         """Toggle debug logging for Pikmin client."""
         self.ctx.debug_mode = not getattr(self.ctx, "debug_mode", False)
         state = "ON" if self.ctx.debug_mode else "OFF"
-        logger.info(f"Pikmin debug mode: {state}")
+        
         if self.ctx.debug_mode:
-            # Reset throttle so the next day cycle log fires immediately
-            self.ctx._last_day_debug_log = 0.0
+            logger.info(f"Pikmin debug mode: {state}")
+            slot_data = getattr(self.ctx, "slot_data", {}) or {}
+            hint_mode = slot_data.get("ship_part_hint_mode", 0)
+            hints = slot_data.get("hints", {})
+            logger.info(f"[DEBUG] Hint mode: {hint_mode}")
+            logger.info(f"[DEBUG] Hints count: {len(hints)}")
+            if hints:
+                for part_name, hint_data in hints.items():
+                    logger.info(f"[DEBUG]   {part_name}: {hint_data.get('Item', '?')} at {hint_data.get('Location', '?')}")
+        else:
+            logger.info(f"Pikmin debug mode: {state}")
+        
         return True
 
     def _cmd_crash(self) -> bool:
@@ -194,6 +204,15 @@ class P1Context(CommonContext):
         self.scout_received: bool = False
         # Track which location hints have been created on the server
         self.created_hints: set[int] = set()
+        # Super Radar: cache of ALL scouted locations (not just own)
+        self.all_locations_scouted: dict[int, dict] = {}
+        # Super Radar: track that we've requested all-locations scout
+        self.super_radar_requested: bool = False
+        self.super_radar_hints_created: bool = False
+        # Super Radar: store hints received from server
+        self.server_hints: dict[int, dict] = {}
+        # Slot data received from server on connection
+        self.slot_data: dict = {}
 
     def _save_key(self) -> str:
         seed = getattr(self, "seed_name", None) or "unknown"
@@ -241,6 +260,8 @@ class P1Context(CommonContext):
                 logger.info(f"[DEBUG] slot_data reçu: {self.slot_data}")
             self.load_applied()
             self.needs_location_scout = True  # ← flag, pas d'envoi immédiat
+            # Register for hints notifications
+            self.stored_data_notification_keys.add(f"_read_hints_{self.team}_{self.slot}")
         elif cmd == "LocationInfo":
             count = len(args.get("locations", []))
             if self.debug_mode:
@@ -251,14 +272,39 @@ class P1Context(CommonContext):
                     item_name = self.item_names.lookup_in_slot(item.item, item.player)
                 except Exception:
                     item_name = str(item.item)
-                self.scouted_locations[loc_id] = {
+                entry = {
                     "item_name": item_name,
                     "player":    item.player,
                     "flags":     item.flags if hasattr(item, "flags") else 0,
                 }
+                self.scouted_locations[loc_id] = entry
+                # Also store in all_locations_scouted for Super Radar
+                self.all_locations_scouted[loc_id] = entry
             self.scout_received = True
             if self.debug_mode:
                 logger.info(f"[DEBUG] Scouted {len(self.scouted_locations)} locations total")
+
+        elif cmd == "SetReply":
+            if args.get("key") == f"_read_hints_{self.team}_{self.slot}":
+                hints = args.get("value", [])
+                if self.debug_mode:
+                    logger.info(f"[DEBUG] Received hints via SetReply: {len(hints)} hints")
+                for hint in hints:
+                    loc_id = hint.get("location")
+                    if loc_id:
+                        self.server_hints[loc_id] = hint
+                if self.debug_mode:
+                    logger.info(f"[DEBUG] Server hints total: {len(self.server_hints)}")
+
+        elif cmd == "ReceivedHints":
+            if self.debug_mode:
+                logger.info(f"[DEBUG] ReceivedHints: {len(args.get('hints', []))} hints")
+            for hint in args.get("hints", []):
+                loc_id = hint.get("location")
+                if loc_id:
+                    self.server_hints[loc_id] = hint
+            if self.debug_mode:
+                logger.info(f"[DEBUG] Server hints total: {len(self.server_hints)}")
 
 
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
@@ -662,6 +708,48 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
         if len(result) < SHIP_PART_TEXT_LENGTH:
             result += b"\x00" * (SHIP_PART_TEXT_LENGTH - len(result))
         return result
+
+    elif hint_mode == 2:  # super radar mode
+        slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+        hints = slot_data.get("hints", {})
+        hint_data = hints.get(part_name)
+        
+        if ctx.debug_mode:
+            logger.info(f"[DEBUG] Super Radar - part: {part_name}, hints count: {len(hints)}, hint_data: {hint_data}")
+        
+        if hint_data:
+            item_name = hint_data.get("Item", "Unknown")
+            location = hint_data.get("Location", "Unknown")
+            send_player = hint_data.get("Send Player", "Unknown")
+            hint_class = hint_data.get("Class", "Other")
+            
+            if ctx.debug_mode:
+                logger.info(f"[DEBUG] Super Radar - Item: {item_name}, Location: {location}, SendPlayer: {send_player}, Class: {hint_class}")
+            
+            if hint_class == "Prog":
+                item_color = "cc00ffff"
+            elif hint_class == "Trap":
+                item_color = "ff0000ff"
+            else:
+                item_color = "00ffffff"
+            
+            text = (
+                f"\x1BCC[ff0000ff]{part_name}\x1BCC[b4ffffff]\n"
+                f"Your Ship Part is at \x1BCC[ff0000ff]{location}\x1BCC[b4ffffff] in \x1BCC[ff0000ff]{send_player}\x1BCC[b4ffffff]"
+            )
+        else:
+            if ctx.debug_mode:
+                logger.info(f"[DEBUG] Super Radar - No hint data found for {part_name}")
+            text = (
+                f"\x1BCC[cc00ff]{part_name}\x1BCC[b4ffffff]\n"
+                f"\x1BCC[00ffffff]No hint data"
+            )
+        
+        result = text.encode("ascii", errors="replace")
+        if len(result) < SHIP_PART_TEXT_LENGTH:
+            result += b"\x00" * (SHIP_PART_TEXT_LENGTH - len(result))
+        return result
+
     return b""
 
 
@@ -717,8 +805,8 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
     if detected_part != ctx.last_hint_shown:
         loc_id = ALL_PARTS[detected_part].ap_id
 
-        # Create a real hint on the server (free for own locations)
-        if loc_id not in ctx.created_hints:
+        # Create a real hint on the server only for "item" mode (not for Super Radar)
+        if hint_mode == 1 and loc_id not in ctx.created_hints:
             ctx.created_hints.add(loc_id)
             await ctx.send_msgs([{
                 "cmd": "CreateHints",
@@ -727,6 +815,29 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
             }])
             if ctx.debug_mode:
                 logger.info(f"[DEBUG] CreateHints sent for {detected_part} (loc_id={loc_id})")
+
+        # Super Radar: create a server hint for the specific part being examined.
+        # slot_data["hints"] tells us which location holds this part and who owns it.
+        if hint_mode == 2:
+            slot_hints: dict = (ctx.slot_data or {}).get("hints", {})
+            hint_data = slot_hints.get(detected_part)
+            if hint_data and detected_part not in ctx.created_hints:
+                ctx.created_hints.add(detected_part)
+                try:
+                    target_loc_id = int(hint_data.get("Location ID", 0))
+                    target_player = int(hint_data.get("Send Player ID", ctx.slot))
+                except (ValueError, TypeError):
+                    target_loc_id = 0
+                    target_player = ctx.slot
+                if target_loc_id:
+                    await ctx.send_msgs([{
+                        "cmd": "CreateHints",
+                        "locations": [target_loc_id],
+                        "player": target_player,
+                    }])
+                    if ctx.debug_mode:
+                        logger.info(f"[DEBUG] Super Radar CreateHints for {detected_part} "
+                                    f"(loc_id={target_loc_id}, player={target_player})")
 
         hint_bytes = build_hint_bytes(ctx, detected_part, hint_mode)
         if not hint_bytes:
@@ -752,7 +863,7 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
                 dme.write_bytes(SHIP_PART_TEXT_ADDR, ctx.last_hint_bytes)
             except Exception as e:
                 logger.debug(f"Error re-applying hint: {e}")
-        elif ctx.scouted_locations:
+        elif ctx.scouted_locations or ctx.all_locations_scouted:
             # Scout data arrived late — rebuild the hint now
             hint_bytes = build_hint_bytes(ctx, detected_part, hint_mode)
             if hint_bytes:
@@ -781,10 +892,23 @@ async def dolphin_loop(ctx: P1Context):
             ctx.scout_sent = True
             ctx.scout_sent_time = time.monotonic()
             ctx.scout_received = False
-            logger.info(f"[DEBUG] Sending LocationScouts with {len(list(ALL_LOCATIONS.values()))} locations")
+
+            # Get all locations from the server (for both item hints and Super Radar)
+            all_locations = list(ALL_LOCATIONS.values())
+
+            # For Super Radar, we need to scout ALL multiworld locations, not just our own
+            slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+            if slot_data.get("ship_part_hint_mode") == 2:
+                # Super Radar: scout ALL locations from all players
+                # Get from server's checked + missing
+                all_server_locs = set(ctx.checked_locations) | set(ctx.missing_locations)
+                all_locations = list(all_server_locs)
+                logger.info(f"[Super Radar] Sending LocationScouts for {len(all_locations)} locations")
+
+            logger.info(f"[DEBUG] Sending LocationScouts with {len(all_locations)} locations")
             await ctx.send_msgs([{
                 "cmd": "LocationScouts",
-                "locations": list(ALL_LOCATIONS.values()),
+                "locations": all_locations,
                 "create_as_hint": 0,
             }])
 

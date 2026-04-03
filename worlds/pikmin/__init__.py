@@ -1,5 +1,5 @@
 import logging
-from typing import ClassVar, Callable
+from typing import ClassVar, Callable, Any
 
 from BaseClasses import Item, ItemClassification, Location, Region, CollectionState
 from worlds.AutoWorld import World
@@ -9,6 +9,7 @@ from .P1Macros import *
 from .P1Options import P1Options
 from .P1Web import P1Web
 from .P1PikminLocations import PikminLocationGenerator, PikminLocationData
+from .Hints import get_hints_by_option
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,11 @@ class P1World(World):
         **PIKMIN_LOCATIONS_MAP,
     }
 
-    pikmin_locations: dict[str, PikminLocationData] = {}
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Instance-level attributes — each player gets their own copy
+        self.pikmin_locations: dict[str, PikminLocationData] = {}
+        self.hints: dict = {}
 
     def create_item(self, name: str) -> "P1Item":
         if name in FILLER_ITEMS:
@@ -125,10 +130,14 @@ class P1World(World):
         if self.options.first_part_is_local:
             self.get_location("Main Engine Location").place_locked_item(
                 items.pop(self.multiworld.random.randint(0, len(items) - 1)))
+            #Testing for fix crash generation
+            ship_part_locations -= 1
 
         if self.options.last_part_is_local:
             self.get_location("Secret Safe Location").place_locked_item(
                 items.pop(self.multiworld.random.randint(0, len(items) - 1)))
+            #Testing for fix crash generation
+            ship_part_locations -= 1
 
         ship_part_locations = len(ALL_PARTS)
         pikmin_location_count = len(self.pikmin_locations) if self.options.enable_pikmin_locations else 0
@@ -221,7 +230,11 @@ class P1World(World):
             "day_cycle_max":       self.options.day_cycle_max.value,
             "day_cycle_fixed":     self.options.day_cycle_fixed.value,
             "ship_part_hint_mode": self.options.ship_part_hint_mode.value,
+            "hints":               self.hints,
         }
+
+    def post_fill(self) -> None:
+        get_hints_by_option(self.multiworld, {self.player})
 
 
 class P1Item(Item):
