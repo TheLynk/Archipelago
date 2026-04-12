@@ -33,7 +33,7 @@ SHIP_PART_HINTS = {
     "Automatic Gear": 20,
     "Zirconium Rotor": 21,
     "Extraordinary Bolt": 22,
-    "Repair-Type Bolt": 23,
+    "Repair-type Bolt": 23,
     "Space Float": 24,
     "Massage Machine": 25,
     "Secret Safe": 26,

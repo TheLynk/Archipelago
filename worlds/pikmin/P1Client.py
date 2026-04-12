@@ -42,7 +42,7 @@ PIKMIN_ADDRESSES_NTSC_U = {
 # Onion Pikmin count addresses - short (2 bytes BE), persistent across days
 # PAL confirmed via RAM Watch (typeIndex=1)
 ONION_ADDRESSES_PAL = {
-    "red":    0x803D6D26,
+    "red":    0x803D6C7E,
     "yellow": 0x803D6C8A,
     "blue":   0x803D6C72,
 }

@@ -52,7 +52,7 @@ ALL_PARTS: dict[str, ShipPartData] = {
     "Automatic Gear": ShipPartData(71420, mem(0x81241174, 0x8124875C), 2, RequiredTypes(False, False, False), "The Forest Navel"), # un05
     "Zirconium Rotor": ShipPartData(71421, mem(0x81241254, 0x8124883C), 2, RequiredTypes(False, True, True), "The Distant Spring"), # un06
     "Extraordinary Bolt": ShipPartData(71422, mem(0x81241334, 0x8124891C), 2, RequiredTypes(False, True, False), "The Forest of Hope"), # un07
-    "Repair-Type Bolt": ShipPartData(71423, mem(0x81241414, 0x812489FC), 2, RequiredTypes(False, False, True), "The Distant Spring"), # un08
+    "Repair-type Bolt": ShipPartData(71423, mem(0x81241414, 0x812489FC), 2, RequiredTypes(False, False, True), "The Distant Spring"), # un08
     "Space Float": ShipPartData(71424, mem(0x812414F4, 0x81248ADC), 2, RequiredTypes(False, False, False), "The Forest Navel"), # un09
     "Massage Machine": ShipPartData(71425, mem(0x812415D4, 0x81248BBC), 2, RequiredTypes(False, False, True), "The Distant Spring"), # un10
     "Secret Safe": ShipPartData(71426, mem(0x812416B4, 0x81248C9C), 2, RequiredTypes(True, True, True), "The Final Trial"), # un11
