@@ -790,7 +790,7 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
             f"\x1BCC[ff0000ff]{part_name}\x1BCC[b4ffffff]\n"
             f"Contains: \x1BCC[{item_color}]{item_name}\x1BCC[b4ffffff]\n"
             f"For: \x1BCC[ff0000ff]{player_name}\x1BCC[b4ffffff]\n"
-            f"Your Ship Part is at \x1BCC[ff0000ff]{location}\x1BCC[b4ffffff]\n"
+            f"\nYour Ship Part is at:\n\x1BCC[ff0000ff]{location}\x1BCC[b4ffffff]\n"
             f"in \x1BCC[ff0000ff]{send_player}\x1BCC[b4ffffff]"
         )
         if ctx.debug_mode:
