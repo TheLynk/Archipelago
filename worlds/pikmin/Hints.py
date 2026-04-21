@@ -86,41 +86,57 @@ def get_hints_by_option(multiworld: MultiWorld, player_hints: set[int]) -> None:
             continue
 
         hint_mode = world.options.ship_part_hint_mode.value
+        modes_to_generate = []
+
+        if hint_mode == 1:
+            modes_to_generate = [1]
+        elif hint_mode == 2:
+            modes_to_generate = [2]
+        elif hint_mode == 3:
+            modes_to_generate = [1, 2]
 
         for hint_name in SHIP_PART_HINTS.keys():
-            if hint_mode == 1:
-                loc: Location = _get_location_for_item_mode(world, player_int, hint_name)
-            else:
-                loc: Location = ship_part_index.get((hint_name, player_int))
+            for mode in modes_to_generate:
+                if mode == 1:
+                    loc: Location = _get_location_for_item_mode(world, player_int, hint_name)
+                else:
+                    loc: Location = ship_part_index.get((hint_name, player_int))
 
-            if loc is None:
-                logger.warning(f"[Hints] No location found for ({hint_name}, player={player_int}) "
-                               f"— was get_hints_by_option called from post_fill()?")
-                continue
+                if loc is None:
+                    logger.warning(f"[Hints] No location found for ({hint_name}, player={player_int}) "
+                                   f"— was get_hints_by_option called from post_fill()?")
+                    continue
 
-            # Safety check: the item at this location must belong to player_int
-            if hint_mode == 2 and loc.item.player != player_int:
-                logger.error(f"[Hints] BUG: location {loc.name} has item owned by player "
-                             f"{loc.item.player}, expected player {player_int}")
-                continue
+                # Safety check: the item at this location must belong to player_int
+                if mode == 2 and loc.item.player != player_int:
+                    logger.error(f"[Hints] BUG: location {loc.name} has item owned by player "
+                                 f"{loc.item.player}, expected player {player_int}")
+                    continue
 
-            if loc.item.advancement:
-                icolor = "Prog"
-            elif loc.item.trap:
-                icolor = "Trap"
-            else:
-                icolor = "Other"
+                if loc.item.advancement:
+                    icolor = "Prog"
+                elif loc.item.trap:
+                    icolor = "Trap"
+                else:
+                    icolor = "Other"
 
-            hint = {hint_name: {
-                "Item": loc.item.name,
-                "Location": loc.name,
-                "Location ID": str(loc.address),
-                "Rec Player": multiworld.player_name[loc.item.player],
-                "Send Player": multiworld.player_name[loc.player],
-                "Send Player ID": str(loc.player),
-                "Game": loc.game,
-                "Class": icolor,
-                "Hint Mode": hint_mode,
-            }}
+                if mode == 1 and hint_mode == 3:
+                    hint_key = f"{hint_name}_item"
+                elif mode == 2 and hint_mode == 3:
+                    hint_key = f"{hint_name}_radar"
+                else:
+                    hint_key = hint_name
 
-            world.hints.update(hint)
+                hint = {hint_key: {
+                    "Item": loc.item.name,
+                    "Location": loc.name,
+                    "Location ID": str(loc.address),
+                    "Rec Player": multiworld.player_name[loc.item.player],
+                    "Send Player": multiworld.player_name[loc.player],
+                    "Send Player ID": str(loc.player),
+                    "Game": loc.game,
+                    "Class": icolor,
+                    "Hint Mode": mode,
+                }}
+
+                world.hints.update(hint)

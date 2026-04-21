@@ -23,7 +23,8 @@ DAY_NUMBER: MemoryAddress = mem(0x803A2937, 0x803A2937)  # byte, current day num
 
 # Ship part hint text address (PAL) — universal for all parts
 SHIP_PART_TEXT_ADDR = 0x807B100A
-SHIP_PART_TEXT_LENGTH = 500
+SHIP_PART_TEXT_LENGTH = 313  # 0x807B1143 - 0x807B100A
+BOTH_MODE_TOGGLE_INTERVAL = 5.0  # seconds
 
 
 # Pikmin memory addresses for PAL version
@@ -213,6 +214,9 @@ class P1Context(CommonContext):
         self.server_hints: dict[int, dict] = {}
         # Slot data received from server on connection
         self.slot_data: dict = {}
+        # Both mode: toggle between item/radar display
+        self.hint_both_toggle: bool = False
+        self.hint_both_last_toggle: float = 0.0
 
     def _save_key(self) -> str:
         seed = getattr(self, "seed_name", None) or "unknown"
@@ -750,6 +754,52 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
             result += b"\x00" * (SHIP_PART_TEXT_LENGTH - len(result))
         return result
 
+    elif hint_mode == 3:  # both mode: show item content AND super radar info
+        slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+        hints = slot_data.get("hints", {})
+        radar_hint_key = f"{part_name}_radar"
+
+        info = ctx.scouted_locations.get(loc_id)
+        radar_hint_data = hints.get(radar_hint_key)
+        if not radar_hint_data:
+            radar_hint_data = hints.get(part_name)
+
+        if not info or not radar_hint_data:
+            if ctx.debug_mode:
+                logger.info(f"[DEBUG] Both - Missing data: info={bool(info)}, radar_hint_data={bool(radar_hint_data)}")
+            return b""
+
+        item_name = info["item_name"]
+        player_id = info["player"]
+        player_name = ctx.player_names.get(player_id, str(player_id))
+        flags = info.get("flags", 0)
+
+        if flags & 0b100:
+            item_color = "ff0000ff"
+        elif flags & 0b010:
+            item_color = "00ffffff"
+        elif flags & 0b001:
+            item_color = "cc00ffff"
+        else:
+            item_color = "b4ffffff"
+
+        location = radar_hint_data.get("Location", "Unknown")
+        send_player = radar_hint_data.get("Send Player", "Unknown")
+
+        text = (
+            f"\x1BCC[ff0000ff]{part_name}\x1BCC[b4ffffff]\n"
+            f"Contains: \x1BCC[{item_color}]{item_name}\x1BCC[b4ffffff]\n"
+            f"For: \x1BCC[ff0000ff]{player_name}\x1BCC[b4ffffff]\n"
+            f"Your Ship Part is at \x1BCC[ff0000ff]{location}\x1BCC[b4ffffff]\n"
+            f"in \x1BCC[ff0000ff]{send_player}\x1BCC[b4ffffff]"
+        )
+        if ctx.debug_mode:
+            logger.info(f"[DEBUG] Both hint text length: {len(text)}")
+        result = text.encode("ascii", errors="replace")
+        if len(result) < SHIP_PART_TEXT_LENGTH:
+            result += b"\x00" * (SHIP_PART_TEXT_LENGTH - len(result))
+        return result
+
     return b""
 
 
@@ -765,6 +815,8 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
     hint_mode = slot_data.get("ship_part_hint_mode", 0)
     if hint_mode == 0:
         return
+
+    hint_mode_is_both = hint_mode == 3
 
     try:
         raw = dme.read_bytes(SHIP_PART_TEXT_ADDR, SHIP_PART_TEXT_LENGTH)
@@ -791,38 +843,60 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
         # No part name found — could be our hint text already written (part name still there)
         # or something else. If we have an active hint, check if we should keep writing it.
         if ctx.last_hint_shown and ctx.last_hint_bytes:
-            # Our hint was written but game may have partially overwritten it — re-apply
             part_bytes = ctx.last_hint_shown.encode("ascii")
             if part_bytes in raw:
-                try:
-                    dme.write_bytes(SHIP_PART_TEXT_ADDR, ctx.last_hint_bytes)
-                except Exception as e:
-                    logger.debug(f"Error re-applying hint: {e}")
+                if hint_mode_is_both:
+                    elapsed = time.monotonic() - ctx.hint_both_last_toggle
+                    if elapsed >= BOTH_MODE_TOGGLE_INTERVAL:
+                        ctx.hint_both_toggle = not ctx.hint_both_toggle
+                        ctx.hint_both_last_toggle = time.monotonic()
+                        current_hint_mode = 1 if not ctx.hint_both_toggle else 2
+                        new_hint_bytes = build_hint_bytes(ctx, ctx.last_hint_shown, current_hint_mode)
+                        if new_hint_bytes:
+                            ctx.last_hint_bytes = new_hint_bytes
+                            if ctx.debug_mode:
+                                logger.info(f"[DEBUG] Both mode toggle: mode={current_hint_mode}")
+                            try:
+                                dme.write_bytes(SHIP_PART_TEXT_ADDR, ctx.last_hint_bytes)
+                            except Exception as e:
+                                logger.debug(f"Error re-applying hint: {e}")
+                else:
+                    try:
+                        dme.write_bytes(SHIP_PART_TEXT_ADDR, ctx.last_hint_bytes)
+                    except Exception as e:
+                        logger.debug(f"Error re-applying hint: {e}")
         return
 
     # A part name is visible in the raw buffer.
     # If this is a new part (not the one we already wrote a hint for), build and write the hint.
     if detected_part != ctx.last_hint_shown:
         loc_id = ALL_PARTS[detected_part].ap_id
+        ctx.hint_both_toggle = False
+        ctx.hint_both_last_toggle = time.monotonic()
 
         # Create a real hint on the server only for "item" mode (not for Super Radar)
-        if hint_mode == 1 and loc_id not in ctx.created_hints:
-            ctx.created_hints.add(loc_id)
-            await ctx.send_msgs([{
-                "cmd": "CreateHints",
-                "locations": [loc_id],
-                "player": ctx.slot,
-            }])
-            if ctx.debug_mode:
-                logger.info(f"[DEBUG] CreateHints sent for {detected_part} (loc_id={loc_id})")
+        if hint_mode == 1 or hint_mode_is_both:
+            item_hint_key = f"{detected_part}_item" if hint_mode_is_both else detected_part
+            if item_hint_key not in ctx.created_hints:
+                ctx.created_hints.add(item_hint_key)
+                await ctx.send_msgs([{
+                    "cmd": "CreateHints",
+                    "locations": [loc_id],
+                    "player": ctx.slot,
+                }])
+                if ctx.debug_mode:
+                    logger.info(f"[DEBUG] CreateHints sent for {detected_part} (loc_id={loc_id})")
 
         # Super Radar: create a server hint for the specific part being examined.
         # slot_data["hints"] tells us which location holds this part and who owns it.
-        if hint_mode == 2:
+        if hint_mode == 2 or hint_mode_is_both:
             slot_hints: dict = (ctx.slot_data or {}).get("hints", {})
-            hint_data = slot_hints.get(detected_part)
-            if hint_data and detected_part not in ctx.created_hints:
-                ctx.created_hints.add(detected_part)
+            radar_hint_key = f"{detected_part}_radar" if hint_mode_is_both else detected_part
+            hint_data = slot_hints.get(radar_hint_key)
+            if not hint_data:
+                hint_data = slot_hints.get(detected_part)
+            if hint_data and radar_hint_key not in ctx.created_hints:
+                ctx.created_hints.add(radar_hint_key)
                 try:
                     target_loc_id = int(hint_data.get("Location ID", 0))
                     target_player = int(hint_data.get("Send Player ID", ctx.slot))
@@ -849,7 +923,7 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
         ctx.last_hint_bytes = hint_bytes
 
         if ctx.debug_mode:
-            logger.info(f"[DEBUG] Writing hint for {detected_part}")
+            logger.info(f"[DEBUG] Writing hint for {detected_part} (mode={current_hint_mode})")
 
         try:
             dme.write_bytes(SHIP_PART_TEXT_ADDR, hint_bytes)
@@ -898,7 +972,8 @@ async def dolphin_loop(ctx: P1Context):
 
             # For Super Radar, we need to scout ALL multiworld locations, not just our own
             slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
-            if slot_data.get("ship_part_hint_mode") == 2:
+            hint_mode_val = slot_data.get("ship_part_hint_mode", 0)
+            if hint_mode_val == 2 or hint_mode_val == 3:
                 # Super Radar: scout ALL locations from all players
                 # Get from server's checked + missing
                 all_server_locs = set(ctx.checked_locations) | set(ctx.missing_locations)

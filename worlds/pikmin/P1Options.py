@@ -263,11 +263,13 @@ class ShipPartHintMode(Choice):
     none        : No hint displayed (vanilla behavior)
     item        : Shows what item the ship part location contains
     super_radar : Shows where your progression items are located in the multiworld
+    both        : Shows both the item and where progression items are located
     """
     display_name = "Ship Part Hint Mode"
     option_none = 0
     option_item = 1
     option_super_radar = 2
+    option_both = 3
     default = 1
 
 
