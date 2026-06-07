@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from typing import TYPE_CHECKING, Optional
 
@@ -27,7 +28,7 @@ SHIP_PART_TEXT_LENGTH = 313  # 0x807B1143 - 0x807B100A
 BOTH_MODE_TOGGLE_INTERVAL = 5.0  # seconds
 
 
-# Pikmin memory addresses for PAL version
+# Pikmin count addresses — used for location checking (stable, always valid)
 PIKMIN_ADDRESSES_PAL = {
     "red":    0x803D6CF7,
     "yellow": 0x803D6CFB,
@@ -40,75 +41,41 @@ PIKMIN_ADDRESSES_NTSC_U = {
     "blue":   0x803D1E73,
 }
 
-# Onion Pikmin count addresses - short (2 bytes BE), persistent across days
-# PAL confirmed via RAM Watch (typeIndex=1)
-ONION_ADDRESSES_PAL = {
-    "red":    0x803D6C7E,
-    "yellow": 0x803D6C8A,
-    "blue":   0x803D6C72,
-}
-
-ONION_ADDRESSES_NTSC_U = {
-    "red":    0x803D1EA6,  # TODO: verify NTSC-U
-    "yellow": 0x803D1E0A,
-    "blue":   0x803D1DF2,
-}
-
 PIKMIN_ADDRESSES = {
     b"GPIP01": PIKMIN_ADDRESSES_PAL,
     b"GPIE01": PIKMIN_ADDRESSES_NTSC_U,
 }
 
-ONION_ADDRESSES = {
-    b"GPIP01": ONION_ADDRESSES_PAL,
-    b"GPIE01": ONION_ADDRESSES_NTSC_U,
+# Onion active counts — written by the patched DOL stub to fixed addresses.
+# Fixed addresses written by the DOL stub each time the game updates an onion.
+# VAL: current onion count (mirror of dynamic address)
+# PTR: pointer to the dynamic onion address (changes per Dolphin session)
+# Stable across all Dolphin versions (DOL BSS region, zeroed at boot).
+ONION_VAL_ADDRS_PAL = {
+    "red":    0x803D7000,
+    "yellow": 0x803D7004,
+    "blue":   0x803D7008,
 }
 
-# Addresses per color for adding Pikmin bonus
-# Format: {"color": [(address, zone_filter)]}
-# zone_filter: None = always write, string = only write if current zone matches
-PIKMIN_BONUS_ADDR_PAL: dict[str, list[tuple[int, str | None]]] = {
-    "red": [
-        (0x803D6C7E, None),                                  # persistent, always write
-        (0x810B3C6E, "courses/practice/practice.mod"),       # Crash Site
-        (0x810B3EB6, "courses/practice/practice.mod"),       # Crash Site (OFF - post-intro)
-        (0x8110E20E, "courses/stage1/forest.mod"),           # Forest of Hope
-        (0x8110EDD6, "courses/stage2/cave.mod"),             # Forest Navel
-        (0x811593DE, "courses/stage3/yakusima.mod"),         # Distant Spring
-        (0x810D4D6E, "courses/laststage/garden.mod"),        # Final Trial
-    ],
-    "yellow": [
-        (0x803D6C8A, None),                                  # persistent, always write
-        (0x810B48FE, "courses/practice/practice.mod"),       # Crash Site
-        (0x8110CC66, "courses/stage1/forest.mod"),           # Forest of Hope
-        (0x811103C6, "courses/stage1/forest.mod"),           # Forest of Hope (OFF)
-        (0x8110FA66, "courses/stage2/cave.mod"),             # Forest Navel
-        (0x8115A06E, "courses/stage3/yakusima.mod"),         # Distant Spring
-        (0x810D59FE, "courses/laststage/garden.mod"),        # Final Trial
-    ],
-    "blue": [
-        (0x803D6C72, None),                                  # persistent, always write
-        (0x810B3C4E, "courses/practice/practice.mod"),       # Crash Site
-        (0x8110C98E, "courses/stage1/forest.mod"),           # Forest of Hope
-        (0x8110E146, "courses/stage2/cave.mod"),             # Forest Navel
-        (0x8111255E, "courses/stage2/cave.mod"),             # Forest Navel (OFF)
-        (0x8115874E, "courses/stage3/yakusima.mod"),         # Distant Spring
-        (0x810D40DE, "courses/laststage/garden.mod"),        # Final Trial
-    ],
+# Stub stores r29 (onion base) per color — client computes dyn_addr = base + 0x042C
+ONION_BASE_ADDRS_PAL = {
+    "red":    0x803D7010,
+    "yellow": 0x803D7014,
+    "blue":   0x803D7018,
+}
+ONION_DYN_OFFSET = 0x042C
+
+
+# Onion persistent counts — applied at the start of each new day.
+ONION_PERSISTENT_ADDRS_PAL = {
+    "red":    0x803D6C7E,
+    "yellow": 0x803D6C8A,
+    "blue":   0x803D6C72,
 }
 
-# Address containing the current zone name string (ASCII, null-terminated)
-CURRENT_ZONE_ADDR: MemoryAddress = mem(0x803A2A50, 0x803A2A50)
-CURRENT_ZONE_LENGTH = 35  # max length to read
-
-PIKMIN_BONUS_ADDR = {
-    b"GPIP01": PIKMIN_BONUS_ADDR_PAL,
-}
-
-# ONION_FLAGS: MemoryAddress = mem(0x81242804, 0x81242804)  # byte bitmask PAL
-ONION_FLAG_RED    = 18
-ONION_FLAG_YELLOW = 36
-ONION_FLAG_BLUE   = 9
+ONION_VAL_ADDRS = {b"GPIP01": ONION_VAL_ADDRS_PAL}
+ONION_BASE_ADDRS = {b"GPIP01": ONION_BASE_ADDRS_PAL}
+ONION_PERSISTENT_ADDRS = {b"GPIP01": ONION_PERSISTENT_ADDRS_PAL}
 
 
 class P1CommandProcessor(ClientCommandProcessor):
@@ -119,7 +86,7 @@ class P1CommandProcessor(ClientCommandProcessor):
         """Toggle debug logging for Pikmin client."""
         self.ctx.debug_mode = not getattr(self.ctx, "debug_mode", False)
         state = "ON" if self.ctx.debug_mode else "OFF"
-        
+
         if self.ctx.debug_mode:
             logger.info(f"Pikmin debug mode: {state}")
             slot_data = getattr(self.ctx, "slot_data", {}) or {}
@@ -132,24 +99,26 @@ class P1CommandProcessor(ClientCommandProcessor):
                     logger.info(f"[DEBUG]   {part_name}: {hint_data.get('Item', '?')} at {hint_data.get('Location', '?')}")
         else:
             logger.info(f"Pikmin debug mode: {state}")
-        
+
         return True
 
     def _cmd_crash(self) -> bool:
         """Re-apply all received Pikmin bonus items and re-check all collected ship part locations.
         Use this if the game crashed and you lost progress."""
+        old_key = self.ctx._save_key()
+
         # Reset applied items so all bonuses get re-applied
         self.ctx.pikmin_items_applied = {}
-        self.ctx.pending_zone_bonus = {"red": 0, "yellow": 0, "blue": 0}
-        self.ctx.pending_onion_unlock_bonus = {"red": 0, "yellow": 0, "blue": 0}
-        self.ctx.zone_addr_active = {"red": {}, "yellow": {}, "blue": {}}
-        self.ctx.zone_addr_last_vals = {"red": {}, "yellow": {}, "blue": {}}
         self.ctx.save_applied()
+
+        new_key = self.ctx._save_key()
 
         # Remove ship part location IDs from checked_locations so they get re-checked
         ship_part_location_ids = {data.ap_id for data in ALL_PARTS.values()}
         self.ctx.locations_checked -= ship_part_location_ids
 
+        logger.info(f"Crash recovery: old key = '{old_key}'")
+        logger.info(f"Crash recovery: new key = '{new_key}'")
         logger.info("Crash recovery: all Pikmin bonuses will be re-applied on next tick.")
         logger.info("Crash recovery: ship part locations will be re-checked on next tick.")
         return True
@@ -177,16 +146,8 @@ class P1Context(CommonContext):
         self.last_hour: int = -1
         # Debug mode toggle via /debug command
         self.debug_mode: bool = False
-        # Pending zone bonus per color waiting for Onion to be unlocked
-        self.pending_onion_unlock_bonus: dict[str, int] = {"red": 0, "yellow": 0, "blue": 0}
-        # Last known Onion unlock state to detect when it changes
-        self.last_onion_flags: int = -1
-        # Track last known zone address values per color to detect when they become active
-        # A zone address is "active" when its value decreases (player took Pikmin from Onion)
-        self.zone_addr_last_vals: dict[str, dict[int, int]] = {"red": {}, "yellow": {}, "blue": {}}
-        self.zone_addr_active: dict[str, dict[int, bool]] = {"red": {}, "yellow": {}, "blue": {}}
-        # Pending bonus per color waiting for zone addresses to become active
-        self.pending_zone_bonus: dict[str, int] = {"red": 0, "yellow": 0, "blue": 0}
+        # Pending DYN pikmin per color (waiting for base addr to be known)
+        self.pikmin_dyn_pending: dict[str, int] = {"red": 0, "yellow": 0, "blue": 0}
         # Ship part hint tracking
         self.last_hint_shown: str = ""
         # Raw bytes of the hint we wrote, so we can re-apply if the game overwrites it
@@ -219,6 +180,10 @@ class P1Context(CommonContext):
         self.hint_both_last_toggle: float = 0.0
 
     def _save_key(self) -> str:
+        slot_data = getattr(self, "slot_data", {}) or {}
+        suffix = slot_data.get("game_id_suffix", "")
+        if suffix:
+            return f"applied_{self.auth}_P1P{suffix}"
         seed = getattr(self, "seed_name", None) or "unknown"
         return f"applied_{self.auth}_{seed}"
 
@@ -262,8 +227,10 @@ class P1Context(CommonContext):
                 self.seed_name = args.get("seed_name", "unknown")
             if self.debug_mode:
                 logger.info(f"[DEBUG] slot_data reçu: {self.slot_data}")
+            self.pikmin_items_applied = {}  # reset before loading with correct key
+            self.pikmin_dyn_pending = {"red": 0, "yellow": 0, "blue": 0}
             self.load_applied()
-            self.needs_location_scout = True  # ← flag, pas d'envoi immédiat
+            self.needs_location_scout = True
             # Register for hints notifications
             self.stored_data_notification_keys.add(f"_read_hints_{self.team}_{self.slot}")
         elif cmd == "LocationInfo":
@@ -282,7 +249,6 @@ class P1Context(CommonContext):
                     "flags":     item.flags if hasattr(item, "flags") else 0,
                 }
                 self.scouted_locations[loc_id] = entry
-                # Also store in all_locations_scouted for Super Radar
                 self.all_locations_scouted[loc_id] = entry
             self.scout_received = True
             if self.debug_mode:
@@ -312,191 +278,91 @@ class P1Context(CommonContext):
 
 
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
-    """Apply received Pikmin bonus items immediately.
-    Persistent address always written, real-time address only if zone matches.
-    At day start, verifies zone addresses against persistent value to avoid writing to wrong addresses."""
-    if game not in PIKMIN_BONUS_ADDR:
+    """Apply received Pikmin bonus items.
+
+    The DOL stub stores r29 (onion base) per color to ONION_BASE_ADDRS.
+    Client computes dyn_addr = base + 0x042C and writes pikmin there.
+    Also writes to ONION_PERSISTENT_ADDRS to survive day transitions.
+    """
+    if game not in ONION_BASE_ADDRS:
         return
 
-    bonus_addrs = PIKMIN_BONUS_ADDR[game]
+    base_addrs       = ONION_BASE_ADDRS[game]
+    persistent_addrs = ONION_PERSISTENT_ADDRS[game]
 
-    # Read current zone name
-    try:
-        zone_bytes = dme.read_bytes(CURRENT_ZONE_ADDR[game], CURRENT_ZONE_LENGTH)
-        current_zone = zone_bytes.split(b'\x00')[0].decode("ascii", errors="replace")
-    except Exception:
-        current_zone = ""
-
-    # Detect day start (hour == 7 after being >= 19)
-    try:
-        current_hour = dme.read_word(TIME_HOURS[game])
-    except Exception:
-        current_hour = -1
-
-    day_just_started = ctx.last_hour >= 19 and current_hour == 7
-    if ctx.last_hour == -1:
-        ctx.last_hour = current_hour
-    else:
-        ctx.last_hour = current_hour
-
-    # Build ID -> (color, count) map
     id_to_pikmin: dict[int, tuple[str, int]] = {
         FILLER_ITEMS[name]: PIKMIN_BONUS_ITEMS[name]
         for name in PIKMIN_BONUS_ITEMS
         if name in FILLER_ITEMS
     }
 
-    def get_persistent_val(color: str) -> int:
-        """Read the persistent (always-valid) address value for a color."""
-        addrs = bonus_addrs.get(color, [])
-        persistent_addr = next((addr for addr, zone in addrs if zone is None), None)
-        if persistent_addr:
-            try:
-                return int.from_bytes(dme.read_bytes(persistent_addr, 2), "big")
-            except Exception:
-                pass
-        return -1
-
-    def update_zone_activity(color: str) -> None:
-        """
-        Mark a zone address as active if:
-        1. Its value matches the persistent save value (immediate activation), OR
-        2. Its value has changed since last tick (player interacted with Onion)
-        """
-        addrs = bonus_addrs.get(color, [])
-        persistent_addr = next((addr for addr, zone in addrs if zone is None), None)
-        persistent_val = -1
-        if persistent_addr:
-            try:
-                persistent_val = int.from_bytes(dme.read_bytes(persistent_addr, 2), "big")
-            except Exception:
-                pass
-
-        for addr, zone_filter in addrs:
-            if zone_filter is None or zone_filter != current_zone:
-                continue
-            try:
-                val = int.from_bytes(dme.read_bytes(addr, 2), "big")
-                last = ctx.zone_addr_last_vals[color].get(addr, -1)
-
-                if persistent_val != -1 and val == persistent_val:
-                    ctx.zone_addr_active[color][addr] = True
-                elif last != -1 and val != last:
-                    ctx.zone_addr_active[color][addr] = True
-
-                ctx.zone_addr_last_vals[color][addr] = val
-            except Exception:
-                pass
-
-    # Read current Onion unlock flags
-    onion_flag_map = {"red": ONION_FLAG_RED, "yellow": ONION_FLAG_YELLOW, "blue": ONION_FLAG_BLUE}
-    try:
-        current_onion_flags = dme.read_byte(ONION_FLAGS[game])
-    except Exception:
-        current_onion_flags = 0xFF  # assume all unlocked on error
-
-    def onion_unlocked(color: str) -> bool:
-        return bool(current_onion_flags & onion_flag_map.get(color, 0))
-
-    def apply_bonus(color: str, bonus: int) -> bool:
-        """
-        Write bonus to persistent address always.
-        Write to zone addresses only if Onion is unlocked AND address is confirmed active.
-        If Onion not yet unlocked, queue for later.
-        If no zone address is active yet, queue the bonus and return False.
-        """
-        addrs = bonus_addrs.get(color, [])
-        if not addrs:
-            return False
-
-        zone_addrs = [(addr, zf) for addr, zf in addrs if zf is not None and zf == current_zone]
-        any_active = any(ctx.zone_addr_active[color].get(addr, False) for addr, _ in zone_addrs)
-
+    def read_u32(addr: int) -> int:
         try:
-            # Always write to persistent address
-            for addr, zone_filter in addrs:
-                if zone_filter is not None:
-                    continue
-                raw = dme.read_bytes(addr, 2)
-                current_val = int.from_bytes(raw, "big")
-                dme.write_bytes(addr, (current_val + bonus).to_bytes(2, "big"))
+            return int.from_bytes(dme.read_bytes(addr, 4), "big")
+        except Exception:
+            return 0
 
-            if not zone_addrs:
-                return True
-
-            # If Onion not unlocked, queue for later
-            if not onion_unlocked(color):
-                ctx.pending_onion_unlock_bonus[color] += bonus
-                if ctx.debug_mode:
-                    logger.info(f"[DEBUG] {color} Onion not unlocked, queued {bonus} Pikmin")
-                return True  # persistent was written, return True
-
-            if not any_active:
-                return False  # zone addresses exist but not active yet
-
-            # Write to active zone addresses only
-            for addr, _ in zone_addrs:
-                if not ctx.zone_addr_active[color].get(addr, False):
-                    continue
-                raw = dme.read_bytes(addr, 2)
-                current_val = int.from_bytes(raw, "big")
-                dme.write_bytes(addr, (current_val + bonus).to_bytes(2, "big"))
-
-            return True
+    def write_u32(addr: int, value: int) -> None:
+        try:
+            dme.write_bytes(addr, value.to_bytes(4, "big"))
         except Exception as e:
-            logger.debug(f"Error applying Pikmin bonus: {e}")
-            return False
+            logger.debug(f"Error writing to 0x{addr:08x}: {e}")
 
-    # Check if an Onion was just unlocked and apply pending bonus
-    if ctx.last_onion_flags != -1 and current_onion_flags != ctx.last_onion_flags:
-        for color, flag in onion_flag_map.items():
-            was_locked = not bool(ctx.last_onion_flags & flag)
-            now_unlocked = bool(current_onion_flags & flag)
-            if was_locked and now_unlocked:
-                amount = ctx.pending_onion_unlock_bonus[color]
-                if amount > 0:
-                    zone_addrs = [(addr, zf) for addr, zf in bonus_addrs.get(color, [])
-                                  if zf is not None and zf == current_zone]
-                    for addr, _ in zone_addrs:
-                        if ctx.zone_addr_active[color].get(addr, False):
-                            try:
-                                raw = dme.read_bytes(addr, 2)
-                                current_val = int.from_bytes(raw, "big")
-                                dme.write_bytes(addr, (current_val + amount).to_bytes(2, "big"))
-                            except Exception as e:
-                                logger.debug(f"Error applying unlock bonus: {e}")
-                    ctx.pending_onion_unlock_bonus[color] = 0
-                    logger.info(f"{color} Onion unlocked! Applied pending {amount} Pikmin to zone")
-    ctx.last_onion_flags = current_onion_flags
+    def read_u16(addr: int) -> int:
+        try:
+            return int.from_bytes(dme.read_bytes(addr, 2), "big")
+        except Exception:
+            return 0
 
-    # Update zone activity tracking for all colors
+    def write_u16(addr: int, value: int) -> None:
+        try:
+            dme.write_bytes(addr, (value & 0xFFFF).to_bytes(2, "big"))
+        except Exception as e:
+            logger.debug(f"Error writing u16 to 0x{addr:08x}: {e}")
+
+    # Apply pending DYN amounts for colors whose base is now known
+    if not hasattr(ctx, "pikmin_dyn_pending"):
+        ctx.pikmin_dyn_pending = {"red": 0, "yellow": 0, "blue": 0}
+
     for color in ["red", "yellow", "blue"]:
-        update_zone_activity(color)
-
-    # Apply pending zone bonuses if addresses just became active
-    for color, amount in list(ctx.pending_zone_bonus.items()):
-        if amount <= 0:
-            continue
-        zone_addrs = [(addr, zf) for addr, zf in bonus_addrs.get(color, [])
-                      if zf is not None and zf == current_zone]
-        if any(ctx.zone_addr_active[color].get(addr, False) for addr, _ in zone_addrs):
-            try:
-                for addr, _ in zone_addrs:
-                    if ctx.zone_addr_active[color].get(addr, False):
-                        raw = dme.read_bytes(addr, 2)
-                        current_val = int.from_bytes(raw, "big")
-                        dme.write_bytes(addr, (current_val + amount).to_bytes(2, "big"))
-                ctx.pending_zone_bonus[color] = 0
+        pending = ctx.pikmin_dyn_pending.get(color, 0)
+        if pending > 0:
+            base = read_u32(base_addrs[color])
+            if base and base > 0x80000000:
+                dyn_addr = base + ONION_DYN_OFFSET
+                old_dyn = read_u32(dyn_addr)
+                new_dyn = old_dyn + pending
+                write_u32(dyn_addr, new_dyn)
+                ctx.pikmin_dyn_pending[color] = 0
                 if ctx.debug_mode:
-                    logger.info(f"[DEBUG] Applied pending {amount} {color} Pikmin to zone")
-            except Exception as e:
-                logger.debug(f"Error applying pending zone bonus: {e}")
+                    logger.info(f"[DEBUG] DYN PENDING flush {color} +{pending} : {old_dyn} -> {new_dyn}")
 
-    # Apply bonus immediately for each newly received item
+    def add_pikmin(color: str, amount: int) -> None:
+        base = read_u32(base_addrs[color])
+        if base and base > 0x80000000:
+            dyn_addr = base + ONION_DYN_OFFSET
+            old_dyn = read_u32(dyn_addr)
+            new_dyn = old_dyn + amount
+            write_u32(dyn_addr, new_dyn)
+            if ctx.debug_mode:
+                logger.info(f"[DEBUG] DYN   0x{dyn_addr:08x} : {old_dyn} -> {new_dyn} (base=0x{base:08x}, color={color})")
+        else:
+            ctx.pikmin_dyn_pending[color] = ctx.pikmin_dyn_pending.get(color, 0) + amount
+            if ctx.debug_mode:
+                logger.info(f"[DEBUG] DYN   PENDING {color} +{amount} (base invalid)")
+
+        pers_addr = persistent_addrs[color]
+        old_pers = read_u16(pers_addr)
+        new_pers = old_pers + amount
+        write_u16(pers_addr, new_pers)
+        if ctx.debug_mode:
+            logger.info(f"[DEBUG] PERS  0x{pers_addr:08x} : {old_pers} -> {new_pers} (color={color})")
+
     for item in ctx.items_received:
         item_id = item.item
         if item_id not in id_to_pikmin:
             continue
+
         color, count = id_to_pikmin[item_id]
         total_received = sum(1 for i in ctx.items_received if i.item == item_id)
         already_applied = ctx.pikmin_items_applied.get(item_id, 0)
@@ -505,20 +371,13 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             continue
 
         bonus = count * to_apply
-        zone_addrs_for_color = [(addr, zf) for addr, zf in bonus_addrs.get(color, [])
-                                 if zf is not None and zf == current_zone]
-        any_active_log = any(ctx.zone_addr_active[color].get(addr, False) for addr, _ in zone_addrs_for_color)
         if ctx.debug_mode:
-            logger.info(f"[DEBUG] Received {bonus} {color} Pikmin | zone={current_zone} | zone_addrs={len(zone_addrs_for_color)} | any_active={any_active_log}")
-        if apply_bonus(color, bonus):
-            ctx.pikmin_items_applied[item_id] = total_received
-            ctx.save_applied()
-        else:
-            ctx.pending_zone_bonus[color] += bonus
-            ctx.pikmin_items_applied[item_id] = total_received
-            ctx.save_applied()
-            if ctx.debug_mode:
-                logger.info(f"[DEBUG] Queued {bonus} {color} Pikmin for zone (not yet active)")
+            logger.info(f"[DEBUG] Item  {color} +{bonus} (item_id={item_id})")
+        add_pikmin(color, bonus)
+
+        ctx.pikmin_items_applied[item_id] = total_received
+
+    ctx.save_applied()
 
 
 async def handle_parts(ctx: P1Context, game: Game):
@@ -531,16 +390,6 @@ async def handle_parts(ctx: P1Context, game: Game):
             ctx.locations_checked.add(data.ap_id)
             await ctx.check_locations([data.ap_id])
 
-    # if ctx.locations_checked == ctx.checked_locations:
-    # client and server data match -> it's safe to change memory
-    # here we could do the following:
-    # - put parts whose location we have checked but whose item we haven't received yet to 0 (should be safe)
-    # - put parts whose item we have received but whose location we haven't checked yet to 3
-    # the latter could be prone to TOCTOU errors where we read and check it at 0, then it gets collected ingame
-    # and becomes 1/2, then we set it to 3, never noticing that it got collected (it can't ever get collected again)
-    # currently doing neither so that parts on the ship == locations checked instead of items received or sth mixed
-    # consider only updating the latter case (or both) in menus/paused once we can detect that
-
 
 async def handle_pikmin_locations(ctx: P1Context, game: Game):
     """Handle Pikmin collection location checking"""
@@ -551,9 +400,9 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
         addresses = PIKMIN_ADDRESSES[game]
 
         # Read current Pikmin counts
-        red_count = dme.read_byte(addresses["red"])
+        red_count    = dme.read_byte(addresses["red"])
         yellow_count = dme.read_byte(addresses["yellow"])
-        blue_count = dme.read_byte(addresses["blue"])
+        blue_count   = dme.read_byte(addresses["blue"])
 
         # Only act if counts have changed since last tick
         if (red_count == ctx.last_red_count
@@ -561,14 +410,14 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
                 and blue_count == ctx.last_blue_count):
             return
 
-        ctx.last_red_count = red_count
+        ctx.last_red_count    = red_count
         ctx.last_yellow_count = yellow_count
-        ctx.last_blue_count = blue_count
+        ctx.last_blue_count   = blue_count
 
         current_counts = {
-            "red": red_count,
+            "red":    red_count,
             "yellow": yellow_count,
-            "blue": blue_count,
+            "blue":   blue_count,
         }
 
         # Build reverse map once: ap_id -> (color, threshold)
@@ -580,10 +429,6 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
 
         locations_to_check = []
 
-        # Iterate ONLY over locations the SERVER registered for this player.
-        # ctx.missing_locations is the authoritative list — it only contains IDs
-        # actually created during generation (respecting the interval).
-        # ctx.check_locations() internally skips already-checked locations.
         for loc_id in ctx.missing_locations:
             if loc_id not in id_to_pikmin:
                 continue
@@ -594,10 +439,9 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
         if locations_to_check:
             await ctx.check_locations(locations_to_check)
 
-        # Update counts for UI/logging
-        ctx.pikmin_counts["red"] = red_count
+        ctx.pikmin_counts["red"]    = red_count
         ctx.pikmin_counts["yellow"] = yellow_count
-        ctx.pikmin_counts["blue"] = blue_count
+        ctx.pikmin_counts["blue"]   = blue_count
 
     except Exception as e:
         logger.debug(f"Error handling Pikmin locations: {e}")
@@ -612,7 +456,7 @@ async def handle_areas(ctx: P1Context, game: Game):
 
     total_required = 0
 
-    if ship_parts_count >= 30:  # lazy: this makes olimar succeed once all parts have been collected
+    if ship_parts_count >= 30:
         total_required = 25
 
         if not ctx.finished_game:
@@ -648,8 +492,8 @@ async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
         return
 
     if ctx.debug_mode:
-        import time
-        _now = time.monotonic()
+        import time as _time
+        _now = _time.monotonic()
         if _now - ctx._last_day_debug_log >= 60.0:
             logger.info(f"[DEBUG] Day cycle: day={day} mode={mode}")
             ctx._last_day_debug_log = _now
@@ -691,24 +535,21 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
         player_name = ctx.player_names.get(player_id, str(player_id))
         flags = info.get("flags", 0)
 
-        # Color by item classification flags
-        if flags & 0b100:       # trap
-            item_color = "ff0000ff"   # red
-        elif flags & 0b010:     # useful
-            item_color = "00ffffff"   # light blue (cyan)
-        elif flags & 0b001:     # progression
-            item_color = "cc00ffff"   # purple
-        else:                   # filler / unknown
-            item_color = "b4ffffff"   # white (default)
+        if flags & 0b100:
+            item_color = "ff0000ff"
+        elif flags & 0b010:
+            item_color = "00ffffff"
+        elif flags & 0b001:
+            item_color = "cc00ffff"
+        else:
+            item_color = "b4ffffff"
 
-        # 0x1B is the GC formatting prefix for color codes
         text = (
             f"\x1BCC[ff0000ff]{part_name}\x1BCC[b4ffffff]\n"
             f"Contains: \x1BCC[{item_color}]{item_name}\x1BCC[b4ffffff]\n"
             f"For: \x1BCC[ff0000ff]{player_name}\x1BCC[b4ffffff]"
         )
         result = text.encode("ascii", errors="replace")
-        # Pad with null bytes to erase remaining original text
         if len(result) < SHIP_PART_TEXT_LENGTH:
             result += b"\x00" * (SHIP_PART_TEXT_LENGTH - len(result))
         return result
@@ -717,26 +558,26 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
         slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
         hints = slot_data.get("hints", {})
         hint_data = hints.get(part_name)
-        
+
         if ctx.debug_mode:
             logger.info(f"[DEBUG] Super Radar - part: {part_name}, hints count: {len(hints)}, hint_data: {hint_data}")
-        
+
         if hint_data:
-            item_name = hint_data.get("Item", "Unknown")
-            location = hint_data.get("Location", "Unknown")
+            item_name   = hint_data.get("Item", "Unknown")
+            location    = hint_data.get("Location", "Unknown")
             send_player = hint_data.get("Send Player", "Unknown")
-            hint_class = hint_data.get("Class", "Other")
-            
+            hint_class  = hint_data.get("Class", "Other")
+
             if ctx.debug_mode:
                 logger.info(f"[DEBUG] Super Radar - Item: {item_name}, Location: {location}, SendPlayer: {send_player}, Class: {hint_class}")
-            
+
             if hint_class == "Prog":
                 item_color = "cc00ffff"
             elif hint_class == "Trap":
                 item_color = "ff0000ff"
             else:
                 item_color = "00ffffff"
-            
+
             text = (
                 f"\x1BCC[ff0000ff]{part_name}\x1BCC[b4ffffff]\n"
                 f"Your Ship Part is at \x1BCC[ff0000ff]{location}\x1BCC[b4ffffff] in \x1BCC[ff0000ff]{send_player}\x1BCC[b4ffffff]"
@@ -748,7 +589,7 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
                 f"\x1BCC[cc00ff]{part_name}\x1BCC[b4ffffff]\n"
                 f"\x1BCC[00ffffff]No hint data"
             )
-        
+
         result = text.encode("ascii", errors="replace")
         if len(result) < SHIP_PART_TEXT_LENGTH:
             result += b"\x00" * (SHIP_PART_TEXT_LENGTH - len(result))
@@ -769,10 +610,10 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
                 logger.info(f"[DEBUG] Both - Missing data: info={bool(info)}, radar_hint_data={bool(radar_hint_data)}")
             return b""
 
-        item_name = info["item_name"]
-        player_id = info["player"]
+        item_name   = info["item_name"]
+        player_id   = info["player"]
         player_name = ctx.player_names.get(player_id, str(player_id))
-        flags = info.get("flags", 0)
+        flags       = info.get("flags", 0)
 
         if flags & 0b100:
             item_color = "ff0000ff"
@@ -783,7 +624,7 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
         else:
             item_color = "b4ffffff"
 
-        location = radar_hint_data.get("Location", "Unknown")
+        location    = radar_hint_data.get("Location", "Unknown")
         send_player = radar_hint_data.get("Send Player", "Unknown")
 
         text = (
@@ -823,14 +664,11 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
     except Exception:
         return
 
-    # If the buffer is all zeros, no text is currently displayed — reset state
     if not any(raw):
         ctx.last_hint_shown = ""
         ctx.last_hint_bytes = b""
         return
 
-    # Search each part name in the first line only (before \n)
-    # to avoid matching part names in "Contains:" or "For:" lines
     first_newline = raw.find(b"\n")
     first_line = raw[:first_newline] if first_newline != -1 else raw
     detected_part = None
@@ -840,8 +678,6 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
             break
 
     if not detected_part:
-        # No part name found — could be our hint text already written (part name still there)
-        # or something else. If we have an active hint, check if we should keep writing it.
         if ctx.last_hint_shown and ctx.last_hint_bytes:
             part_bytes = ctx.last_hint_shown.encode("ascii")
             if part_bytes in raw:
@@ -867,14 +703,11 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
                         logger.debug(f"Error re-applying hint: {e}")
         return
 
-    # A part name is visible in the raw buffer.
-    # If this is a new part (not the one we already wrote a hint for), build and write the hint.
     if detected_part != ctx.last_hint_shown:
         loc_id = ALL_PARTS[detected_part].ap_id
         ctx.hint_both_toggle = False
         ctx.hint_both_last_toggle = time.monotonic()
 
-        # Create a real hint on the server only for "item" mode (not for Super Radar)
         if hint_mode == 1 or hint_mode_is_both:
             item_hint_key = f"{detected_part}_item" if hint_mode_is_both else detected_part
             if item_hint_key not in ctx.created_hints:
@@ -887,8 +720,6 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
                 if ctx.debug_mode:
                     logger.info(f"[DEBUG] CreateHints sent for {detected_part} (loc_id={loc_id})")
 
-        # Super Radar: create a server hint for the specific part being examined.
-        # slot_data["hints"] tells us which location holds this part and who owns it.
         if hint_mode == 2 or hint_mode_is_both:
             slot_hints: dict = (ctx.slot_data or {}).get("hints", {})
             radar_hint_key = f"{detected_part}_radar" if hint_mode_is_both else detected_part
@@ -913,7 +744,8 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
                         logger.info(f"[DEBUG] Super Radar CreateHints for {detected_part} "
                                     f"(loc_id={target_loc_id}, player={target_player})")
 
-        hint_bytes = build_hint_bytes(ctx, detected_part, hint_mode)
+        current_hint_mode = hint_mode
+        hint_bytes = build_hint_bytes(ctx, detected_part, current_hint_mode)
         if not hint_bytes:
             if ctx.debug_mode:
                 logger.info(f"[DEBUG] No hint text for {detected_part} (scouted={len(ctx.scouted_locations)})")
@@ -931,14 +763,12 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
             logger.debug(f"Error writing hint text: {e}")
 
     else:
-        # Same part still displayed — re-apply our hint every tick so the game cannot overwrite it
         if ctx.last_hint_bytes:
             try:
                 dme.write_bytes(SHIP_PART_TEXT_ADDR, ctx.last_hint_bytes)
             except Exception as e:
                 logger.debug(f"Error re-applying hint: {e}")
         elif ctx.scouted_locations or ctx.all_locations_scouted:
-            # Scout data arrived late — rebuild the hint now
             hint_bytes = build_hint_bytes(ctx, detected_part, hint_mode)
             if hint_bytes:
                 ctx.last_hint_bytes = hint_bytes
@@ -967,15 +797,11 @@ async def dolphin_loop(ctx: P1Context):
             ctx.scout_sent_time = time.monotonic()
             ctx.scout_received = False
 
-            # Get all locations from the server (for both item hints and Super Radar)
             all_locations = list(ALL_LOCATIONS.values())
 
-            # For Super Radar, we need to scout ALL multiworld locations, not just our own
             slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
             hint_mode_val = slot_data.get("ship_part_hint_mode", 0)
             if hint_mode_val == 2 or hint_mode_val == 3:
-                # Super Radar: scout ALL locations from all players
-                # Get from server's checked + missing
                 all_server_locs = set(ctx.checked_locations) | set(ctx.missing_locations)
                 all_locations = list(all_server_locs)
                 logger.info(f"[Super Radar] Sending LocationScouts for {len(all_locations)} locations")
@@ -987,7 +813,6 @@ async def dolphin_loop(ctx: P1Context):
                 "create_as_hint": 0,
             }])
 
-        # Retry scout if no response received after timeout
         if ctx.scout_sent and not ctx.scout_received:
             elapsed = time.monotonic() - ctx.scout_sent_time
             if elapsed >= SCOUT_RETRY_INTERVAL:
@@ -1008,11 +833,24 @@ async def dolphin_loop(ctx: P1Context):
                 continue
             else:
                 game = dme.read_bytes(0x80000000, 6)
-                if game not in [b"GPIP01", b"GPIE01"]:
-                    ctx.dolphin_status_text = "Connected - Wrong Game"
-                    continue
 
-                game_version = game
+                # Build expected patched Game ID from slot_data
+                slot_data = getattr(ctx, "slot_data", {}) or {}
+                suffix = slot_data.get("game_id_suffix", "")
+
+                if not suffix:
+                    # Not yet connected to AP server — accept any P1P patched ISO
+                    if not game.startswith(b"P1P"):
+                        ctx.dolphin_status_text = "Connected - Wrong Game (patch your ISO first)"
+                        continue
+                    game_version = b"GPIP01"
+                else:
+                    expected_patched_id = b"P1P" + suffix.encode("ascii")
+                    if game != expected_patched_id:
+                        ctx.dolphin_status_text = f"Connected - Wrong Game (expected {expected_patched_id.decode()})"
+                        continue
+                    game_version = b"GPIP01"
+
                 ctx.dolphin_status_text = f"Connected - {game.decode()}"
 
                 if game == b"GPIE01":
@@ -1039,12 +877,25 @@ async def dolphin_loop(ctx: P1Context):
         # TODO if "DeathLink" in ctx.tags: handle that
 
 
-def run_client() -> None:
+def run_client(*args) -> None:
+    # args may contain the path to a .appik1 file when launched via double-click
+    appik1_path = args[0] if args and isinstance(args[0], str) and args[0].endswith(".appik1") else None
+
+    # Patch the ISO if a valid .appik1 was provided
+    if appik1_path and os.path.isfile(appik1_path):
+        _handle_patch(appik1_path)
+
     async def main() -> None:
         parser = get_base_parser()
-        args = parser.parse_args()
+        parser.add_argument("appik1_file", default="", type=str, nargs="?",
+                            help="Path to a .appik1 patch file")
+        parsed = parser.parse_args()
 
-        ctx = P1Context(args.connect, args.password)
+        # Also handle patch if passed as CLI argument
+        if parsed.appik1_file and not appik1_path:
+            _handle_patch(parsed.appik1_file)
+
+        ctx = P1Context(parsed.connect, parsed.password)
         ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
 
         if gui_enabled:
@@ -1063,6 +914,102 @@ def run_client() -> None:
     colorama.init()
     asyncio.run(main())
     colorama.deinit()
+
+
+def _handle_patch(appik1_path: str) -> None:
+    """Patch a copy of the user's Pikmin 1 PAL ISO when a .appik1 file is opened."""
+    from .P1Rom import verify_iso, patch_iso, InvalidISOError
+    from settings import get_settings
+    import shutil
+
+    options = get_settings()
+    iso_path = options.get("pikmin_options", {}).get("iso_file", "")
+    if iso_path and not os.path.isfile(iso_path):
+        iso_path = Utils.user_path(iso_path)
+
+    # If no ISO configured or file doesn't exist, open a file picker
+    if not iso_path or not os.path.isfile(iso_path):
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.wm_attributes("-topmost", True)
+            iso_path = filedialog.askopenfilename(
+                title="Select your clean Pikmin 1 PAL ISO (GP1P01)",
+                filetypes=[("GameCube ISO", "*.iso *.gcm"), ("All files", "*.*")],
+            )
+            root.destroy()
+        except Exception as e:
+            logger.error(f"[Pikmin] Could not open file dialog: {e}")
+            iso_path = ""
+
+        if not iso_path:
+            Utils.messagebox(
+                "Cannot Patch Pikmin 1",
+                "No ISO selected. Please select your clean Pikmin 1 PAL ISO (GP1P01).",
+                error=True,
+            )
+            return
+
+        # Save the path to host.yml for next time
+        try:
+            if "pikmin_options" not in options:
+                options["pikmin_options"] = {}
+            options["pikmin_options"]["iso_file"] = iso_path
+            options.save()
+            logger.info(f"[Pikmin] Saved ISO path to host.yml: {iso_path}")
+        except Exception as e:
+            logger.warning(f"[Pikmin] Could not save ISO path to host.yml: {e}")
+
+    # Build output path: same folder as the .appik1, same name as ISO
+    patch_dir = os.path.dirname(os.path.abspath(appik1_path))
+    patch_basename = os.path.splitext(os.path.basename(appik1_path))[0]
+    iso_ext = os.path.splitext(iso_path)[1]
+    output_iso = os.path.join(patch_dir, patch_basename + iso_ext)
+
+    # Copy the clean ISO to the output path
+    try:
+        shutil.copy2(iso_path, output_iso)
+        logger.info(f"[Pikmin] Copied clean ISO to: {output_iso}")
+    except Exception as e:
+        Utils.messagebox("Cannot Patch Pikmin 1", f"Could not copy ISO:\n{e}", error=True)
+        return
+
+    # Read seed from .appik1
+    seed = ""
+    try:
+        import zipfile, json
+        with zipfile.ZipFile(appik1_path, "r") as zf:
+            with zf.open("patch.appik1") as f:
+                data = json.load(f)
+                seed = str(data.get("Seed", ""))
+    except Exception as e:
+        logger.warning(f"[Pikmin] Could not read seed from .appik1: {e}")
+
+    # Verify and patch the copy
+    try:
+        verify_iso(output_iso)
+        patch_iso(output_iso, seed=seed)
+        logger.info(f"[Pikmin] ISO patched successfully: {output_iso}")
+        Utils.messagebox(
+            "Pikmin 1 Patched",
+            f"Patched ISO created successfully!\n{output_iso}"
+        )
+    except InvalidISOError as e:
+        logger.error(f"[Pikmin] ISO verification failed: {e}")
+        try:
+            os.remove(output_iso)
+        except Exception:
+            pass
+        Utils.messagebox("Cannot Patch Pikmin 1", str(e), error=True)
+    except Exception as e:
+        logger.error(f"[Pikmin] Unexpected error during patching: {e}")
+        try:
+            os.remove(output_iso)
+        except Exception:
+            pass
+        Utils.messagebox("Cannot Patch Pikmin 1", f"Unexpected error:\n{e}", error=True)
 
 
 if __name__ == "__main__":
