@@ -1,5 +1,6 @@
 import asyncio
 import os
+import struct
 import time
 from typing import TYPE_CHECKING, Optional
 
@@ -25,7 +26,70 @@ DAY_NUMBER: MemoryAddress = mem(0x803A2937, 0x803A2937)  # byte, current day num
 # Ship part hint text address (PAL) — universal for all parts
 SHIP_PART_TEXT_ADDR = 0x807B100A
 SHIP_PART_TEXT_LENGTH = 313  # 0x807B1143 - 0x807B100A
-BOTH_MODE_TOGGLE_INTERVAL = 5.0  # seconds
+LANG_NAMES = {"en": "English", "fr": "Français", "de": "Deutsch", "it": "Italiano", "es": "Español"}
+
+LANG_MSG_DETECTED = {
+    "en": "Language detected",
+    "fr": "Langue détectée",
+    "de": "Sprache erkannt",
+    "it": "Lingua rilevata",
+    "es": "Idioma detectado",
+}
+
+LANG_MSG_LOCKED = {
+    "en": "Language locked",
+    "fr": "Langue verrouillée",
+    "de": "Sprache gesperrt",
+    "it": "Lingua bloccata",
+    "es": "Idioma bloqueado",
+}
+
+# Language detection — two addresses must both match the same language string.
+# Only checked while DAY_NUMBER == 0 (title/loading screen).
+# Order: (addr_a, addr_b, language_bytes, language_name)
+LANGUAGE_DETECT_TABLE = [
+    (0x804E8640, 0x804E8788, b"English",    "en"),
+    (0x804E8A40, 0x804E8B90, b"Fran\xe7ais", "fr"),
+    (0x804E8CC0, 0x804E90A0, b"Deutsch",    "de"),
+    (0x804E8F10, 0x804E92F0, b"Italiano",   "it"),
+    (0x804E8E58, 0x804E9238, b"Espa\xf1ol", "es"),
+]
+
+# Official in-game ship part names per language.
+# Key = English name (as used in ALL_PARTS), value = dict lang -> bytes (latin-1).
+# Order in list: fr, de, it, es
+SHIP_PART_TRANSLATIONS: dict[str, dict[str, bytes]] = {
+    "Main Engine":         {"fr": b"Moteur Principal",       "de": b"Hauptantrieb des Dolphins", "it": b"Motore principale",    "es": b"Motor principal del Dolphin"},
+    "Positron Generator":  {"fr": b"Positronator",           "de": b"Positron-Generator",        "it": b"Generat. positroni",    "es": b"Positronador"},
+    "Eternal Fuel Dynamo": {"fr": b"G\xe9n\xe9rateur Infini","de": b"Kraftstoff-Dynamo",          "it": b"Dinamo perenne",        "es": b"Dinamo"},
+    "Extraordinary Bolt":  {"fr": b"Super Boulon",           "de": b"Au\xdfergwl. Schraube",     "it": b"Vite straordinaria",    "es": b"Perno de aleci\xf3n"},
+    "Whimsical Radar":     {"fr": b"Radar Bizarre",          "de": b"Sonderbar-Radar",           "it": b"Super radar",           "es": b"Radar Enigm\xe1tico"},
+    "Geiger Counter":      {"fr": b"Compteur Geiger",        "de": b"Geigenz\xe4hler",           "it": b"Contatore Geiger",      "es": b"Contador Geiger"},
+    "Radiation Canopy":    {"fr": b"Cockpit NBC",            "de": b"Strahlenschutz",            "it": b"Calotta radiazioni",    "es": b"C\xe1psula protectora"},
+    "Sagittarius":         {"fr": b"Sagittaire",             "de": b"Der Sch\xfctze",            "it": b"Sagittario",            "es": b"Sagitario"},
+    "Shock Absorber":      {"fr": b"Absorbeur de Choc",      "de": b"Sto\xdfd\xe4mpfer",         "it": b"Assorbishock",          "es": b"Amortiguador"},
+    "Automatic Gear":      {"fr": b"Bo\xeete Automatique",   "de": b"Autom. Getriebe",           "it": b"Autonavigatore",        "es": b"Transmisi\xf3n"},
+    "#1 Ionium Jet":       {"fr": b"Propulseur 1",           "de": b"Ionenjet Nr.1",             "it": b"Jet ionio 1",           "es": b"Reactor I\xf3nico n.\xb0 1"},
+    "Anti-Dioxin Filter":  {"fr": b"Filtre \xe0 Dioxine",   "de": b"Dioxin-Filter",             "it": b"Anti diossina",         "es": b"Filtro anti-dioxinas"},
+    "Omega Stabilizer":    {"fr": b"Stabilisateur Om\xe9ga", "de": b"Omega-Stabilisator",        "it": b"Stabilizzat. omega",    "es": b"Estabilizador Omega"},
+    "Gravity Jumper":      {"fr": b"Unit\xe9 Antigrav",      "de": b"Gravitationsblocker",       "it": b"Propulsore gravit\xe0",  "es": b"Anti-gravitador"},
+    "Analog Computer":     {"fr": b"Intelligence Artificielle", "de": b"Analoger Computer",      "it": b"Computer analogico",    "es": b"Sistema Anal\xf3gico"},
+    "Guard Satellite":     {"fr": b"Satellite de Garde",     "de": b"W\xe4chter-Satellit",       "it": b"Satellite guardia",     "es": b"Sat\xe9lite"},
+    "Libra":               {"fr": b"Balance",                "de": b"Die Waage",                 "it": b"Bilancia",              "es": b"Libra"},
+    "Repair-Type Bolt":    {"fr": b"Boulon de Secours",      "de": b"Reparatur-Bolzen",          "it": b"Bullone riparazione",   "es": b"Perno reparador"},
+    "Gluon Drive":         {"fr": b"Unit\xe9 Gluonique",     "de": b"Gluon-Antrieb",             "it": b"Unit\xe0 a gluoni",     "es": b"Emisor de gluones"},
+    "Zirconium Rotor":     {"fr": b"Rotor Zirconium",        "de": b"Zirkonium-Rotor",           "it": b"Rotore zirconio",       "es": b"Rotor de zirconio"},
+    "Interstellar Radio":  {"fr": b"Radio Stellaire",        "de": b"Interstellar-Radio",        "it": b"Radio interstellare",   "es": b"Radio interestelar"},
+    "Pilot's Seat":        {"fr": b"Si\xe8ge du Pilote",     "de": b"Pilotensitz",               "it": b"Sedile pilota",         "es": b"Asiento de piloto"},
+    "#2 Ionium Jet":       {"fr": b"Propulseur 2",           "de": b"Ionenjet Nr.2",             "it": b"Jet ionio 2",           "es": b"Reactor I\xf3nico n.\xb0 2"},
+    "Bowsprit":            {"fr": b"Beaupr\xe9",             "de": b"Bugspriet",                 "it": b"Bompresso",             "es": b"Baupr\xe9s"},
+    "Chronos Reactor":     {"fr": b"R\xe9acteur Chronos",    "de": b"Kr\xfcmmungsreaktor",       "it": b"Cronoreattore",         "es": b"Reactor Chronos"},
+    "Nova Blaster":        {"fr": b"Missile Nova",           "de": b"Nova-Blaster",              "it": b"Polverizzatore",        "es": b"Detonador Nova"},
+    "Space Float":         {"fr": b"Bou\xe9e Spatiale",      "de": b"Levita-Reifen",             "it": b"Galleggiante",          "es": b"Flotador espacial"},
+    "Massage Machine":     {"fr": b"Si\xe8ge de Massage",    "de": b"Massageeinheit",            "it": b"Macchina massaggi",     "es": b"M\xe1quina de masajes"},
+    "UV Lamp":             {"fr": b"Lampe \xe0 UV",          "de": b"UV-Lampe",                  "it": b"Lampada UV",            "es": b"L\xe1mpara de UV"},
+    "Secret Safe":         {"fr": b"Coffre Secret",          "de": b"Geheimsafe",                "it": b"Cassaforte",            "es": b"Caja fuerte"},
+}
 
 
 # Pikmin count addresses — used for location checking (stable, always valid)
@@ -82,27 +146,142 @@ class P1CommandProcessor(ClientCommandProcessor):
     def __init__(self, ctx: CommonContext):
         super().__init__(ctx)
 
-    def _cmd_debug(self) -> bool:
-        """Toggle debug logging for Pikmin client."""
-        self.ctx.debug_mode = not getattr(self.ctx, "debug_mode", False)
-        state = "ON" if self.ctx.debug_mode else "OFF"
-
-        if self.ctx.debug_mode:
-            logger.info(f"Pikmin debug mode: {state}")
+    def _cmd_debughint(self) -> bool:
+        """Toggle debug logging for hint-related messages."""
+        self.ctx.debug_hint = not getattr(self.ctx, "debug_hint", False)
+        state = "ON" if self.ctx.debug_hint else "OFF"
+        logger.info(f"[DEBUG] Hint debug: {state}")
+        if self.ctx.debug_hint:
             slot_data = getattr(self.ctx, "slot_data", {}) or {}
             hint_mode = slot_data.get("ship_part_hint_mode", 0)
             hints = slot_data.get("hints", {})
-            logger.info(f"[DEBUG] Hint mode: {hint_mode}")
-            logger.info(f"[DEBUG] Hints count: {len(hints)}")
+            logger.info(f"[DEBUG HINT] Hint mode: {hint_mode}")
+            logger.info(f"[DEBUG HINT] Hints count: {len(hints)}")
             if hints:
                 for part_name, hint_data in hints.items():
-                    logger.info(f"[DEBUG]   {part_name}: {hint_data.get('Item', '?')} at {hint_data.get('Location', '?')}")
-        else:
-            logger.info(f"Pikmin debug mode: {state}")
-
+                    logger.info(f"[DEBUG HINT]   {part_name}: {hint_data.get('Item', '?')} at {hint_data.get('Location', '?')}")
         return True
 
-    def _cmd_crash(self) -> bool:
+    def _cmd_debugdays(self) -> bool:
+        """Toggle debug logging for day cycle messages."""
+        self.ctx.debug_days = not getattr(self.ctx, "debug_days", False)
+        state = "ON" if self.ctx.debug_days else "OFF"
+        logger.info(f"[DEBUG] Day cycle debug: {state}")
+        if self.ctx.debug_days:
+            slot_data = getattr(self.ctx, "slot_data", {}) or {}
+            mode = slot_data.get("day_cycle_mode", 0)
+            logger.info(f"[DEBUG DAYS] Day cycle mode: {mode}")
+        return True
+
+    def _cmd_debugpbonus(self) -> bool:
+        """Toggle debug logging for Pikmin bonus item messages."""
+        self.ctx.debug_pbonus = not getattr(self.ctx, "debug_pbonus", False)
+        state = "ON" if self.ctx.debug_pbonus else "OFF"
+        logger.info(f"[DEBUG] Pikmin bonus debug: {state}")
+        if self.ctx.debug_pbonus:
+            logger.info(f"[DEBUG PBONUS] Applied items: {getattr(self.ctx, 'pikmin_items_applied', {})}")
+            logger.info(f"[DEBUG PBONUS] Pending DYN: {getattr(self.ctx, 'pikmin_dyn_pending', {})}")
+        return True
+
+    def _cmd_debuglangue(self) -> bool:
+        """Affiche la langue actuellement détectée par le client."""
+        lang      = getattr(self.ctx, "detected_language", "en")
+        confirmed = getattr(self.ctx, "_language_confirmed", False)
+
+        status = "verrouillée (en jeu)" if confirmed else "en cours de détection (menu principal)"
+        logger.info(f"[DEBUG LANGUE] Langue : {LANG_NAMES.get(lang, lang)} ({lang}) — {status}")
+
+        if dme.is_hooked():
+            try:
+                day_number = struct.unpack(">B", dme.read_bytes(0x803A2937, 1))[0]
+                logger.info(f"[DEBUG LANGUE] DAY_NUMBER = {day_number} ({'menu principal' if day_number == 0 else 'en jeu — détection arrêtée'})")
+            except Exception as e:
+                logger.info(f"[DEBUG LANGUE] DAY_NUMBER illisible : {e}")
+
+            logger.info("[DEBUG LANGUE] Lecture live des adresses de détection :")
+            for addr_a, addr_b, lang_bytes, lang_code in LANGUAGE_DETECT_TABLE:
+                try:
+                    val_a = dme.read_bytes(addr_a, len(lang_bytes))
+                    val_b = dme.read_bytes(addr_b, len(lang_bytes))
+                    match = "✓" if val_a == lang_bytes and val_b == lang_bytes else "✗"
+                    logger.info(f"  {match} {LANG_NAMES.get(lang_code, lang_code):10s} | 0x{addr_a:08X}={val_a!r}  0x{addr_b:08X}={val_b!r}")
+                except Exception as e:
+                    logger.info(f"  ? {LANG_NAMES.get(lang_code, lang_code):10s} | erreur lecture : {e}")
+        else:
+            logger.info("[DEBUG LANGUE] Dolphin non connecté — lecture live impossible.")
+        return True
+
+    def _cmd_updatelanguage(self) -> bool:
+        """Only use this command on the game's title screen to properly update the Pikmin client language detection."""
+        if not dme.is_hooked():
+            logger.warning("[UpdateLanguage] Not connected to Dolphin.")
+            return False
+        try:
+            dme.write_bytes(DAY_NUMBER[b"GPIP01"], bytes([0]))
+            self.ctx._language_confirmed = False
+            self.ctx.detected_language = "en"
+            logger.info("[UpdateLanguage] DAY_NUMBER reset to 0 — language detection restarted.")
+        except Exception as e:
+            logger.error(f"[UpdateLanguage] Failed to reset DAY_NUMBER: {e}")
+        return True
+        """Scan RAM from 0x80000000 to 0x80003000 and write results to scancavelog.txt
+        in the same folder as the patched ISO."""
+        import threading
+
+        def _do_scan():
+            SCAN_START = 0x80000000
+            SCAN_END   = 0x80003000
+            CHUNK_SIZE = 0x100
+
+            # Resolve output directory: same folder as patched ISO
+            try:
+                from settings import get_settings
+                options = get_settings()
+                iso_path = options.get("pikmin_options", {}).get("iso_file", "")
+                if iso_path and os.path.isfile(iso_path):
+                    out_dir = os.path.dirname(os.path.abspath(iso_path))
+                else:
+                    out_dir = os.getcwd()
+            except Exception:
+                out_dir = os.getcwd()
+
+            out_path = os.path.join(out_dir, "scancavelog.txt")
+            logger.info(f"[scancave] Scanning 0x{SCAN_START:08X}–0x{SCAN_END:08X} → {out_path}")
+
+            try:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    f.write(f"Pikmin 1 RAM scan: 0x{SCAN_START:08X} – 0x{SCAN_END:08X}\n")
+                    f.write("=" * 60 + "\n\n")
+                    addr = SCAN_START
+                    while addr < SCAN_END:
+                        size = min(CHUNK_SIZE, SCAN_END - addr)
+                        try:
+                            chunk = dme.read_bytes(addr, size)
+                        except Exception as e:
+                            f.write(f"0x{addr:08X}: <read error: {e}>\n")
+                            addr += size
+                            continue
+
+                        for row_off in range(0, size, 16):
+                            row_addr = addr + row_off
+                            row = chunk[row_off:row_off + 16]
+                            hex_part  = " ".join(f"{b:02X}" for b in row)
+                            ascii_part = "".join(chr(b) if 0x20 <= b < 0x7F else "." for b in row)
+                            f.write(f"0x{row_addr:08X}  {hex_part:<47}  {ascii_part}\n")
+
+                        addr += size
+
+                logger.info(f"[scancave] Done. Log written to: {out_path}")
+            except Exception as e:
+                logger.error(f"[scancave] Failed to write log: {e}")
+
+        if not dme.is_hooked():
+            logger.warning("[scancave] Not connected to Dolphin.")
+            return False
+
+        threading.Thread(target=_do_scan, daemon=True, name="scancave").start()
+        logger.info("[scancave] Scan started in background...")
+        return True
         """Re-apply all received Pikmin bonus items and re-check all collected ship part locations.
         Use this if the game crashed and you lost progress."""
         old_key = self.ctx._save_key()
@@ -144,8 +323,11 @@ class P1Context(CommonContext):
         self.pikmin_items_applied: dict[int, int] = {}
         # Day start detection for safety check
         self.last_hour: int = -1
-        # Debug mode toggle via /debug command
-        self.debug_mode: bool = False
+        # Debug mode toggles (via /debughint, /debugdays, /debugpbonus)
+        self.debug_mode: bool = False  # kept for legacy internal checks
+        self.debug_hint: bool = False
+        self.debug_days: bool = False
+        self.debug_pbonus: bool = False
         # Pending DYN pikmin per color (waiting for base addr to be known)
         self.pikmin_dyn_pending: dict[str, int] = {"red": 0, "yellow": 0, "blue": 0}
         # Ship part hint tracking
@@ -178,6 +360,9 @@ class P1Context(CommonContext):
         # Both mode: toggle between item/radar display
         self.hint_both_toggle: bool = False
         self.hint_both_last_toggle: float = 0.0
+        # Detected game language (set during DAY_NUMBER == 0 phase)
+        self.detected_language: str = "en"  # default English
+        self._language_confirmed: bool = False
 
     def _save_key(self) -> str:
         slot_data = getattr(self, "slot_data", {}) or {}
@@ -189,12 +374,12 @@ class P1Context(CommonContext):
 
     def load_applied(self) -> None:
         key = self._save_key()
-        if self.debug_mode:
+        if self.debug_hint:
             logger.info(f"[DEBUG] load_applied key: {key}")
         try:
             data = Utils.persistent_load().get("pikmin", {}).get(self._save_key(), {})
             self.pikmin_items_applied = {int(k): v for k, v in data.items()}
-            if self.debug_mode:
+            if self.debug_hint:
                 logger.info(f"[DEBUG] Loaded {len(self.pikmin_items_applied)} applied Pikmin items")
         except Exception as e:
             logger.debug(f"Could not load applied items: {e}")
@@ -218,14 +403,14 @@ class P1Context(CommonContext):
         await self.send_connect()
 
     def on_package(self, cmd: str, args: dict) -> None:
-        if self.debug_mode:
+        if self.debug_hint:
             logger.info(f"[DEBUG] on_package cmd={cmd}")
         super().on_package(cmd, args)
         if cmd == "Connected":
             self.slot_data = args.get("slot_data", {})
             if not getattr(self, "seed_name", None):
                 self.seed_name = args.get("seed_name", "unknown")
-            if self.debug_mode:
+            if self.debug_hint:
                 logger.info(f"[DEBUG] slot_data reçu: {self.slot_data}")
             self.pikmin_items_applied = {}  # reset before loading with correct key
             self.pikmin_dyn_pending = {"red": 0, "yellow": 0, "blue": 0}
@@ -235,7 +420,7 @@ class P1Context(CommonContext):
             self.stored_data_notification_keys.add(f"_read_hints_{self.team}_{self.slot}")
         elif cmd == "LocationInfo":
             count = len(args.get("locations", []))
-            if self.debug_mode:
+            if self.debug_hint:
                 logger.info(f"[DEBUG] Received LocationInfo with {count} locations")
             for item in args["locations"]:
                 loc_id = item.location
@@ -251,29 +436,29 @@ class P1Context(CommonContext):
                 self.scouted_locations[loc_id] = entry
                 self.all_locations_scouted[loc_id] = entry
             self.scout_received = True
-            if self.debug_mode:
+            if self.debug_hint:
                 logger.info(f"[DEBUG] Scouted {len(self.scouted_locations)} locations total")
 
         elif cmd == "SetReply":
             if args.get("key") == f"_read_hints_{self.team}_{self.slot}":
                 hints = args.get("value", [])
-                if self.debug_mode:
+                if self.debug_hint:
                     logger.info(f"[DEBUG] Received hints via SetReply: {len(hints)} hints")
                 for hint in hints:
                     loc_id = hint.get("location")
                     if loc_id:
                         self.server_hints[loc_id] = hint
-                if self.debug_mode:
+                if self.debug_hint:
                     logger.info(f"[DEBUG] Server hints total: {len(self.server_hints)}")
 
         elif cmd == "ReceivedHints":
-            if self.debug_mode:
+            if self.debug_hint:
                 logger.info(f"[DEBUG] ReceivedHints: {len(args.get('hints', []))} hints")
             for hint in args.get("hints", []):
                 loc_id = hint.get("location")
                 if loc_id:
                     self.server_hints[loc_id] = hint
-            if self.debug_mode:
+            if self.debug_hint:
                 logger.info(f"[DEBUG] Server hints total: {len(self.server_hints)}")
 
 
@@ -334,7 +519,7 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                 new_dyn = old_dyn + pending
                 write_u32(dyn_addr, new_dyn)
                 ctx.pikmin_dyn_pending[color] = 0
-                if ctx.debug_mode:
+                if ctx.debug_pbonus:
                     logger.info(f"[DEBUG] DYN PENDING flush {color} +{pending} : {old_dyn} -> {new_dyn}")
 
     def add_pikmin(color: str, amount: int) -> None:
@@ -344,18 +529,18 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             old_dyn = read_u32(dyn_addr)
             new_dyn = old_dyn + amount
             write_u32(dyn_addr, new_dyn)
-            if ctx.debug_mode:
+            if ctx.debug_pbonus:
                 logger.info(f"[DEBUG] DYN   0x{dyn_addr:08x} : {old_dyn} -> {new_dyn} (base=0x{base:08x}, color={color})")
         else:
             ctx.pikmin_dyn_pending[color] = ctx.pikmin_dyn_pending.get(color, 0) + amount
-            if ctx.debug_mode:
+            if ctx.debug_pbonus:
                 logger.info(f"[DEBUG] DYN   PENDING {color} +{amount} (base invalid)")
 
         pers_addr = persistent_addrs[color]
         old_pers = read_u16(pers_addr)
         new_pers = old_pers + amount
         write_u16(pers_addr, new_pers)
-        if ctx.debug_mode:
+        if ctx.debug_pbonus:
             logger.info(f"[DEBUG] PERS  0x{pers_addr:08x} : {old_pers} -> {new_pers} (color={color})")
 
     for item in ctx.items_received:
@@ -371,7 +556,7 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             continue
 
         bonus = count * to_apply
-        if ctx.debug_mode:
+        if ctx.debug_pbonus:
             logger.info(f"[DEBUG] Item  {color} +{bonus} (item_id={item_id})")
         add_pikmin(color, bonus)
 
@@ -491,7 +676,10 @@ async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
     except Exception:
         return
 
-    if ctx.debug_mode:
+    if day == 0:
+        return  # Player is on the main menu, not in-game yet
+
+    if ctx.debug_days:
         import time as _time
         _now = _time.monotonic()
         if _now - ctx._last_day_debug_log >= 60.0:
@@ -559,7 +747,7 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
         hints = slot_data.get("hints", {})
         hint_data = hints.get(part_name)
 
-        if ctx.debug_mode:
+        if ctx.debug_hint:
             logger.info(f"[DEBUG] Super Radar - part: {part_name}, hints count: {len(hints)}, hint_data: {hint_data}")
 
         if hint_data:
@@ -568,7 +756,7 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
             send_player = hint_data.get("Send Player", "Unknown")
             hint_class  = hint_data.get("Class", "Other")
 
-            if ctx.debug_mode:
+            if ctx.debug_hint:
                 logger.info(f"[DEBUG] Super Radar - Item: {item_name}, Location: {location}, SendPlayer: {send_player}, Class: {hint_class}")
 
             if hint_class == "Prog":
@@ -583,7 +771,7 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
                 f"Your Ship Part is at \x1BCC[ff0000ff]{location}\x1BCC[b4ffffff] in \x1BCC[ff0000ff]{send_player}\x1BCC[b4ffffff]"
             )
         else:
-            if ctx.debug_mode:
+            if ctx.debug_hint:
                 logger.info(f"[DEBUG] Super Radar - No hint data found for {part_name}")
             text = (
                 f"\x1BCC[cc00ff]{part_name}\x1BCC[b4ffffff]\n"
@@ -606,7 +794,7 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
             radar_hint_data = hints.get(part_name)
 
         if not info or not radar_hint_data:
-            if ctx.debug_mode:
+            if ctx.debug_hint:
                 logger.info(f"[DEBUG] Both - Missing data: info={bool(info)}, radar_hint_data={bool(radar_hint_data)}")
             return b""
 
@@ -634,7 +822,7 @@ def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
             f"\nYour Ship Part is at:\n\x1BCC[ff0000ff]{location}\x1BCC[b4ffffff]\n"
             f"in \x1BCC[ff0000ff]{send_player}\x1BCC[b4ffffff]"
         )
-        if ctx.debug_mode:
+        if ctx.debug_hint:
             logger.info(f"[DEBUG] Both hint text length: {len(text)}")
         result = text.encode("ascii", errors="replace")
         if len(result) < SHIP_PART_TEXT_LENGTH:
@@ -672,10 +860,22 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
     first_newline = raw.find(b"\n")
     first_line = raw[:first_newline] if first_newline != -1 else raw
     detected_part = None
+    lang = getattr(ctx, "detected_language", "en")
+
     for part_name in ALL_PARTS:
-        if part_name.encode("ascii") in first_line:
-            detected_part = part_name
-            break
+        if lang == "en":
+            if part_name.encode("ascii") in first_line:
+                detected_part = part_name
+                break
+        else:
+            # Try the detected language first, fall back to English
+            translated = SHIP_PART_TRANSLATIONS.get(part_name, {}).get(lang)
+            if translated and translated in first_line:
+                detected_part = part_name
+                break
+            if part_name.encode("ascii") in first_line:
+                detected_part = part_name
+                break
 
     if not detected_part:
         if ctx.last_hint_shown and ctx.last_hint_bytes:
@@ -690,7 +890,7 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
                         new_hint_bytes = build_hint_bytes(ctx, ctx.last_hint_shown, current_hint_mode)
                         if new_hint_bytes:
                             ctx.last_hint_bytes = new_hint_bytes
-                            if ctx.debug_mode:
+                            if ctx.debug_hint:
                                 logger.info(f"[DEBUG] Both mode toggle: mode={current_hint_mode}")
                             try:
                                 dme.write_bytes(SHIP_PART_TEXT_ADDR, ctx.last_hint_bytes)
@@ -717,7 +917,7 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
                     "locations": [loc_id],
                     "player": ctx.slot,
                 }])
-                if ctx.debug_mode:
+                if ctx.debug_hint:
                     logger.info(f"[DEBUG] CreateHints sent for {detected_part} (loc_id={loc_id})")
 
         if hint_mode == 2 or hint_mode_is_both:
@@ -740,21 +940,21 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
                         "locations": [target_loc_id],
                         "player": target_player,
                     }])
-                    if ctx.debug_mode:
+                    if ctx.debug_hint:
                         logger.info(f"[DEBUG] Super Radar CreateHints for {detected_part} "
                                     f"(loc_id={target_loc_id}, player={target_player})")
 
         current_hint_mode = hint_mode
         hint_bytes = build_hint_bytes(ctx, detected_part, current_hint_mode)
         if not hint_bytes:
-            if ctx.debug_mode:
+            if ctx.debug_hint:
                 logger.info(f"[DEBUG] No hint text for {detected_part} (scouted={len(ctx.scouted_locations)})")
             return
 
         ctx.last_hint_shown = detected_part
         ctx.last_hint_bytes = hint_bytes
 
-        if ctx.debug_mode:
+        if ctx.debug_hint:
             logger.info(f"[DEBUG] Writing hint for {detected_part} (mode={current_hint_mode})")
 
         try:
@@ -772,7 +972,7 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
             hint_bytes = build_hint_bytes(ctx, detected_part, hint_mode)
             if hint_bytes:
                 ctx.last_hint_bytes = hint_bytes
-                if ctx.debug_mode:
+                if ctx.debug_hint:
                     logger.info(f"[DEBUG] Late hint build for {detected_part}")
                 try:
                     dme.write_bytes(SHIP_PART_TEXT_ADDR, hint_bytes)
@@ -826,41 +1026,63 @@ async def dolphin_loop(ctx: P1Context):
                 }])
 
         try:
-            if not dme.is_hooked():
-                dme.hook()
-            if not dme.is_hooked():
+            loop = asyncio.get_event_loop()
+
+            # Run blocking DME calls in an executor with a timeout so that
+            # closing Dolphin while the client is running does not freeze the process.
+            def _dme_tick():
+                if not dme.is_hooked():
+                    dme.hook()
+                if not dme.is_hooked():
+                    return None
+                return dme.read_bytes(0x80000000, 6)
+
+            try:
+                game = await asyncio.wait_for(
+                    loop.run_in_executor(None, _dme_tick),
+                    timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[Pikmin] Dolphin read timed out — emulator may have closed.")
+                ctx.dolphin_status_text = "Disconnected - Emulator closed"
+                try:
+                    dme.un_hook()
+                except Exception:
+                    pass
+                game_version = None
+                continue
+
+            if game is None:
                 ctx.dolphin_status_text = "Disconnected - Hook Failed"
                 continue
+
+            # Build expected patched Game ID from slot_data
+            slot_data = getattr(ctx, "slot_data", {}) or {}
+            suffix = slot_data.get("game_id_suffix", "")
+
+            if not suffix:
+                # Not yet connected to AP server — accept any P1P patched ISO
+                if not game.startswith(b"P1P"):
+                    ctx.dolphin_status_text = "Connected - Wrong Game (patch your ISO first)"
+                    continue
+                game_version = b"GPIP01"
             else:
-                game = dme.read_bytes(0x80000000, 6)
+                expected_patched_id = b"P1P" + suffix.encode("ascii")
+                if game != expected_patched_id:
+                    ctx.dolphin_status_text = f"Connected - Wrong Game (expected {expected_patched_id.decode()})"
+                    continue
+                game_version = b"GPIP01"
 
-                # Build expected patched Game ID from slot_data
-                slot_data = getattr(ctx, "slot_data", {}) or {}
-                suffix = slot_data.get("game_id_suffix", "")
+            ctx.dolphin_status_text = f"Connected - {game.decode()}"
 
-                if not suffix:
-                    # Not yet connected to AP server — accept any P1P patched ISO
-                    if not game.startswith(b"P1P"):
-                        ctx.dolphin_status_text = "Connected - Wrong Game (patch your ISO first)"
-                        continue
-                    game_version = b"GPIP01"
-                else:
-                    expected_patched_id = b"P1P" + suffix.encode("ascii")
-                    if game != expected_patched_id:
-                        ctx.dolphin_status_text = f"Connected - Wrong Game (expected {expected_patched_id.decode()})"
-                        continue
-                    game_version = b"GPIP01"
-
-                ctx.dolphin_status_text = f"Connected - {game.decode()}"
-
-                if game == b"GPIE01":
-                    _now = time.monotonic()
-                    if _now - ctx._last_ntsc_warning >= 60.0:
-                        logger.warning(
-                            "Warning : You use Pikmin NTSC This version does not completely support "
-                            "the risk of bugs and crashes is very high"
-                        )
-                        ctx._last_ntsc_warning = _now
+            if game == b"GPIE01":
+                _now = time.monotonic()
+                if _now - ctx._last_ntsc_warning >= 60.0:
+                    logger.warning(
+                        "Warning : You use Pikmin NTSC This version does not completely support "
+                        "the risk of bugs and crashes is very high"
+                    )
+                    ctx._last_ntsc_warning = _now
         except Exception as e:
             logger.error(e)
             logger.info("Trying to reconnect to Dolphin...")
@@ -876,14 +1098,38 @@ async def dolphin_loop(ctx: P1Context):
         await handle_areas(ctx, game_version)
         # TODO if "DeathLink" in ctx.tags: handle that
 
+        # Language detection — only while DAY_NUMBER == 0 (main menu).
+        # Once DAY_NUMBER != 0 the player is in-game and language cannot change.
+        try:
+            day_number = struct.unpack(">B", dme.read_bytes(0x803A2937, 1))[0]
+            if day_number == 0:
+                # Still on main menu — keep checking every tick
+                ctx._language_confirmed = False
+                for addr_a, addr_b, lang_bytes, lang_code in LANGUAGE_DETECT_TABLE:
+                    try:
+                        val_a = dme.read_bytes(addr_a, len(lang_bytes))
+                        val_b = dme.read_bytes(addr_b, len(lang_bytes))
+                        if val_a == lang_bytes and val_b == lang_bytes:
+                            if ctx.detected_language != lang_code:
+                                msg = LANG_MSG_DETECTED.get(lang_code, LANG_MSG_DETECTED["en"])
+                                logger.info(f"[Pikmin] {msg} : {LANG_NAMES.get(lang_code, lang_code)}")
+                                ctx.detected_language = lang_code
+                            break
+                    except Exception:
+                        pass
+            elif not ctx._language_confirmed:
+                # Player just entered the game — lock the language
+                lc = ctx.detected_language
+                msg = LANG_MSG_LOCKED.get(lc, LANG_MSG_LOCKED["en"])
+                logger.info(f"[Pikmin] {msg} : {LANG_NAMES.get(lc, lc)}")
+                ctx._language_confirmed = True
+        except Exception:
+            pass
+
 
 def run_client(*args) -> None:
     # args may contain the path to a .appik1 file when launched via double-click
     appik1_path = args[0] if args and isinstance(args[0], str) and args[0].endswith(".appik1") else None
-
-    # Patch the ISO if a valid .appik1 was provided
-    if appik1_path and os.path.isfile(appik1_path):
-        _handle_patch(appik1_path)
 
     async def main() -> None:
         parser = get_base_parser()
@@ -891,9 +1137,16 @@ def run_client(*args) -> None:
                             help="Path to a .appik1 patch file")
         parsed = parser.parse_args()
 
-        # Also handle patch if passed as CLI argument
-        if parsed.appik1_file and not appik1_path:
-            _handle_patch(parsed.appik1_file)
+        # Resolve patch path from args or CLI argument
+        patch_path = appik1_path
+        if not patch_path and parsed.appik1_file:
+            patch_path = parsed.appik1_file
+
+        # Patch the ISO in a thread executor (avoids blocking the event loop and
+        # prevents a stray console window from appearing on Windows)
+        if patch_path and os.path.isfile(patch_path):
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _handle_patch, patch_path)
 
         ctx = P1Context(parsed.connect, parsed.password)
         ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
@@ -917,7 +1170,12 @@ def run_client(*args) -> None:
 
 
 def _handle_patch(appik1_path: str) -> None:
-    """Patch a copy of the user's Pikmin 1 PAL ISO when a .appik1 file is opened."""
+    """Patch a copy of the user's Pikmin 1 PAL ISO when a .appik1 file is opened.
+
+    The ISO path must be configured in host.yml under pikmin_options.iso_file.
+    No external window or dialog is opened — everything goes through the AP logger
+    and Utils.messagebox (which is safe to call from any thread).
+    """
     from .P1Rom import verify_iso, patch_iso, InvalidISOError
     from settings import get_settings
     import shutil
@@ -927,40 +1185,16 @@ def _handle_patch(appik1_path: str) -> None:
     if iso_path and not os.path.isfile(iso_path):
         iso_path = Utils.user_path(iso_path)
 
-    # If no ISO configured or file doesn't exist, open a file picker
     if not iso_path or not os.path.isfile(iso_path):
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            root.wm_attributes("-topmost", True)
-            iso_path = filedialog.askopenfilename(
-                title="Select your clean Pikmin 1 PAL ISO (GP1P01)",
-                filetypes=[("GameCube ISO", "*.iso *.gcm"), ("All files", "*.*")],
-            )
-            root.destroy()
-        except Exception as e:
-            logger.error(f"[Pikmin] Could not open file dialog: {e}")
-            iso_path = ""
-
-        if not iso_path:
-            Utils.messagebox(
-                "Cannot Patch Pikmin 1",
-                "No ISO selected. Please select your clean Pikmin 1 PAL ISO (GP1P01).",
-                error=True,
-            )
-            return
-
-        # Save the path to host.yml for next time
-        try:
-            if "pikmin_options" not in options:
-                options["pikmin_options"] = {}
-            options["pikmin_options"]["iso_file"] = iso_path
-            options.save()
-            logger.info(f"[Pikmin] Saved ISO path to host.yml: {iso_path}")
-        except Exception as e:
-            logger.warning(f"[Pikmin] Could not save ISO path to host.yml: {e}")
+        msg = (
+            "No valid Pikmin 1 PAL ISO found.\n\n"
+            "Please set the ISO path in host.yml:\n"
+            "  pikmin_options:\n"
+            "    iso_file: C:/path/to/Pikmin1.iso"
+        )
+        logger.error(f"[Pikmin] {msg}")
+        Utils.messagebox("Cannot Patch Pikmin 1", msg, error=True)
+        return
 
     # Build output path: same folder as the .appik1, same name as ISO
     patch_dir = os.path.dirname(os.path.abspath(appik1_path))
