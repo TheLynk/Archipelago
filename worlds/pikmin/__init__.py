@@ -168,42 +168,39 @@ class P1World(World):
         if count == 0:
             return []
 
-        fixed_items: list[str] = []
-        if self.options.include_25_red_pikmin:
-            fixed_items.append("25 Red Pikmin")
-        if self.options.include_25_yellow_pikmin:
-            fixed_items.append("25 Yellow Pikmin")
-        if self.options.include_25_blue_pikmin:
-            fixed_items.append("25 Blue Pikmin")
-        fixed_items += ["10 Red Pikmin"] * self.options.count_10_red_pikmin.value
-        fixed_items += ["10 Yellow Pikmin"] * self.options.count_10_yellow_pikmin.value
-        fixed_items += ["10 Blue Pikmin"] * self.options.count_10_blue_pikmin.value
-        fixed_items += ["5 Red Pikmin"] * self.options.count_5_red_pikmin.value
-        fixed_items += ["5 Yellow Pikmin"] * self.options.count_5_yellow_pikmin.value
-        fixed_items += ["5 Blue Pikmin"] * self.options.count_5_blue_pikmin.value
-
-        remaining = max(0, count - len(fixed_items))
-
+        # All 18 pikmin bonus items with their weights from options
         weights: dict[str, int] = {
-            "Red Pikmin":    self.options.weight_1_red_pikmin.value,
-            "Yellow Pikmin": self.options.weight_1_yellow_pikmin.value,
-            "Blue Pikmin":   self.options.weight_1_blue_pikmin.value,
+            "1 Red Leaf Pikmin":      self.options.weight_1_red_leaf.value,
+            "5 Red Leaf Pikmin":      self.options.weight_5_red_leaf.value,
+            "1 Red Bud Pikmin":       self.options.weight_1_red_bud.value,
+            "5 Red Bud Pikmin":       self.options.weight_5_red_bud.value,
+            "1 Red Flower Pikmin":    self.options.weight_1_red_flower.value,
+            "5 Red Flower Pikmin":    self.options.weight_5_red_flower.value,
+            "1 Yellow Leaf Pikmin":   self.options.weight_1_yellow_leaf.value,
+            "5 Yellow Leaf Pikmin":   self.options.weight_5_yellow_leaf.value,
+            "1 Yellow Bud Pikmin":    self.options.weight_1_yellow_bud.value,
+            "5 Yellow Bud Pikmin":    self.options.weight_5_yellow_bud.value,
+            "1 Yellow Flower Pikmin": self.options.weight_1_yellow_flower.value,
+            "5 Yellow Flower Pikmin": self.options.weight_5_yellow_flower.value,
+            "1 Blue Leaf Pikmin":     self.options.weight_1_blue_leaf.value,
+            "5 Blue Leaf Pikmin":     self.options.weight_5_blue_leaf.value,
+            "1 Blue Bud Pikmin":      self.options.weight_1_blue_bud.value,
+            "5 Blue Bud Pikmin":      self.options.weight_5_blue_bud.value,
+            "1 Blue Flower Pikmin":   self.options.weight_1_blue_flower.value,
+            "5 Blue Flower Pikmin":   self.options.weight_5_blue_flower.value,
         }
 
-        weights = {k: v for k, v in weights.items() if v > 0}
-        if not weights:
-            weights = {"Red Pikmin": 1, "Yellow Pikmin": 1, "Blue Pikmin": 1}
+        active = {k: v for k, v in weights.items() if v > 0}
+        if not active:
+            # Fallback: equal weight on all leaf items
+            active = {k: 1 for k in weights if "Leaf" in k}
 
-        trap_count = int(remaining * self.options.trap_percentage.value / 100)
-        filler_count = remaining - trap_count
+        trap_count = int(count * self.options.trap_percentage.value / 100)
+        filler_count = count - trap_count
 
-        names = list(weights.keys())
-        ws = list(weights.values())
-
-        result = fixed_items + self.multiworld.random.choices(names, weights=ws, k=filler_count)
-        # result += ["Time Trap"] * trap_count
-
-        return result
+        names = list(active.keys())
+        ws = list(active.values())
+        return self.multiworld.random.choices(names, weights=ws, k=filler_count)
 
     def set_rules(self) -> None:
         for name, data in ALL_PARTS.items():

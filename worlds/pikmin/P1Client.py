@@ -139,7 +139,28 @@ ONION_PERSISTENT_ADDRS_PAL = {
 
 ONION_VAL_ADDRS = {b"GPIP01": ONION_VAL_ADDRS_PAL}
 ONION_BASE_ADDRS = {b"GPIP01": ONION_BASE_ADDRS_PAL}
-ONION_PERSISTENT_ADDRS = {b"GPIP01": ONION_PERSISTENT_ADDRS_PAL}
+
+# Persistent pikmin counts per stage (u32 each).
+# The game recalculates the displayed total as Leaf + Bud + Flower automatically.
+# These are the REAL addresses confirmed in DME (PAL GP1P01).
+ONION_STAGE_ADDRS_CLIENT_PAL: dict[str, dict[str, int]] = {
+    "red": {
+        "leaf":   0x803D6C7C,
+        "bud":    0x803D6C80,
+        "flower": 0x803D6C84,
+    },
+    "yellow": {
+        "leaf":   0x803D6C88,
+        "bud":    0x803D6C8C,
+        "flower": 0x803D6C90,
+    },
+    "blue": {
+        "leaf":   0x803D6C70,
+        "bud":    0x803D6C74,
+        "flower": 0x803D6C78,
+    },
+}
+ONION_STAGE_ADDRS_CLIENT = {b"GPIP01": ONION_STAGE_ADDRS_CLIENT_PAL}
 
 
 class P1CommandProcessor(ClientCommandProcessor):
@@ -224,6 +245,8 @@ class P1CommandProcessor(ClientCommandProcessor):
         except Exception as e:
             logger.error(f"[UpdateLanguage] Failed to reset DAY_NUMBER: {e}")
         return True
+    
+    def _cmd_scancave(self) -> bool:
         """Scan RAM from 0x80000000 to 0x80003000 and write results to scancavelog.txt
         in the same folder as the patched ISO."""
         import threading
@@ -282,6 +305,8 @@ class P1CommandProcessor(ClientCommandProcessor):
         threading.Thread(target=_do_scan, daemon=True, name="scancave").start()
         logger.info("[scancave] Scan started in background...")
         return True
+    
+    def _cmd_crash(self) -> bool:
         """Re-apply all received Pikmin bonus items and re-check all collected ship part locations.
         Use this if the game crashed and you lost progress."""
         old_key = self.ctx._save_key()
@@ -328,8 +353,6 @@ class P1Context(CommonContext):
         self.debug_hint: bool = False
         self.debug_days: bool = False
         self.debug_pbonus: bool = False
-        # Pending DYN pikmin per color (waiting for base addr to be known)
-        self.pikmin_dyn_pending: dict[str, int] = {"red": 0, "yellow": 0, "blue": 0}
         # Ship part hint tracking
         self.last_hint_shown: str = ""
         # Raw bytes of the hint we wrote, so we can re-apply if the game overwrites it
@@ -463,19 +486,17 @@ class P1Context(CommonContext):
 
 
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
-    """Apply received Pikmin bonus items.
-
-    The DOL stub stores r29 (onion base) per color to ONION_BASE_ADDRS.
-    Client computes dyn_addr = base + 0x042C and writes pikmin there.
-    Also writes to ONION_PERSISTENT_ADDRS to survive day transitions.
+    """Apply received Pikmin bonus items by writing directly into the per-stage
+    persistent counters (Leaf / Bud / Flower, u32 each).
+    The game recalculates the displayed total automatically from these three fields.
     """
-    if game not in ONION_BASE_ADDRS:
+    if game not in ONION_STAGE_ADDRS_CLIENT:
         return
 
-    base_addrs       = ONION_BASE_ADDRS[game]
-    persistent_addrs = ONION_PERSISTENT_ADDRS[game]
+    stage_addrs = ONION_STAGE_ADDRS_CLIENT[game]
 
-    id_to_pikmin: dict[int, tuple[str, int]] = {
+    # Map item_id -> (color, stage, count)
+    id_to_pikmin: dict[int, tuple[str, str, int]] = {
         FILLER_ITEMS[name]: PIKMIN_BONUS_ITEMS[name]
         for name in PIKMIN_BONUS_ITEMS
         if name in FILLER_ITEMS
@@ -489,66 +510,26 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
 
     def write_u32(addr: int, value: int) -> None:
         try:
-            dme.write_bytes(addr, value.to_bytes(4, "big"))
+            dme.write_bytes(addr, max(0, value).to_bytes(4, "big"))
         except Exception as e:
-            logger.debug(f"Error writing to 0x{addr:08x}: {e}")
+            logger.debug(f"Error writing u32 to 0x{addr:08x}: {e}")
 
-    def read_u16(addr: int) -> int:
-        try:
-            return int.from_bytes(dme.read_bytes(addr, 2), "big")
-        except Exception:
-            return 0
-
-    def write_u16(addr: int, value: int) -> None:
-        try:
-            dme.write_bytes(addr, (value & 0xFFFF).to_bytes(2, "big"))
-        except Exception as e:
-            logger.debug(f"Error writing u16 to 0x{addr:08x}: {e}")
-
-    # Apply pending DYN amounts for colors whose base is now known
-    if not hasattr(ctx, "pikmin_dyn_pending"):
-        ctx.pikmin_dyn_pending = {"red": 0, "yellow": 0, "blue": 0}
-
-    for color in ["red", "yellow", "blue"]:
-        pending = ctx.pikmin_dyn_pending.get(color, 0)
-        if pending > 0:
-            base = read_u32(base_addrs[color])
-            if base and base > 0x80000000:
-                dyn_addr = base + ONION_DYN_OFFSET
-                old_dyn = read_u32(dyn_addr)
-                new_dyn = old_dyn + pending
-                write_u32(dyn_addr, new_dyn)
-                ctx.pikmin_dyn_pending[color] = 0
-                if ctx.debug_pbonus:
-                    logger.info(f"[DEBUG] DYN PENDING flush {color} +{pending} : {old_dyn} -> {new_dyn}")
-
-    def add_pikmin(color: str, amount: int) -> None:
-        base = read_u32(base_addrs[color])
-        if base and base > 0x80000000:
-            dyn_addr = base + ONION_DYN_OFFSET
-            old_dyn = read_u32(dyn_addr)
-            new_dyn = old_dyn + amount
-            write_u32(dyn_addr, new_dyn)
-            if ctx.debug_pbonus:
-                logger.info(f"[DEBUG] DYN   0x{dyn_addr:08x} : {old_dyn} -> {new_dyn} (base=0x{base:08x}, color={color})")
-        else:
-            ctx.pikmin_dyn_pending[color] = ctx.pikmin_dyn_pending.get(color, 0) + amount
-            if ctx.debug_pbonus:
-                logger.info(f"[DEBUG] DYN   PENDING {color} +{amount} (base invalid)")
-
-        pers_addr = persistent_addrs[color]
-        old_pers = read_u16(pers_addr)
-        new_pers = old_pers + amount
-        write_u16(pers_addr, new_pers)
+    def add_pikmin(color: str, stage: str, amount: int) -> None:
+        addr = stage_addrs[color][stage]
+        old_val = read_u32(addr)
+        new_val = old_val + amount
+        write_u32(addr, new_val)
         if ctx.debug_pbonus:
-            logger.info(f"[DEBUG] PERS  0x{pers_addr:08x} : {old_pers} -> {new_pers} (color={color})")
+            logger.info(
+                f"[DEBUG] STAGE 0x{addr:08x} {color}/{stage} : {old_val} -> {new_val} (+{amount})"
+            )
 
     for item in ctx.items_received:
         item_id = item.item
         if item_id not in id_to_pikmin:
             continue
 
-        color, count = id_to_pikmin[item_id]
+        color, stage, count = id_to_pikmin[item_id]
         total_received = sum(1 for i in ctx.items_received if i.item == item_id)
         already_applied = ctx.pikmin_items_applied.get(item_id, 0)
         to_apply = total_received - already_applied
@@ -557,9 +538,8 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
 
         bonus = count * to_apply
         if ctx.debug_pbonus:
-            logger.info(f"[DEBUG] Item  {color} +{bonus} (item_id={item_id})")
-        add_pikmin(color, bonus)
-
+            logger.info(f"[DEBUG] Item  {color}/{stage} +{bonus} (item_id={item_id})")
+        add_pikmin(color, stage, bonus)
         ctx.pikmin_items_applied[item_id] = total_received
 
     ctx.save_applied()

@@ -79,98 +79,103 @@ class BluePikminInterval(Range):
 
 # ====================================================================
 # FILLER WEIGHTS
-# Each option controls the weight (likelihood) of that filler item
-# appearing in the item pool. A weight of 0 disables the item entirely.
+# Controls the weight (likelihood) of each pikmin filler item appearing.
+# Items: 1 and 5 pikmin × 3 colors × 3 stages (Leaf / Bud / Flower)
+# A weight of 0 disables that item entirely.
 # ====================================================================
 
-class Weight1RedPikmin(Range):
-    """Weight for 1 Red Pikmin filler items."""
-    display_name = "1 Red Pikmin Weight"
-    range_start = 0
-    range_end = 100
-    default = 10
+# --- Red ---
+class Weight1RedLeaf(Range):
+    """Weight for '1 Red Leaf Pikmin' filler items."""
+    display_name = "1 Red Leaf Pikmin Weight"
+    range_start = 0; range_end = 100; default = 10
 
+class Weight5RedLeaf(Range):
+    """Weight for '5 Red Leaf Pikmin' filler items."""
+    display_name = "5 Red Leaf Pikmin Weight"
+    range_start = 0; range_end = 100; default = 5
 
-class Count5RedPikmin(Range):
-    """Number of 5 Red Pikmin filler items to include in the pool (0-5)."""
-    display_name = "5 Red Pikmin Count"
-    range_start = 0
-    range_end = 5
-    default = 3
+class Weight1RedBud(Range):
+    """Weight for '1 Red Bud Pikmin' filler items."""
+    display_name = "1 Red Bud Pikmin Weight"
+    range_start = 0; range_end = 100; default = 5
 
+class Weight5RedBud(Range):
+    """Weight for '5 Red Bud Pikmin' filler items."""
+    display_name = "5 Red Bud Pikmin Weight"
+    range_start = 0; range_end = 100; default = 3
 
-class Count10RedPikmin(Range):
-    """Number of 10 Red Pikmin filler items to include in the pool (0-5)."""
-    display_name = "10 Red Pikmin Count"
-    range_start = 0
-    range_end = 5
-    default = 2
+class Weight1RedFlower(Range):
+    """Weight for '1 Red Flower Pikmin' filler items."""
+    display_name = "1 Red Flower Pikmin Weight"
+    range_start = 0; range_end = 100; default = 3
 
+class Weight5RedFlower(Range):
+    """Weight for '5 Red Flower Pikmin' filler items."""
+    display_name = "5 Red Flower Pikmin Weight"
+    range_start = 0; range_end = 100; default = 2
 
-class Include25RedPikmin(Toggle):
-    """Include one 25 Red Pikmin filler item in the pool."""
-    display_name = "Include 25 Red Pikmin"
-    default = False
+# --- Yellow ---
+class Weight1YellowLeaf(Range):
+    """Weight for '1 Yellow Leaf Pikmin' filler items."""
+    display_name = "1 Yellow Leaf Pikmin Weight"
+    range_start = 0; range_end = 100; default = 10
 
+class Weight5YellowLeaf(Range):
+    """Weight for '5 Yellow Leaf Pikmin' filler items."""
+    display_name = "5 Yellow Leaf Pikmin Weight"
+    range_start = 0; range_end = 100; default = 5
 
-class Weight1YellowPikmin(Range):
-    """Weight for 1 Yellow Pikmin filler items."""
-    display_name = "1 Yellow Pikmin Weight"
-    range_start = 0
-    range_end = 100
-    default = 10
+class Weight1YellowBud(Range):
+    """Weight for '1 Yellow Bud Pikmin' filler items."""
+    display_name = "1 Yellow Bud Pikmin Weight"
+    range_start = 0; range_end = 100; default = 5
 
+class Weight5YellowBud(Range):
+    """Weight for '5 Yellow Bud Pikmin' filler items."""
+    display_name = "5 Yellow Bud Pikmin Weight"
+    range_start = 0; range_end = 100; default = 3
 
-class Count5YellowPikmin(Range):
-    """Number of 5 Yellow Pikmin filler items to include in the pool (0-5)."""
-    display_name = "5 Yellow Pikmin Count"
-    range_start = 0
-    range_end = 5
-    default = 3
+class Weight1YellowFlower(Range):
+    """Weight for '1 Yellow Flower Pikmin' filler items."""
+    display_name = "1 Yellow Flower Pikmin Weight"
+    range_start = 0; range_end = 100; default = 3
 
+class Weight5YellowFlower(Range):
+    """Weight for '5 Yellow Flower Pikmin' filler items."""
+    display_name = "5 Yellow Flower Pikmin Weight"
+    range_start = 0; range_end = 100; default = 2
 
-class Count10YellowPikmin(Range):
-    """Number of 10 Yellow Pikmin filler items to include in the pool (0-5)."""
-    display_name = "10 Yellow Pikmin Count"
-    range_start = 0
-    range_end = 5
-    default = 2
+# --- Blue ---
+class Weight1BlueLeaf(Range):
+    """Weight for '1 Blue Leaf Pikmin' filler items."""
+    display_name = "1 Blue Leaf Pikmin Weight"
+    range_start = 0; range_end = 100; default = 10
 
+class Weight5BlueLeaf(Range):
+    """Weight for '5 Blue Leaf Pikmin' filler items."""
+    display_name = "5 Blue Leaf Pikmin Weight"
+    range_start = 0; range_end = 100; default = 5
 
-class Include25YellowPikmin(Toggle):
-    """Include one 25 Yellow Pikmin filler item in the pool."""
-    display_name = "Include 25 Yellow Pikmin"
-    default = False
+class Weight1BlueBud(Range):
+    """Weight for '1 Blue Bud Pikmin' filler items."""
+    display_name = "1 Blue Bud Pikmin Weight"
+    range_start = 0; range_end = 100; default = 5
 
+class Weight5BlueBud(Range):
+    """Weight for '5 Blue Bud Pikmin' filler items."""
+    display_name = "5 Blue Bud Pikmin Weight"
+    range_start = 0; range_end = 100; default = 3
 
-class Weight1BluePikmin(Range):
-    """Weight for 1 Blue Pikmin filler items."""
-    display_name = "1 Blue Pikmin Weight"
-    range_start = 0
-    range_end = 100
-    default = 10
+class Weight1BlueFlower(Range):
+    """Weight for '1 Blue Flower Pikmin' filler items."""
+    display_name = "1 Blue Flower Pikmin Weight"
+    range_start = 0; range_end = 100; default = 3
 
-
-class Count5BluePikmin(Range):
-    """Number of 5 Blue Pikmin filler items to include in the pool (0-5)."""
-    display_name = "5 Blue Pikmin Count"
-    range_start = 0
-    range_end = 5
-    default = 3
-
-
-class Count10BluePikmin(Range):
-    """Number of 10 Blue Pikmin filler items to include in the pool (0-5)."""
-    display_name = "10 Blue Pikmin Count"
-    range_start = 0
-    range_end = 5
-    default = 2
-
-
-class Include25BluePikmin(Toggle):
-    """Include one 25 Blue Pikmin filler item in the pool."""
-    display_name = "Include 25 Blue Pikmin"
-    default = False
+class Weight5BlueFlower(Range):
+    """Weight for '5 Blue Flower Pikmin' filler items."""
+    display_name = "5 Blue Flower Pikmin Weight"
+    range_start = 0; range_end = 100; default = 2
 
 
 # ====================================================================
@@ -287,18 +292,24 @@ class P1Options(PerGameCommonOptions):
     blue_pikmin_locations_enabled: BluePikminLocationsEnabled
     blue_pikmin_interval: BluePikminInterval
 # FILLER WEIGHTS
-    weight_1_red_pikmin: Weight1RedPikmin
-    count_5_red_pikmin: Count5RedPikmin
-    count_10_red_pikmin: Count10RedPikmin
-    include_25_red_pikmin: Include25RedPikmin
-    weight_1_yellow_pikmin: Weight1YellowPikmin
-    count_5_yellow_pikmin: Count5YellowPikmin
-    count_10_yellow_pikmin: Count10YellowPikmin
-    include_25_yellow_pikmin: Include25YellowPikmin
-    weight_1_blue_pikmin: Weight1BluePikmin
-    count_5_blue_pikmin: Count5BluePikmin
-    count_10_blue_pikmin: Count10BluePikmin
-    include_25_blue_pikmin: Include25BluePikmin
+    weight_1_red_leaf:      Weight1RedLeaf
+    weight_5_red_leaf:      Weight5RedLeaf
+    weight_1_red_bud:       Weight1RedBud
+    weight_5_red_bud:       Weight5RedBud
+    weight_1_red_flower:    Weight1RedFlower
+    weight_5_red_flower:    Weight5RedFlower
+    weight_1_yellow_leaf:   Weight1YellowLeaf
+    weight_5_yellow_leaf:   Weight5YellowLeaf
+    weight_1_yellow_bud:    Weight1YellowBud
+    weight_5_yellow_bud:    Weight5YellowBud
+    weight_1_yellow_flower: Weight1YellowFlower
+    weight_5_yellow_flower: Weight5YellowFlower
+    weight_1_blue_leaf:     Weight1BlueLeaf
+    weight_5_blue_leaf:     Weight5BlueLeaf
+    weight_1_blue_bud:      Weight1BlueBud
+    weight_5_blue_bud:      Weight5BlueBud
+    weight_1_blue_flower:   Weight1BlueFlower
+    weight_5_blue_flower:   Weight5BlueFlower
 # TRAP (WIP AND DOES NOT WORKING)
     trap_percentage: TrapPercentage
     weight_time_trap: WeightTimeTrap

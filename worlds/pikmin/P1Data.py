@@ -63,50 +63,82 @@ ALL_PARTS: dict[str, ShipPartData] = {
 
 
 # ====================================================================
-# ONION ADDRESSES - Pikmin count stored in each Onion (PAL)
+# ONION STAGE ADDRESSES - Persistent pikmin counts per stage (PAL, u32 each)
+# Total displayed in-game = Leaf + Bud + Flower (recalculated by the game)
 # ====================================================================
 
-ONION_ADDRESSES: dict[str, MemoryAddress] = {
-    "red":    mem(0x803D6D27, 0x803D1EA7),  # PAL / NTSC-U (a confirmer NTSC-U)
-    "yellow": mem(0x803D6D2B, 0x803D1EAB),
-    "blue":   mem(0x803D6D23, 0x803D1EA3),
+ONION_STAGE_ADDRS_PAL: dict[str, dict[str, int]] = {
+    "red": {
+        "leaf":   0x803D6C7C,
+        "bud":    0x803D6C80,
+        "flower": 0x803D6C84,
+    },
+    "yellow": {
+        "leaf":   0x803D6C88,
+        "bud":    0x803D6C8C,
+        "flower": 0x803D6C90,
+    },
+    "blue": {
+        "leaf":   0x803D6C70,
+        "bud":    0x803D6C74,
+        "flower": 0x803D6C78,
+    },
+}
+
+ONION_STAGE_ADDRS: dict[bytes, dict[str, dict[str, int]]] = {
+    b"GPIP01": ONION_STAGE_ADDRS_PAL,
 }
 
 
 # ====================================================================
 # FILLER ITEMS - Items that interact with the game
+# 18 items : 1 and 5 pikmin × 3 colors × 3 stages (Leaf / Bud / Flower)
 # ====================================================================
 
 FILLER_ITEMS: dict[str, int] = {
-    # Pikmin bonus items — spawn directly in the corresponding Onion
-    "Red Pikmin":      71800,
-    "5 Red Pikmin":    71801,
-    "10 Red Pikmin":   71802,
-    "25 Red Pikmin":   71803,
-    "Yellow Pikmin":   71804,
-    "5 Yellow Pikmin": 71805,
-    "10 Yellow Pikmin":71806,
-    "25 Yellow Pikmin":71807,
-    "Blue Pikmin":     71808,
-    "5 Blue Pikmin":   71809,
-    "10 Blue Pikmin":  71810,
-    "25 Blue Pikmin":  71811,
+    # Red
+    "1 Red Leaf Pikmin":      71800,
+    "5 Red Leaf Pikmin":      71801,
+    "1 Red Bud Pikmin":       71802,
+    "5 Red Bud Pikmin":       71803,
+    "1 Red Flower Pikmin":    71804,
+    "5 Red Flower Pikmin":    71805,
+    # Yellow
+    "1 Yellow Leaf Pikmin":   71806,
+    "5 Yellow Leaf Pikmin":   71807,
+    "1 Yellow Bud Pikmin":    71808,
+    "5 Yellow Bud Pikmin":    71809,
+    "1 Yellow Flower Pikmin": 71810,
+    "5 Yellow Flower Pikmin": 71811,
+    # Blue
+    "1 Blue Leaf Pikmin":     71812,
+    "5 Blue Leaf Pikmin":     71813,
+    "1 Blue Bud Pikmin":      71814,
+    "5 Blue Bud Pikmin":      71815,
+    "1 Blue Flower Pikmin":   71816,
+    "5 Blue Flower Pikmin":   71817,
 }
 
-# Map item name -> (color, count) for client-side handling
-PIKMIN_BONUS_ITEMS: dict[str, tuple[str, int]] = {
-    "Red Pikmin":       ("red",    1),
-    "5 Red Pikmin":     ("red",    5),
-    "10 Red Pikmin":    ("red",   10),
-    "25 Red Pikmin":    ("red",   25),
-    "Yellow Pikmin":    ("yellow", 1),
-    "5 Yellow Pikmin":  ("yellow", 5),
-    "10 Yellow Pikmin": ("yellow",10),
-    "25 Yellow Pikmin": ("yellow",25),
-    "Blue Pikmin":      ("blue",   1),
-    "5 Blue Pikmin":    ("blue",   5),
-    "10 Blue Pikmin":   ("blue",  10),
-    "25 Blue Pikmin":   ("blue",  25),
+# Map item name -> (color, stage, count) for client-side handling
+PIKMIN_BONUS_ITEMS: dict[str, tuple[str, str, int]] = {
+    "1 Red Leaf Pikmin":      ("red",    "leaf",   1),
+    "5 Red Leaf Pikmin":      ("red",    "leaf",   5),
+    "1 Red Bud Pikmin":       ("red",    "bud",    1),
+    "5 Red Bud Pikmin":       ("red",    "bud",    5),
+    "1 Red Flower Pikmin":    ("red",    "flower", 1),
+    "5 Red Flower Pikmin":    ("red",    "flower", 5),
+    "1 Yellow Leaf Pikmin":   ("yellow", "leaf",   1),
+    "5 Yellow Leaf Pikmin":   ("yellow", "leaf",   5),
+    "1 Yellow Bud Pikmin":    ("yellow", "bud",    1),
+    "5 Yellow Bud Pikmin":    ("yellow", "bud",    5),
+    "1 Yellow Flower Pikmin": ("yellow", "flower", 1),
+    "5 Yellow Flower Pikmin": ("yellow", "flower", 5),
+    "1 Blue Leaf Pikmin":     ("blue",   "leaf",   1),
+    "5 Blue Leaf Pikmin":     ("blue",   "leaf",   5),
+    "1 Blue Bud Pikmin":      ("blue",   "bud",    1),
+    "5 Blue Bud Pikmin":      ("blue",   "bud",    5),
+    "1 Blue Flower Pikmin":   ("blue",   "flower", 1),
+    "5 Blue Flower Pikmin":   ("blue",   "flower", 5),
 }
 
 
