@@ -1039,9 +1039,8 @@ async def dolphin_loop(ctx: P1Context):
             if hint_mode_val == 2 or hint_mode_val == 3:
                 all_server_locs = set(ctx.checked_locations) | set(ctx.missing_locations)
                 all_locations = list(all_server_locs)
-                logger.info(f"[Super Radar] Sending LocationScouts for {len(all_locations)} locations")
+                pass
 
-            logger.info(f"[DEBUG] Sending LocationScouts with {len(all_locations)} locations")
             await ctx.send_msgs([{
                 "cmd": "LocationScouts",
                 "locations": all_locations,
