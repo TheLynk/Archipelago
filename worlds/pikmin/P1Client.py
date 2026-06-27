@@ -541,8 +541,8 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         flower = read_u32(stage_addrs["red"]["flower"])
 
         if leaf > 0 or bud > 0 or flower > 0:
-            scan_start = 0x810B0000
-            scan_end   = 0x810C0000
+            scan_start = 0x81000000
+            scan_end   = 0x81200000
 
             def _scan() -> int | None:
                 try:
