@@ -111,34 +111,29 @@ PIKMIN_ADDRESSES = {
 }
 
 # Onion active counts — written by the patched DOL stub to fixed addresses.
-# Fixed addresses written by the DOL stub each time the game updates an onion.
 # VAL: current onion count (mirror of dynamic address)
-# PTR: pointer to the dynamic onion address (changes per Dolphin session)
-# Stable across all Dolphin versions (DOL BSS region, zeroed at boot).
 ONION_VAL_ADDRS_PAL = {
     "red":    0x803D7000,
     "yellow": 0x803D7004,
     "blue":   0x803D7008,
 }
-
-# Stub stores r29 (onion base) per color — client computes dyn_addr = base + 0x042C
-ONION_BASE_ADDRS_PAL = {
-    "red":    0x803D7010,
-    "yellow": 0x803D7014,
-    "blue":   0x803D7018,
-}
-ONION_DYN_OFFSET = 0x042C
-
-
-# Onion persistent counts — applied at the start of each new day.
-ONION_PERSISTENT_ADDRS_PAL = {
-    "red":    0x803D6C7E,
-    "yellow": 0x803D6C8A,
-    "blue":   0x803D6C72,
-}
-
 ONION_VAL_ADDRS = {b"GPIP01": ONION_VAL_ADDRS_PAL}
-ONION_BASE_ADDRS = {b"GPIP01": ONION_BASE_ADDRS_PAL}
+
+# Dynamic onion RAM — total pikmin per color (all stages combined), stable PAL.
+# Zeroed until the first day is loaded; transitions 0->nonzero = onion loaded.
+# Confirmed in DME: 0x803D6D20=Blue, 0x803D6D24=Red, 0x803D6D28=Yellow.
+ONION_DYN_ADDRS_PAL: dict[str, int] = {
+    "red":    0x803D6D24,
+    "yellow": 0x803D6D28,
+    "blue":   0x803D6D20,
+}
+ONION_DYN_ADDRS = {b"GPIP01": ONION_DYN_ADDRS_PAL}
+
+# Sentinel: address watched to detect day-start (0 -> nonzero transition).
+# 0x803A2924 = 0 on the day-selection menu, nonzero once the day starts.
+# Reliable for detecting each new day (not just the first one).
+ONION_DYN_SENTINEL_PAL = 0x803A2924
+ONION_DYN_SENTINEL = {b"GPIP01": ONION_DYN_SENTINEL_PAL}
 
 # Persistent pikmin counts per stage (u32 each).
 # The game recalculates the displayed total as Leaf + Bud + Flower automatically.
@@ -245,8 +240,6 @@ class P1CommandProcessor(ClientCommandProcessor):
         except Exception as e:
             logger.error(f"[UpdateLanguage] Failed to reset DAY_NUMBER: {e}")
         return True
-    
-    def _cmd_scancave(self) -> bool:
         """Scan RAM from 0x80000000 to 0x80003000 and write results to scancavelog.txt
         in the same folder as the patched ISO."""
         import threading
@@ -305,8 +298,6 @@ class P1CommandProcessor(ClientCommandProcessor):
         threading.Thread(target=_do_scan, daemon=True, name="scancave").start()
         logger.info("[scancave] Scan started in background...")
         return True
-    
-    def _cmd_crash(self) -> bool:
         """Re-apply all received Pikmin bonus items and re-check all collected ship part locations.
         Use this if the game crashed and you lost progress."""
         old_key = self.ctx._save_key()
@@ -353,6 +344,12 @@ class P1Context(CommonContext):
         self.debug_hint: bool = False
         self.debug_days: bool = False
         self.debug_pbonus: bool = False
+        # Tracks whether the dynamic onion sentinel was zero last tick.
+        # Used to detect the 0->nonzero transition = onion freshly loaded for new day.
+        self._onion_dyn_was_zero: bool = True
+        # Cached base address of the Red onion dynamic structure (found by RAM scan).
+        # Reset to None at each day-start before re-scanning.
+        self._dyn_base_red: int | None = None
         # Ship part hint tracking
         self.last_hint_shown: str = ""
         # Raw bytes of the hint we wrote, so we can re-apply if the game overwrites it
@@ -486,16 +483,21 @@ class P1Context(CommonContext):
 
 
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
-    """Apply received Pikmin bonus items by writing directly into the per-stage
-    persistent counters (Leaf / Bud / Flower, u32 each).
-    The game recalculates the displayed total automatically from these three fields.
+    """Apply received Pikmin bonus items.
+
+    Two writes per item:
+    1. Stage persistent (0x803D6C7x) — survives day transitions, read by game at day start.
+    2. Dynamic onion RAM (base_red + 0x10/14/18) — visible immediately in-game.
+       base_red is found by scanning RAM at day-start (sentinel 0->nonzero) and matching
+       the known persistent Leaf/Bud/Flower values at offsets +0x10/+0x14/+0x18.
+       Yellow/Blue dynamic TBD — only Red enabled for now.
     """
     if game not in ONION_STAGE_ADDRS_CLIENT:
         return
 
-    stage_addrs = ONION_STAGE_ADDRS_CLIENT[game]
+    stage_addrs   = ONION_STAGE_ADDRS_CLIENT[game]
+    sentinel_addr = ONION_DYN_SENTINEL.get(game)
 
-    # Map item_id -> (color, stage, count)
     id_to_pikmin: dict[int, tuple[str, str, int]] = {
         FILLER_ITEMS[name]: PIKMIN_BONUS_ITEMS[name]
         for name in PIKMIN_BONUS_ITEMS
@@ -514,15 +516,90 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         except Exception as e:
             logger.debug(f"Error writing u32 to 0x{addr:08x}: {e}")
 
+    # Detect day-start: sentinel 0 -> nonzero.
+    # 0x803D6D20 stays zero until the first day is loaded (even on title screen).
+    day_start_detected = False
+    if sentinel_addr is not None:
+        sentinel_val = read_u32(sentinel_addr)
+        sentinel_zero = (sentinel_val == 0)
+        if ctx._onion_dyn_was_zero and not sentinel_zero:
+            day_start_detected = True
+            if ctx.debug_pbonus:
+                logger.info(
+                    f"[DEBUG] Day start detected (sentinel 0->0x{sentinel_val:08X})"
+                )
+        ctx._onion_dyn_was_zero = sentinel_zero
+
+    # On day-start, scan RAM to find base_red dynamique.
+    # Pattern: ram[addr+0x10]==leaf AND ram[addr+0x14]==bud AND ram[addr+0x18]==flower
+    # with leaf/bud/flower read from stable persistent addresses.
+    # Result cached in ctx._dyn_base_red until next day-start.
+    if day_start_detected:
+        ctx._dyn_base_red = None  # invalidate cache
+        leaf  = read_u32(stage_addrs["red"]["leaf"])
+        bud   = read_u32(stage_addrs["red"]["bud"])
+        flower = read_u32(stage_addrs["red"]["flower"])
+
+        if leaf > 0 or bud > 0 or flower > 0:
+            scan_start = 0x810B0000
+            scan_end   = 0x810C0000
+
+            def _scan() -> int | None:
+                try:
+                    # Read the entire range in one call to minimise DME overhead
+                    data = dme.read_bytes(scan_start, scan_end - scan_start)
+                    for i in range(0, len(data) - 0x1C, 4):
+                        if (int.from_bytes(data[i+0x10:i+0x14], "big") == leaf and
+                            int.from_bytes(data[i+0x14:i+0x18], "big") == bud  and
+                            int.from_bytes(data[i+0x18:i+0x1C], "big") == flower):
+                            return scan_start + i
+                except Exception as e:
+                    logger.debug(f"[DEBUG] RAM scan error: {e}")
+                return None
+
+            loop = asyncio.get_event_loop()
+            base = await loop.run_in_executor(None, _scan)
+            if base is not None:
+                ctx._dyn_base_red = base
+                if ctx.debug_pbonus:
+                    logger.info(f"[DEBUG] base_red found at 0x{base:08X}")
+            else:
+                if ctx.debug_pbonus:
+                    logger.info(
+                        f"[DEBUG] base_red NOT found (leaf={leaf} bud={bud} flower={flower})"
+                    )
+
+    # Dynamic offsets within base_red structure (confirmed in DME)
+    DYN_RED_OFFSETS = {"leaf": 0x10, "bud": 0x14, "flower": 0x18}
+
+    # In-game = sentinel nonzero AND DAY_NUMBER != 0
+    try:
+        current_day = dme.read_byte(DAY_NUMBER[game])
+    except Exception:
+        current_day = 0
+    in_game = (not ctx._onion_dyn_was_zero) and (current_day != 0)
+
     def add_pikmin(color: str, stage: str, amount: int) -> None:
-        addr = stage_addrs[color][stage]
-        old_val = read_u32(addr)
-        new_val = old_val + amount
-        write_u32(addr, new_val)
+        # Always write to stage persistent (survives day transitions)
+        s_addr = stage_addrs[color][stage]
+        old_s = read_u32(s_addr)
+        write_u32(s_addr, old_s + amount)
         if ctx.debug_pbonus:
             logger.info(
-                f"[DEBUG] STAGE 0x{addr:08x} {color}/{stage} : {old_val} -> {new_val} (+{amount})"
+                f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount})"
             )
+
+        # Write to dynamic onion RAM when in-game (item received during the day).
+        if in_game and color == "red":
+            base = getattr(ctx, "_dyn_base_red", None)
+            if base and stage in DYN_RED_OFFSETS:
+                d_addr = base + DYN_RED_OFFSETS[stage]
+                old_d = read_u32(d_addr)
+                write_u32(d_addr, old_d + amount)
+                if ctx.debug_pbonus:
+                    logger.info(
+                        f"[DEBUG] DYN   0x{d_addr:08X} red/{stage} : {old_d} -> {old_d + amount} (+{amount})"
+                    )
 
     for item in ctx.items_received:
         item_id = item.item
