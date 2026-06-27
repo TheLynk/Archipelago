@@ -347,9 +347,9 @@ class P1Context(CommonContext):
         # Tracks whether the dynamic onion sentinel was zero last tick.
         # Used to detect the 0->nonzero transition = onion freshly loaded for new day.
         self._onion_dyn_was_zero: bool = True
-        # Cached base address of the Red onion dynamic structure (found by RAM scan).
-        # Reset to None at each day-start before re-scanning.
         self._dyn_base_red: int | None = None
+        self._dyn_base_yellow: int | None = None
+        self._dyn_base_blue: int | None = None
         # Ship part hint tracking
         self.last_hint_shown: str = ""
         # Raw bytes of the hint we wrote, so we can re-apply if the game overwrites it
@@ -530,47 +530,51 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                 )
         ctx._onion_dyn_was_zero = sentinel_zero
 
-    # On day-start, scan RAM to find base_red dynamique.
+    # Dynamic offsets within onion structure (confirmed in DME for all 3 colors)
+    DYN_OFFSETS = {"leaf": 0x10, "bud": 0x14, "flower": 0x18}
+    DYN_BASE_CACHE = {"red": "_dyn_base_red", "yellow": "_dyn_base_yellow", "blue": "_dyn_base_blue"}
+
+    # On day-start, scan RAM to find dynamic base for each color.
     # Pattern: ram[addr+0x10]==leaf AND ram[addr+0x14]==bud AND ram[addr+0x18]==flower
-    # with leaf/bud/flower read from stable persistent addresses.
-    # Result cached in ctx._dyn_base_red until next day-start.
     if day_start_detected:
-        ctx._dyn_base_red = None  # invalidate cache
-        leaf  = read_u32(stage_addrs["red"]["leaf"])
-        bud   = read_u32(stage_addrs["red"]["bud"])
-        flower = read_u32(stage_addrs["red"]["flower"])
+        scan_start = 0x81000000
+        scan_end   = 0x81200000
 
-        if leaf > 0 or bud > 0 or flower > 0:
-            scan_start = 0x81000000
-            scan_end   = 0x81200000
+        try:
+            scan_data = dme.read_bytes(scan_start, scan_end - scan_start)
+        except Exception as e:
+            logger.debug(f"[DEBUG] RAM scan read error: {e}")
+            scan_data = b""
 
-            def _scan() -> int | None:
-                try:
-                    # Read the entire range in one call to minimise DME overhead
-                    data = dme.read_bytes(scan_start, scan_end - scan_start)
-                    for i in range(0, len(data) - 0x1C, 4):
-                        if (int.from_bytes(data[i+0x10:i+0x14], "big") == leaf and
-                            int.from_bytes(data[i+0x14:i+0x18], "big") == bud  and
-                            int.from_bytes(data[i+0x18:i+0x1C], "big") == flower):
-                            return scan_start + i
-                except Exception as e:
-                    logger.debug(f"[DEBUG] RAM scan error: {e}")
-                return None
+        for color in ("red", "yellow", "blue"):
+            setattr(ctx, DYN_BASE_CACHE[color], None)  # invalidate cache
+            leaf   = read_u32(stage_addrs[color]["leaf"])
+            bud    = read_u32(stage_addrs[color]["bud"])
+            flower = read_u32(stage_addrs[color]["flower"])
 
-            loop = asyncio.get_event_loop()
-            base = await loop.run_in_executor(None, _scan)
-            if base is not None:
-                ctx._dyn_base_red = base
+            if leaf == 0 and bud == 0 and flower == 0:
                 if ctx.debug_pbonus:
-                    logger.info(f"[DEBUG] base_red found at 0x{base:08X}")
+                    logger.info(f"[DEBUG] Scan skip {color} (all zero)")
+                continue
+
+            found = None
+            for i in range(0, len(scan_data) - 0x1C, 4):
+                if (int.from_bytes(scan_data[i+0x10:i+0x14], "big") == leaf  and
+                    int.from_bytes(scan_data[i+0x14:i+0x18], "big") == bud   and
+                    int.from_bytes(scan_data[i+0x18:i+0x1C], "big") == flower):
+                    found = scan_start + i
+                    break
+
+            if found is not None:
+                setattr(ctx, DYN_BASE_CACHE[color], found)
+                if ctx.debug_pbonus:
+                    logger.info(f"[DEBUG] base_{color} found at 0x{found:08X}")
             else:
                 if ctx.debug_pbonus:
                     logger.info(
-                        f"[DEBUG] base_red NOT found (leaf={leaf} bud={bud} flower={flower})"
+                        f"[DEBUG] base_{color} NOT found "
+                        f"(leaf={leaf} bud={bud} flower={flower})"
                     )
-
-    # Dynamic offsets within base_red structure (confirmed in DME)
-    DYN_RED_OFFSETS = {"leaf": 0x10, "bud": 0x14, "flower": 0x18}
 
     # In-game = sentinel nonzero AND DAY_NUMBER != 0
     try:
@@ -590,15 +594,15 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             )
 
         # Write to dynamic onion RAM when in-game (item received during the day).
-        if in_game and color == "red":
-            base = getattr(ctx, "_dyn_base_red", None)
-            if base and stage in DYN_RED_OFFSETS:
-                d_addr = base + DYN_RED_OFFSETS[stage]
+        if in_game and stage in DYN_OFFSETS:
+            base = getattr(ctx, DYN_BASE_CACHE.get(color, ""), None)
+            if base:
+                d_addr = base + DYN_OFFSETS[stage]
                 old_d = read_u32(d_addr)
                 write_u32(d_addr, old_d + amount)
                 if ctx.debug_pbonus:
                     logger.info(
-                        f"[DEBUG] DYN   0x{d_addr:08X} red/{stage} : {old_d} -> {old_d + amount} (+{amount})"
+                        f"[DEBUG] DYN   0x{d_addr:08X} {color}/{stage} : {old_d} -> {old_d + amount} (+{amount})"
                     )
 
     for item in ctx.items_received:
