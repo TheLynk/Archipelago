@@ -36,14 +36,6 @@ LANG_MSG_DETECTED = {
     "es": "Idioma detectado",
 }
 
-LANG_MSG_LOCKED = {
-    "en": "Language locked",
-    "fr": "Langue verrouillée",
-    "de": "Sprache gesperrt",
-    "it": "Lingua bloccata",
-    "es": "Idioma bloqueado",
-}
-
 # Language detection — one address per language, compare string content.
 # Addresses are stable across Dolphin sessions (title screen strings).
 # Only checked while DAY_NUMBER == 0 (title/main menu).
@@ -202,19 +194,10 @@ class P1CommandProcessor(ClientCommandProcessor):
 
     def _cmd_debuglangue(self) -> bool:
         """Affiche la langue actuellement détectée par le client."""
-        lang      = getattr(self.ctx, "detected_language", "en")
-        confirmed = getattr(self.ctx, "_language_confirmed", False)
-
-        status = "verrouillée (en jeu)" if confirmed else "en cours de détection (menu principal)"
-        logger.info(f"[DEBUG LANGUE] Langue : {LANG_NAMES.get(lang, lang)} ({lang}) — {status}")
+        lang = getattr(self.ctx, "detected_language", "en")
+        logger.info(f"[DEBUG LANGUE] Langue : {LANG_NAMES.get(lang, lang)} ({lang})")
 
         if dme.is_hooked():
-            try:
-                day_number = struct.unpack(">B", dme.read_bytes(0x803A2937, 1))[0]
-                logger.info(f"[DEBUG LANGUE] DAY_NUMBER = {day_number} ({'menu principal' if day_number == 0 else 'en jeu — détection arrêtée'})")
-            except Exception as e:
-                logger.info(f"[DEBUG LANGUE] DAY_NUMBER illisible : {e}")
-
             logger.info("[DEBUG LANGUE] Lecture live des adresses de détection :")
             for addr, lang_bytes, lang_code in LANGUAGE_DETECT_TABLE:
                 try:
@@ -228,17 +211,9 @@ class P1CommandProcessor(ClientCommandProcessor):
         return True
 
     def _cmd_updatelanguage(self) -> bool:
-        """Only use this command on the game's title screen to properly update the Pikmin client language detection."""
-        if not dme.is_hooked():
-            logger.warning("[UpdateLanguage] Not connected to Dolphin.")
-            return False
-        try:
-            dme.write_bytes(DAY_NUMBER[b"GPIP01"], bytes([0]))
-            self.ctx._language_confirmed = False
-            self.ctx.detected_language = "en"
-            logger.info("[UpdateLanguage] DAY_NUMBER reset to 0 — language detection restarted.")
-        except Exception as e:
-            logger.error(f"[UpdateLanguage] Failed to reset DAY_NUMBER: {e}")
+        """Reset language detection to English. Run from the title screen."""
+        self.ctx.detected_language = "en"
+        logger.info("[UpdateLanguage] Language reset to English — detection will update on next tick.")
         return True
         """Scan RAM from 0x80000000 to 0x80003000 and write results to scancavelog.txt
         in the same folder as the patched ISO."""
@@ -382,7 +357,6 @@ class P1Context(CommonContext):
         self.hint_both_last_toggle: float = 0.0
         # Detected game language (set during DAY_NUMBER == 0 phase)
         self.detected_language: str = "en"  # default English
-        self._language_confirmed: bool = False
 
     def _save_key(self) -> str:
         slot_data = getattr(self, "slot_data", {}) or {}
@@ -1159,30 +1133,19 @@ async def dolphin_loop(ctx: P1Context):
         await handle_areas(ctx, game_version)
         # TODO if "DeathLink" in ctx.tags: handle that
 
-        # Language detection — only while DAY_NUMBER == 0 (main menu).
-        # Once DAY_NUMBER != 0 the player is in-game and language cannot change.
+        # Language detection — checked every tick regardless of game state.
         try:
-            day_number = struct.unpack(">B", dme.read_bytes(0x803A2937, 1))[0]
-            if day_number == 0:
-                # Still on main menu — keep checking every tick
-                ctx._language_confirmed = False
-                for addr, lang_bytes, lang_code in LANGUAGE_DETECT_TABLE:
-                    try:
-                        val = dme.read_bytes(addr, len(lang_bytes))
-                        if val == lang_bytes:
-                            if ctx.detected_language != lang_code:
-                                msg = LANG_MSG_DETECTED.get(lang_code, LANG_MSG_DETECTED["en"])
-                                logger.info(f"[Pikmin] {msg} : {LANG_NAMES.get(lang_code, lang_code)}")
-                                ctx.detected_language = lang_code
-                            break
-                    except Exception:
-                        pass
-            elif not ctx._language_confirmed:
-                # Player just entered the game — lock the language
-                lc = ctx.detected_language
-                msg = LANG_MSG_LOCKED.get(lc, LANG_MSG_LOCKED["en"])
-                logger.info(f"[Pikmin] {msg} : {LANG_NAMES.get(lc, lc)}")
-                ctx._language_confirmed = True
+            for addr, lang_bytes, lang_code in LANGUAGE_DETECT_TABLE:
+                try:
+                    val = dme.read_bytes(addr, len(lang_bytes))
+                    if val == lang_bytes:
+                        if ctx.detected_language != lang_code:
+                            msg = LANG_MSG_DETECTED.get(lang_code, LANG_MSG_DETECTED["en"])
+                            logger.info(f"[Pikmin] {msg} : {LANG_NAMES.get(lang_code, lang_code)}")
+                            ctx.detected_language = lang_code
+                        break
+                except Exception:
+                    pass
         except Exception:
             pass
 
