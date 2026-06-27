@@ -44,15 +44,16 @@ LANG_MSG_LOCKED = {
     "es": "Idioma bloqueado",
 }
 
-# Language detection — two addresses must both match the same language string.
-# Only checked while DAY_NUMBER == 0 (title/loading screen).
-# Order: (addr_a, addr_b, language_bytes, language_name)
+# Language detection — one address per language, compare string content.
+# Addresses are stable across Dolphin sessions (title screen strings).
+# Only checked while DAY_NUMBER == 0 (title/main menu).
+# Order: (address, expected_bytes, language_code)
 LANGUAGE_DETECT_TABLE = [
-    (0x804E8640, 0x804E8788, b"English",    "en"),
-    (0x804E8A40, 0x804E8B90, b"Fran\xe7ais", "fr"),
-    (0x804E8CC0, 0x804E90A0, b"Deutsch",    "de"),
-    (0x804E8F10, 0x804E92F0, b"Italiano",   "it"),
-    (0x804E8E58, 0x804E9238, b"Espa\xf1ol", "es"),
+    (0x8080A428, b"PRESS START",   "en"),
+    (0x8080A270, b"APPUYEZ SUR START", "fr"),
+    (0x8080A258, b"DR\xdcCKE START",   "de"),
+    (0x8080A2A8, b"PULSA START",   "es"),
+    (0x808102F0, b"PREMI START",   "it"),
 ]
 
 # Official in-game ship part names per language.
@@ -215,12 +216,11 @@ class P1CommandProcessor(ClientCommandProcessor):
                 logger.info(f"[DEBUG LANGUE] DAY_NUMBER illisible : {e}")
 
             logger.info("[DEBUG LANGUE] Lecture live des adresses de détection :")
-            for addr_a, addr_b, lang_bytes, lang_code in LANGUAGE_DETECT_TABLE:
+            for addr, lang_bytes, lang_code in LANGUAGE_DETECT_TABLE:
                 try:
-                    val_a = dme.read_bytes(addr_a, len(lang_bytes))
-                    val_b = dme.read_bytes(addr_b, len(lang_bytes))
-                    match = "✓" if val_a == lang_bytes and val_b == lang_bytes else "✗"
-                    logger.info(f"  {match} {LANG_NAMES.get(lang_code, lang_code):10s} | 0x{addr_a:08X}={val_a!r}  0x{addr_b:08X}={val_b!r}")
+                    val = dme.read_bytes(addr, len(lang_bytes))
+                    match = "✓" if val == lang_bytes else "✗"
+                    logger.info(f"  {match} {LANG_NAMES.get(lang_code, lang_code):10s} | 0x{addr:08X}={val!r}")
                 except Exception as e:
                     logger.info(f"  ? {LANG_NAMES.get(lang_code, lang_code):10s} | erreur lecture : {e}")
         else:
@@ -1166,11 +1166,10 @@ async def dolphin_loop(ctx: P1Context):
             if day_number == 0:
                 # Still on main menu — keep checking every tick
                 ctx._language_confirmed = False
-                for addr_a, addr_b, lang_bytes, lang_code in LANGUAGE_DETECT_TABLE:
+                for addr, lang_bytes, lang_code in LANGUAGE_DETECT_TABLE:
                     try:
-                        val_a = dme.read_bytes(addr_a, len(lang_bytes))
-                        val_b = dme.read_bytes(addr_b, len(lang_bytes))
-                        if val_a == lang_bytes and val_b == lang_bytes:
+                        val = dme.read_bytes(addr, len(lang_bytes))
+                        if val == lang_bytes:
                             if ctx.detected_language != lang_code:
                                 msg = LANG_MSG_DETECTED.get(lang_code, LANG_MSG_DETECTED["en"])
                                 logger.info(f"[Pikmin] {msg} : {LANG_NAMES.get(lang_code, lang_code)}")
