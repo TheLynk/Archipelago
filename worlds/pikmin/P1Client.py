@@ -11,17 +11,35 @@ from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser,
 from NetUtils import ClientStatus
 from .P1UI import P1UI
 from .P1Data import *
+from .P1Symbols import (
+    SYM_GAMEFLOW,
+    SYM_PIKMIN_ADDRESSES,
+    SYM_ONION_DYN_ADDRS,
+    SYM_ONION_STAGE_ADDRS,
+    SYM_ITEM_MGR_PTR,
+    ONION_CHAIN,
+    OBJTYPE_GOAL,
+)
 
 if TYPE_CHECKING:
     import kvui
 
 SCOUT_RETRY_INTERVAL = 5.0  # seconds between scout retries
 
-UNLOCKED_AREAS: MemoryAddress = mem(0x803A2803, 0x8039D983)  # byte
+
+def _gf(field: str) -> MemoryAddress:
+    """Adresse d'un champ de `gameflow`, par version (source: decomp)."""
+    return {g: t[field] for g, t in SYM_GAMEFLOW.items()}
+
+
+# Derive de la decomp -- gameflow+0x1CB / +0x2F8 / +0x2FF.
+UNLOCKED_AREAS: MemoryAddress = _gf("UNLOCKED_AREAS")
+# FIX NTSC: ces deux adresses utilisaient par erreur la valeur PAL en NTSC.
+TIME_HOURS: MemoryAddress = _gf("TIME_HOURS")   # int, 7=matin, >=19=fin de journee
+DAY_NUMBER: MemoryAddress = _gf("DAY_NUMBER")   # byte, jour courant
+# Heap (alloue dynamiquement): aucun symbole statique, valeurs trouvees a la main.
 COUNT_TOTAL_PARTS: MemoryAddress = mem(0x812427FF, 0x81249DE7)  # byte
 COUNT_REQUIRED_PARTS: MemoryAddress = mem(0x81242803, 0x81249DEB)  # byte
-TIME_HOURS: MemoryAddress = mem(0x803A2930, 0x803A2930)  # int, 7=morning, >=19=end of day
-DAY_NUMBER: MemoryAddress = mem(0x803A2937, 0x803A2937)  # byte, current day number
 
 # Ship part hint text address (PAL) — universal for all parts
 SHIP_PART_TEXT_ADDR = 0x807B100A
@@ -85,70 +103,26 @@ SHIP_PART_TRANSLATIONS: dict[str, dict[str, bytes]] = {
 }
 
 
-# Pikmin count addresses — used for location checking (stable, always valid)
-PIKMIN_ADDRESSES_PAL = {
-    "red":    0x803D6CF7,
-    "yellow": 0x803D6CFB,
-    "blue":   0x803D6CF3,
-}
+# ---------------------------------------------------------------------------
+# Adresses derivees de la decompilation (projectPiki/pikmin) via P1Symbols.py.
+# PAL et NTSC-U sont desormais fournis pour TOUTES les tables ci-dessous ;
+# auparavant seul le PAL existait, ce qui desactivait silencieusement les
+# items Pikmin en NTSC.
+# ---------------------------------------------------------------------------
 
-PIKMIN_ADDRESSES_NTSC_U = {
-    "red":    0x803D1E77,
-    "yellow": 0x803D1E7B,
-    "blue":   0x803D1E73,
-}
+# formationPikis__8GameStat -- octet de poids faible du u32 (big-endian).
+# Sert au check de locations.
+PIKMIN_ADDRESSES = SYM_PIKMIN_ADDRESSES
 
-PIKMIN_ADDRESSES = {
-    b"GPIP01": PIKMIN_ADDRESSES_PAL,
-    b"GPIE01": PIKMIN_ADDRESSES_NTSC_U,
-}
+# containerPikis__8GameStat -- total de Pikmin par couleur dans l'oignon.
+ONION_DYN_ADDRS = SYM_ONION_DYN_ADDRS
 
-# Onion active counts — written by the patched DOL stub to fixed addresses.
-# VAL: current onion count (mirror of dynamic address)
-ONION_VAL_ADDRS_PAL = {
-    "red":    0x803D7000,
-    "yellow": 0x803D7004,
-    "blue":   0x803D7008,
-}
-ONION_VAL_ADDRS = {b"GPIP01": ONION_VAL_ADDRS_PAL}
+# Sentinelle de debut de journee: gameflow+0x2EC (0 au menu, non-nul en jeu).
+ONION_DYN_SENTINEL = _gf("SENTINEL")
 
-# Dynamic onion RAM — total pikmin per color (all stages combined), stable PAL.
-# Zeroed until the first day is loaded; transitions 0->nonzero = onion loaded.
-# Confirmed in DME: 0x803D6D20=Blue, 0x803D6D24=Red, 0x803D6D28=Yellow.
-ONION_DYN_ADDRS_PAL: dict[str, int] = {
-    "red":    0x803D6D24,
-    "yellow": 0x803D6D28,
-    "blue":   0x803D6D20,
-}
-ONION_DYN_ADDRS = {b"GPIP01": ONION_DYN_ADDRS_PAL}
-
-# Sentinel: address watched to detect day-start (0 -> nonzero transition).
-# 0x803A2924 = 0 on the day-selection menu, nonzero once the day starts.
-# Reliable for detecting each new day (not just the first one).
-ONION_DYN_SENTINEL_PAL = 0x803A2924
-ONION_DYN_SENTINEL = {b"GPIP01": ONION_DYN_SENTINEL_PAL}
-
-# Persistent pikmin counts per stage (u32 each).
-# The game recalculates the displayed total as Leaf + Bud + Flower automatically.
-# These are the REAL addresses confirmed in DME (PAL GP1P01).
-ONION_STAGE_ADDRS_CLIENT_PAL: dict[str, dict[str, int]] = {
-    "red": {
-        "leaf":   0x803D6C7C,
-        "bud":    0x803D6C80,
-        "flower": 0x803D6C84,
-    },
-    "yellow": {
-        "leaf":   0x803D6C88,
-        "bud":    0x803D6C8C,
-        "flower": 0x803D6C90,
-    },
-    "blue": {
-        "leaf":   0x803D6C70,
-        "bud":    0x803D6C74,
-        "flower": 0x803D6C78,
-    },
-}
-ONION_STAGE_ADDRS_CLIENT = {b"GPIP01": ONION_STAGE_ADDRS_CLIENT_PAL}
+# pikiInfMgr.mPikiCounts[couleur][stade], u32 chacun.
+# Le jeu recalcule seul le total affiche = Leaf + Bud + Flower.
+ONION_STAGE_ADDRS_CLIENT = SYM_ONION_STAGE_ADDRS
 
 
 class P1CommandProcessor(ClientCommandProcessor):
@@ -456,6 +430,87 @@ class P1Context(CommonContext):
                 logger.info(f"[DEBUG] Server hints total: {len(self.server_hints)}")
 
 
+COLOR_BY_INDEX = {0: "blue", 1: "red", 2: "yellow"}  # GlobalGameOptions.h
+
+
+def find_onion_containers(game: Game) -> dict[str, int]:
+    """Localise les oignons vivants (GoalItem) par couleur.
+
+    Remplace l'ancien scan RAM de 2 Mo. Reproduit `ItemMgr::getContainer()`
+    de la decomp : on suit une chaine de pointeurs et on parcourt la liste
+    chainee des creatures en filtrant sur mObjType == OBJTYPE_Goal.
+
+        itemMgr -> mMeltingPotMgr -> mRootNode.mChild -> ... -> mNext
+                -> mCreature (Creature*) -> GoalItem
+
+    Retourne {couleur: adresse_du_GoalItem}. Dict vide si rien n'est charge
+    (menu, transition), ce qui est un etat normal et non une erreur.
+    """
+    base_ptr = SYM_ITEM_MGR_PTR.get(game)
+    if base_ptr is None:
+        return {}
+
+    C = ONION_CHAIN
+
+    def deref(addr: int) -> int:
+        """Lit un pointeur 32 bits et rejette tout ce qui n'est pas en MEM1/MEM2."""
+        try:
+            val = int.from_bytes(dme.read_bytes(addr, 4), "big")
+        except Exception:
+            return 0
+        # Adresses GameCube/Wii valides uniquement -> evite de suivre du bruit.
+        if 0x80000000 <= val < 0x81800000:
+            return val
+        return 0
+
+    item_mgr = deref(base_ptr)
+    if not item_mgr:
+        return {}
+
+    melting_pot = deref(item_mgr + C["ITEMMGR_MELTINGPOT"])
+    if not melting_pot:
+        return {}
+
+    node = deref(melting_pot + C["MGR_ROOTNODE"] + C["NODE_CHILD"])
+
+    found: dict[str, int] = {}
+    seen: set[int] = set()
+
+    # Garde-fou : liste chainee bornee, immunise contre un cycle ou de la
+    # memoire a moitie initialisee pendant un chargement.
+    for _ in range(4096):
+        if not node or node in seen:
+            break
+        seen.add(node)
+
+        creature = deref(node + C["NODE_CREATURE"])
+        if creature:
+            try:
+                obj_type = int.from_bytes(
+                    dme.read_bytes(creature + C["CREATURE_OBJTYPE"], 4), "big", signed=True
+                )
+            except Exception:
+                obj_type = -1
+
+            if obj_type == OBJTYPE_GOAL:
+                try:
+                    colour = int.from_bytes(
+                        dme.read_bytes(creature + C["GOAL_COLOUR"], 2), "big"
+                    )
+                except Exception:
+                    colour = -1
+                name = COLOR_BY_INDEX.get(colour)
+                if name and name not in found:
+                    found[name] = creature
+
+        if len(found) == 3:
+            break
+
+        node = deref(node + C["NODE_NEXT"])
+
+    return found
+
+
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
     """Apply received Pikmin bonus items.
 
@@ -504,51 +559,27 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                 )
         ctx._onion_dyn_was_zero = sentinel_zero
 
-    # Dynamic offsets within onion structure (confirmed in DME for all 3 colors)
-    DYN_OFFSETS = {"leaf": 0x10, "bud": 0x14, "flower": 0x18}
+    # Offsets reels dans GoalItem : mHeldPikis[Leaf/Bud/Flower] a _0x42C.
+    # (L'ancien code utilisait +0x10/+0x14/+0x18, un point d'ancrage arbitraire
+    #  issu du scan ; la decomp donne l'offset exact du membre.)
+    _HELD = ONION_CHAIN["GOAL_HELDPIKIS"]
+    DYN_OFFSETS = {"leaf": _HELD + 0x0, "bud": _HELD + 0x4, "flower": _HELD + 0x8}
     DYN_BASE_CACHE = {"red": "_dyn_base_red", "yellow": "_dyn_base_yellow", "blue": "_dyn_base_blue"}
 
-    # On day-start, scan RAM to find dynamic base for each color.
-    # Pattern: ram[addr+0x10]==leaf AND ram[addr+0x14]==bud AND ram[addr+0x18]==flower
+    # Resolution des oignons par chaine de pointeurs (ex-scan RAM de 2 Mo).
+    # Assez peu couteux pour etre refait a chaque debut de journee ; les objets
+    # sont realloues a chaque chargement, donc on ne conserve jamais un cache
+    # d'un jour sur l'autre.
     if day_start_detected:
-        scan_start = 0x81000000
-        scan_end   = 0x81200000
-
-        try:
-            scan_data = dme.read_bytes(scan_start, scan_end - scan_start)
-        except Exception as e:
-            logger.debug(f"[DEBUG] RAM scan read error: {e}")
-            scan_data = b""
-
+        containers = find_onion_containers(game)
         for color in ("red", "yellow", "blue"):
-            setattr(ctx, DYN_BASE_CACHE[color], None)  # invalidate cache
-            leaf   = read_u32(stage_addrs[color]["leaf"])
-            bud    = read_u32(stage_addrs[color]["bud"])
-            flower = read_u32(stage_addrs[color]["flower"])
-
-            if leaf == 0 and bud == 0 and flower == 0:
-                if ctx.debug_pbonus:
-                    logger.info(f"[DEBUG] Scan skip {color} (all zero)")
-                continue
-
-            found = None
-            for i in range(0, len(scan_data) - 0x1C, 4):
-                if (int.from_bytes(scan_data[i+0x10:i+0x14], "big") == leaf  and
-                    int.from_bytes(scan_data[i+0x14:i+0x18], "big") == bud   and
-                    int.from_bytes(scan_data[i+0x18:i+0x1C], "big") == flower):
-                    found = scan_start + i
-                    break
-
-            if found is not None:
-                setattr(ctx, DYN_BASE_CACHE[color], found)
-                if ctx.debug_pbonus:
-                    logger.info(f"[DEBUG] base_{color} found at 0x{found:08X}")
-            else:
-                if ctx.debug_pbonus:
-                    logger.info(
-                        f"[DEBUG] base_{color} NOT found "
-                        f"(leaf={leaf} bud={bud} flower={flower})"
-                    )
+            addr = containers.get(color)
+            setattr(ctx, DYN_BASE_CACHE[color], addr)
+            if ctx.debug_pbonus:
+                if addr:
+                    logger.info(f"[DEBUG] oignon {color} @ 0x{addr:08X}")
+                else:
+                    logger.info(f"[DEBUG] oignon {color} introuvable")
 
     # In-game = sentinel nonzero AND DAY_NUMBER != 0
     try:
@@ -570,6 +601,12 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         # Write to dynamic onion RAM when in-game (item received during the day).
         if in_game and stage in DYN_OFFSETS:
             base = getattr(ctx, DYN_BASE_CACHE.get(color, ""), None)
+            if not base:
+                # Oignon pas encore charge au demarrage de la journee : on
+                # retente la resolution maintenant plutot que de perdre l'item.
+                base = find_onion_containers(game).get(color)
+                if base:
+                    setattr(ctx, DYN_BASE_CACHE[color], base)
             if base:
                 d_addr = base + DYN_OFFSETS[stage]
                 old_d = read_u32(d_addr)
