@@ -5,7 +5,8 @@ from typing import ClassVar, Callable, Any
 
 from BaseClasses import Item, ItemClassification, Location, Region, CollectionState
 from worlds.AutoWorld import World
-from worlds.LauncherComponents import launch_subprocess, Type, components, icon_paths, Component, SuffixIdentifier
+from worlds.LauncherComponents import launch, Type, components, icon_paths, Component, SuffixIdentifier
+import settings
 from settings import get_settings, Settings
 from NetUtils import convert_to_base_types
 import Utils
@@ -23,7 +24,12 @@ logger = logging.getLogger(__name__)
 
 def run_client(*args) -> None:
     from .P1Client import run_client as _run_client
-    launch_subprocess(_run_client, name="PikminClient", args=args)
+    # `launch` (et non `launch_subprocess`) : quand le Launcher a deja ete relance
+    # en sous-processus pour ouvrir un .appik1, kivy ne tourne pas dans ce
+    # processus, donc le client s'execute en place au lieu de forker un
+    # processus supplementaire. C'est ce fork en trop qui faisait apparaitre
+    # une fenetre Python parasite pendant le patch.
+    launch(_run_client, name="PikminClient", args=args)
 
 
 if not any(c.display_name == "Pikmin Client" for c in components):
@@ -39,15 +45,66 @@ if not any(c.display_name == "Pikmin Client" for c in components):
 icon_paths["Pikmin"] = "ap:worlds.pikmin/assets/icon.png"
 
 
-def get_base_rom_path() -> str:
-    """Gets the Pikmin 1 PAL ISO path from host.yml (pikmin_options.iso_file)."""
-    options: Settings = get_settings()
-    file_name = options.get("pikmin_options", {}).get("iso_file", "")
-    if not file_name:
-        return ""
-    if not os.path.exists(file_name):
-        file_name = Utils.user_path(file_name)
-    return file_name
+PAL_GAME_ID = b"GPIP01"
+NTSC_GAME_ID = b"GPIE01"
+VALID_GAME_IDS = (PAL_GAME_ID, NTSC_GAME_ID)
+
+
+def _validate_iso(path: str, expected: bytes, label: str) -> None:
+    """Valide une ISO par Game ID plutot que par MD5.
+
+    Les dumps valides ont des MD5 differents selon la revision/le redump, alors
+    que les 6 premiers octets (Game ID) sont fiables. On refuse aussi une ISO
+    deja patchee (prefixes P1P pour le PAL, P1E pour le NTSC).
+    """
+    with open(path, "rb") as f:
+        game_id = f.read(6)
+    if game_id[:3] in (b"P1P", b"P1E"):
+        raise ValueError(
+            "Cette ISO est deja patchee. Fournissez une ISO Pikmin 1 propre."
+        )
+    if game_id != expected:
+        raise ValueError(
+            f"Game ID invalide : {game_id!r}. Attendu {expected.decode()} ({label})."
+        )
+
+
+class PikminSettings(settings.Group):
+    class ISOFile(settings.UserFilePath):
+        """Chemin vers votre ISO Pikmin 1 PAL (GPIP01) d'origine, non patchee."""
+        description = "ISO Pikmin 1 PAL (non patchee)"
+        # On ne copie pas l'ISO dans le dossier Archipelago : on garde un lien
+        # vers le fichier de l'utilisateur.
+        copy_to = None
+
+        @classmethod
+        def validate(cls, path: str) -> None:
+            _validate_iso(path, PAL_GAME_ID, "PAL")
+
+    class ISOFileNTSC(settings.UserFilePath):
+        """Chemin vers votre ISO Pikmin 1 NTSC-U (GPIE01) d'origine, non patchee."""
+        description = "ISO Pikmin 1 NTSC-U (non patchee)"
+        copy_to = None
+
+        @classmethod
+        def validate(cls, path: str) -> None:
+            _validate_iso(path, NTSC_GAME_ID, "NTSC-U")
+
+    iso_file: ISOFile = ISOFile("Pikmin.iso")
+    iso_file_ntsc: ISOFileNTSC = ISOFileNTSC("Pikmin_NTSC.iso")
+
+
+def get_base_rom_path(game_id: bytes = PAL_GAME_ID) -> str:
+    """Renvoie le chemin de l'ISO Pikmin 1 pour la version demandee.
+
+    Passe par le systeme de settings d'Archipelago : si l'entree correspondante
+    est absente de host.yaml ou pointe vers un fichier inexistant, AP ouvre
+    automatiquement un selecteur de fichier natif et enregistre le choix de
+    l'utilisateur dans host.yaml.
+    """
+    options = get_settings().pikmin_options
+    iso_file = options.iso_file_ntsc if game_id == NTSC_GAME_ID else options.iso_file
+    return iso_file.resolve()
 
 
 class P1World(World):
@@ -56,6 +113,9 @@ class P1World(World):
     game: ClassVar[str] = "Pikmin"
 
     web: ClassVar[P1Web] = P1Web()
+
+    settings_key: ClassVar[str] = "pikmin_options"
+    settings: ClassVar[PikminSettings]
 
     options_dataclass = P1Options
     options: P1Options

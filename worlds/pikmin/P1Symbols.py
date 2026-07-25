@@ -10,12 +10,16 @@ SYM_GAMEFLOW = {
         "SENTINEL": 0x803A2924,
         "TIME_HOURS": 0x803A2930,
         "DAY_NUMBER": 0x803A2937,
+        "SHIP_TEXT_PARTID": 0x803A2818,
+        "SHIP_TEXT_TYPE": 0x803A281A,
     },
     b'GPIE01': {
         "UNLOCKED_AREAS": 0x8039D983,
         "SENTINEL": 0x8039DAA4,
         "TIME_HOURS": 0x8039DAB0,
         "DAY_NUMBER": 0x8039DAB7,
+        "SHIP_TEXT_PARTID": 0x8039D998,
+        "SHIP_TEXT_TYPE": 0x8039D99A,
     },
 }
 
@@ -71,6 +75,99 @@ SYM_PLAYER_STATE_PTR = {
 SYM_ITEM_MGR_PTR = {
     b'GPIP01': 0x803ECC8C,
     b'GPIE01': 0x803E7DCC,
+}
+
+# tutorialWindow -- POINTEUR statique vers zen::ogScrTutorialMgr
+# (cree dans createTutorialWindow(), src/plugPikiColin/newPikiGame.cpp).
+SYM_TUTORIAL_WINDOW_PTR = {
+    b'GPIP01': 0x803ECA68,
+    b'GPIE01': 0x803E7BA8,
+}
+
+# Chaine vers le texte affiche a l'ecran :
+#   tutorialWindow -> ogScrTutorialMgr +MESSAGEMGR -> ogScrMessageMgr
+#   -> +FORMATTED_STRINGS (mFormattedDisplayStrings[20][0x400])
+# Offsets issus de include/zen/ogTutorial.h et include/zen/ogMessage.h.
+# La structure n'est pas conditionnee a la version : identique PAL/NTSC.
+TUTORIAL_TEXT_CHAIN = {
+    "TUTORIALMGR_MESSAGEMGR": 0x0,
+    "TUTORIALMGR_STATUS": 0x4,
+    "MSGMGR_PAGE_INFOS": 0x1C,
+    "MSGMGR_STATE": 0x4CC,
+    "MSGMGR_CURR_PAGE": 0x4D0,
+    "MSGMGR_FORMATTED": 0x4F2,
+    "MSGMGR_RAW": 0x554C,
+    "MSGMGR_STRING_STRIDE": 0x400,
+    "TEXTINFO_MSG_UNIQUE_ID": 0x4,
+}
+
+# Plages de l'enum EnumTutorial (include/zen/ogTutorial.h) correspondant
+# aux textes de pieces de vaisseau. Chaque plage couvre les 30 pieces,
+# dans l'ordre de UfoPartIndex. Tout ID hors de ces plages est un texte
+# de tutoriel ou de scenario, qu'il ne faut PAS remplacer.
+TUT_PART_TEXT_RANGES = {
+    "discovery": 32,
+    "info": 62,
+    "collect": 92,
+    "power": 122,
+}
+
+# enum UfoPartIndex (include/Pellet.h) -> nom de piece dans ALL_PARTS.
+# L'index lu dans gameflow.mShipTextPartID indexe directement cette liste.
+UFO_PART_ORDER = [
+    'Bowsprit',
+    'Gluon Drive',
+    'Anti-Dioxin Filter',
+    'Eternal Fuel Dynamo',
+    'Main Engine',
+    'Whimsical Radar',
+    'Interstellar Radio',
+    'Guard Satellite',
+    'Chronos Reactor',
+    'Radiation Canopy',
+    'Geiger Counter',
+    'Sagittarius',
+    'Libra',
+    'Omega Stabilizer',
+    '#1 Ionium Jet',
+    '#2 Ionium Jet',
+    'Shock Absorber',
+    'Gravity Jumper',
+    "Pilot's Seat",
+    'Nova Blaster',
+    'Automatic Gear',
+    'Zirconium Rotor',
+    'Extraordinary Bolt',
+    'Repair-type Bolt',
+    'Space Float',
+    'Massage Machine',
+    'Secret Safe',
+    'Positron Generator',
+    'Analog Computer',
+    'UV Lamp',
+]
+UFO_NOPART = -1  # aucune piece / index invalide
+
+# gsys -- POINTEUR global vers System (System : public StdSystem, include/system.h)
+SYM_GSYS_PTR = {
+    b'GPIP01': 0x803EC9CC,
+    b'GPIE01': 0x803E7B0C,
+}
+
+# StdSystem.mLanguageID (include/system.h). Membre PAL uniquement :
+# en NTSC-U le champ n'existe pas (jeu anglais seul) et 0x1A0 y porte
+# le pointeur de vtable -- ne jamais le lire hors GPIP01.
+STDSYSTEM_LANGUAGE_OFFSET = 0x1A0
+
+# enum LanguageID (include/system.h). ATTENTION : cet ordre n'est PAS
+# celui de l'OS GameCube (OS_LANG_GERMAN=1 / OS_LANG_FRENCH=2) ; le jeu
+# remappe via la table ids[] de GamePrefs::Initialise().
+LANGUAGE_IDS = {
+    0: "en",
+    1: "fr",
+    2: "de",
+    3: "es",
+    4: "it",
 }
 
 # Chaine de pointeurs vers les oignons vivants (remplace le scan RAM).
