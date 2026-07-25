@@ -174,7 +174,7 @@ class P1World(World):
 
         for name, data in ALL_PARTS.items():
             regions[data.area].locations.append(
-                P1Location(self.player, f"{name} Location", data.ap_id, regions[data.area]))
+                P1Location(self.player, ship_part_location_name(name), data.ap_id, regions[data.area]))
 
         if self.options.enable_pikmin_locations:
             self._create_pikmin_locations(regions)
@@ -205,11 +205,11 @@ class P1World(World):
             items.append(self.create_item(part))
 
         if self.options.first_part_is_local:
-            self.get_location("Main Engine Location").place_locked_item(
+            self.get_location(ship_part_location_name("Main Engine")).place_locked_item(
                 items.pop(self.multiworld.random.randint(0, len(items) - 1)))
 
         if self.options.last_part_is_local:
-            self.get_location("Secret Safe Location").place_locked_item(
+            self.get_location(ship_part_location_name("Secret Safe")).place_locked_item(
                 items.pop(self.multiworld.random.randint(0, len(items) - 1)))
 
         ship_part_locations = len(ALL_PARTS)
@@ -264,7 +264,7 @@ class P1World(World):
 
     def set_rules(self) -> None:
         for name, data in ALL_PARTS.items():
-            self.get_location(f"{name} Location").access_rule = lambda state, data=data: \
+            self.get_location(ship_part_location_name(name)).access_rule = lambda state, data=data: \
                 (not data.required_types.red or can_obtain_reds(state, self.player)) \
                 and (not data.required_types.yellow or can_obtain_yellows(state, self.player)) \
                 and (not data.required_types.blue or can_obtain_blues(state, self.player))

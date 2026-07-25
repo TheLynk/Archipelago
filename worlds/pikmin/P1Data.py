@@ -163,12 +163,32 @@ del _next_id, _color, _threshold, _location_name
 
 
 # ====================================================================
+# Noms des locations de pieces de vaisseau
+# ====================================================================
+# Format : "<abrev zone> - <nom piece>", ex. "TDS - Bowsprit".
+# AREA_ABBREV est l'unique source de verite : ne renommer une zone qu'ici.
+
+AREA_ABBREV: Dict[str, str] = {
+    "The Impact Site":    "TIS",
+    "The Forest of Hope": "TFoH",
+    "The Forest Navel":   "TFN",
+    "The Distant Spring": "TDS",
+    "The Final Trial":    "TFT",
+}
+
+
+def ship_part_location_name(part_name: str) -> str:
+    """Nom de la location d'une piece, prefixe par l'abreviation de sa zone."""
+    return f"{AREA_ABBREV[ALL_PARTS[part_name].area]} - {part_name}"
+
+
+# ====================================================================
 # ALL_LOCATIONS - Complete mapping of all locations (ship parts + pikmin)
 # ====================================================================
 
 ALL_LOCATIONS: Dict[str, int] = {
     # Ship part locations
-    **{f"{name} Location": data.ap_id for name, data in ALL_PARTS.items()},
+    **{ship_part_location_name(name): data.ap_id for name, data in ALL_PARTS.items()},
     # Pikmin locations
     **PIKMIN_LOCATIONS_MAP,
 }
