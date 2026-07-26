@@ -26,6 +26,7 @@ from .P1Symbols import (
     TUT_PART_TEXT_RANGES,
     SECTION_ONE_PLAYER,
     ONEPLAYER_NEW_PIKI_GAME,
+    ONEPLAYER_MAP_SELECT,
     ONEPLAYER_CARD_SELECT,
     ONION_CHAIN,
     OBJTYPE_GOAL,
@@ -209,36 +210,54 @@ def read_displayed_part(game: Game) -> Optional[str]:
     return part_from_message_id(msg_id)
 
 
-def is_save_loaded(game: Game) -> bool:
-    """Vrai si le joueur controle Olimar dans un niveau (journee en cours).
+def _oneplayer_subsection(game: Game) -> Optional[int]:
+    """Sous-section OnePlayer courante (enum OnePlayerSectionID), ou None.
 
-    On lit `gameflow.mNextOnePlayerSectionID`, qui identifie la SOUS-section de
-    OnePlayer. Il vaut ONEPLAYER_NewPikiGame (7) uniquement pendant une journee
-    reellement jouee. Aux menus internes au mode histoire — selection de
-    sauvegarde (CardSelect), carte du monde (MapSelect), chargement — il vaut
-    autre chose.
+    Lit `gameflow.mNextOnePlayerSectionID`. Vaut :
+      - ONEPLAYER_NewPikiGame (7) : Olimar dans un niveau, journee jouee ;
+      - ONEPLAYER_MapSelect (6)   : carte du monde / choix de niveau ;
+      - ONEPLAYER_CardSelect (1)  : menu de selection de sauvegarde.
+    Renvoie None hors mode histoire (ecran titre, boot).
 
-    `mCurrGameSectionID` (section externe) ne suffisait pas : CardSelect et
-    MapSelect sont des sous-sections de SECTION_OnePlayer, donc le menu de
-    sauvegarde etait pris a tort pour une partie chargee. `DAY_NUMBER` non plus :
-    il garde une valeur residuelle non nulle sur ce menu.
-
-    Sert de verrou global avant d'envoyer/recevoir des objets AP : sans ca, le
-    client lisait les octets de pieces et les compteurs de Pikmin sur de la
-    memoire non pertinente, et pouvait envoyer de faux checks ou ecrire des
-    objets recus dans le vide.
+    `mCurrGameSectionID` (section externe) ne suffit pas : tous ces menus sont
+    des sous-sections de SECTION_OnePlayer. `DAY_NUMBER` non plus : il garde une
+    valeur residuelle non nulle sur ces menus.
     """
     gf = SYM_GAMEFLOW.get(game)
     if not gf:
-        return False
+        return None
     try:
         section = struct.unpack(">i", dme.read_bytes(gf["GAME_SECTION"], 4))[0]
         if section != SECTION_ONE_PLAYER:
-            return False
-        subsection = struct.unpack(">i", dme.read_bytes(gf["ONEPLAYER_SECTION"], 4))[0]
+            return None
+        return struct.unpack(">i", dme.read_bytes(gf["ONEPLAYER_SECTION"], 4))[0]
     except Exception:
-        return False
-    return subsection == ONEPLAYER_NEW_PIKI_GAME
+        return None
+
+
+def is_in_level(game: Game) -> bool:
+    """Vrai si le joueur controle Olimar dans un niveau (journee en cours).
+
+    Verrou des handlers qui LISENT de la memoire propre au niveau : collecte des
+    pieces (objets sur le tas) et compteurs de Pikmin de l'escouade. Hors niveau,
+    ces adresses ne sont pas pertinentes et pourraient envoyer de faux checks.
+    """
+    return _oneplayer_subsection(game) == ONEPLAYER_NEW_PIKI_GAME
+
+
+def is_save_active(game: Game) -> bool:
+    """Vrai si une partie est en cours : dans un niveau OU sur la carte du monde.
+
+    Verrou plus large que is_in_level, pour la RECEPTION d'objets (les bonus
+    Pikmin se persistent via STAGE et s'appliqueront au prochain niveau) et le
+    deblocage des zones (qui doit etre visible sur la carte du monde). Exclut le
+    menu de selection de sauvegarde (CardSelect) et l'ecran titre.
+
+    Sert aussi de reference pour le message de synchronisation : sans ca, passer
+    par la carte du monde entre deux niveaux affichait a tort "synchronisation en
+    pause".
+    """
+    return _oneplayer_subsection(game) in (ONEPLAYER_NEW_PIKI_GAME, ONEPLAYER_MAP_SELECT)
 
 
 def read_game_language(game: Game) -> Optional[str]:
@@ -568,14 +587,19 @@ class P1CommandProcessor(ClientCommandProcessor):
             logger.info(f"[DEBUG SAVE] Erreur de lecture : {e}")
             return True
 
-        loaded = is_save_loaded(base_id)
+        in_level = is_in_level(base_id)
+        save_active = is_save_active(base_id)
         logger.info(f"[DEBUG SAVE] mCurrGameSectionID = {section} (OnePlayer={SECTION_ONE_PLAYER})")
         logger.info(f"[DEBUG SAVE] mNextOnePlayerSectionID = {subsection} "
-                    f"(NewPikiGame={ONEPLAYER_NEW_PIKI_GAME}, CardSelect={ONEPLAYER_CARD_SELECT})")
+                    f"(NewPikiGame={ONEPLAYER_NEW_PIKI_GAME}, MapSelect={ONEPLAYER_MAP_SELECT}, "
+                    f"CardSelect={ONEPLAYER_CARD_SELECT})")
         logger.info(f"[DEBUG SAVE] DAY_NUMBER = {day} | sentinel = 0x{sentinel:08X} "
                     f"| itemMgr = 0x{item_mgr:08X}")
-        logger.info(f"[DEBUG SAVE] Sauvegarde chargée : {'OUI' if loaded else 'NON'} "
-                    f"— synchronisation AP {'active' if loaded else 'en pause'}")
+        logger.info(f"[DEBUG SAVE] Dans un niveau : {'OUI' if in_level else 'NON'} "
+                    f"(pièces + Pikmin de l'escouade)")
+        logger.info(f"[DEBUG SAVE] Partie active : {'OUI' if save_active else 'NON'} "
+                    f"— synchronisation AP {'active' if save_active else 'en pause'} "
+                    f"(réception d'objets + zones)")
         return True
 
     def _cmd_debugdump(self) -> bool:
@@ -1543,13 +1567,18 @@ async def dolphin_loop(ctx: P1Context):
             dme.un_hook()
             continue
 
-        # Verrou global : on n'envoie/recoit des objets AP que si une partie est
-        # reellement chargee. A l'ecran titre, les octets de pieces et les
-        # compteurs de Pikmin pointent sur de la memoire non initialisee.
-        save_loaded = is_save_loaded(game_version)
-        if save_loaded != ctx._save_was_loaded:
+        # Deux niveaux de verrou selon ce que lit/ecrit chaque handler :
+        #   in_level    = Olimar dans un niveau (NewPikiGame)
+        #   save_active = niveau OU carte du monde (choix de niveau)
+        # A l'ecran titre et au menu de sauvegarde, les deux sont faux.
+        in_level = is_in_level(game_version)
+        save_active = is_save_active(game_version)
+
+        # Message de synchronisation base sur save_active : passer par la carte
+        # du monde entre deux niveaux ne doit pas afficher "en pause".
+        if save_active != ctx._save_was_loaded:
             lang = getattr(ctx, "detected_language", "en")
-            if save_loaded:
+            if save_active:
                 msg = SYNC_ACTIVE_MSG.get(lang, SYNC_ACTIVE_MSG["en"])
                 logger.info(f"[Pikmin] {msg}")
                 # Repartir proprement a la reprise : on rescanne les locations et
@@ -1558,20 +1587,27 @@ async def dolphin_loop(ctx: P1Context):
             else:
                 msg = SYNC_PAUSED_MSG.get(lang, SYNC_PAUSED_MSG["en"])
                 logger.info(f"[Pikmin] {msg}")
-            ctx._save_was_loaded = save_loaded
+            ctx._save_was_loaded = save_active
 
-        # Handlers d'envoi/reception d'objets AP : uniquement en partie chargee.
-        gated_handlers = (handle_parts, handle_pikmin_locations,
-                          handle_pikmin_items, handle_areas)
-        # Handlers cosmetiques/mecaniques : tournent toujours (ils ont leurs
-        # propres gardes internes de jour/texte).
+        # Handlers qui LISENT de la memoire propre au niveau (collecte de pieces,
+        # compteurs de l'escouade) : uniquement dans un niveau.
+        in_level_handlers = (handle_parts, handle_pikmin_locations)
+        # Handlers actifs aussi sur la carte du monde : reception d'objets
+        # (persistee via STAGE) et deblocage des zones (visible sur la carte).
+        save_active_handlers = (handle_pikmin_items, handle_areas)
+        # Handlers cosmetiques/mecaniques : tournent toujours (gardes internes).
         always_handlers = (handle_day_cycle, handle_ship_part_hints)
+
+        handlers = list(always_handlers)
+        if save_active:
+            handlers = list(save_active_handlers) + handlers
+        if in_level:
+            handlers = list(in_level_handlers) + handlers
 
         # Chaque handler est isole : une exception dans l'un d'eux ne doit pas
         # tuer la boucle entiere. Sans ca, une seule erreur (par exemple dans les
         # hints) arretait definitivement la detection des Pikmin, des locations,
         # du cycle de jour et des zones, sans que rien ne le signale en jeu.
-        handlers = (gated_handlers + always_handlers) if save_loaded else always_handlers
         for handler in handlers:
             try:
                 await handler(ctx, game_version)
