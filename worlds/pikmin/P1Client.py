@@ -24,6 +24,9 @@ from .P1Symbols import (
     SYM_TUTORIAL_WINDOW_PTR,
     TUTORIAL_TEXT_CHAIN,
     TUT_PART_TEXT_RANGES,
+    SECTION_ONE_PLAYER,
+    ONEPLAYER_NEW_PIKI_GAME,
+    ONEPLAYER_CARD_SELECT,
     ONION_CHAIN,
     OBJTYPE_GOAL,
 )
@@ -63,6 +66,24 @@ LANG_MSG_DETECTED = {
     "de": "Sprache erkannt",
     "it": "Lingua rilevata",
     "es": "Idioma detectado",
+}
+
+# Synchronisation AP active (une partie vient d'etre chargee), par langue du jeu.
+SYNC_ACTIVE_MSG = {
+    "en": "Save loaded — AP sync active.",
+    "fr": "Sauvegarde chargée — synchronisation AP active.",
+    "de": "Spielstand geladen — AP-Synchronisierung aktiv.",
+    "it": "Salvataggio caricato — sincronizzazione AP attiva.",
+    "es": "Partida cargada — sincronización AP activa.",
+}
+
+# Synchronisation AP en pause (retour a un menu), par langue du jeu.
+SYNC_PAUSED_MSG = {
+    "en": "Returned to menu — AP sync paused.",
+    "fr": "Retour au menu — synchronisation AP en pause.",
+    "de": "Zurück zum Menü — AP-Synchronisierung pausiert.",
+    "it": "Ritorno al menu — sincronizzazione AP in pausa.",
+    "es": "Vuelta al menú — sincronización AP en pausa.",
 }
 
 # Detection de langue.
@@ -122,9 +143,15 @@ def resolve_message_mgr(game: Game) -> Optional[int]:
 
 
 # Plages d'EnumTutorial que l'on accepte de remplacer par un hint.
-# On exclut volontairement "power" (texte d'amelioration du vaisseau) : il ne
-# parle pas de l'emplacement d'une piece.
-HINTABLE_TEXT_KINDS = ("discovery", "info", "collect")
+# On affiche le hint uniquement AVANT la collecte :
+#   - "discovery" : on s'approche d'une piece pour la premiere fois
+#   - "info"      : on interagit avec une piece pas encore collectee
+# On exclut :
+#   - "collect" : texte de RECUPERATION de la piece. Y ecrire un hint sur
+#     l'emplacement de la piece n'a plus de sens (on vient de l'obtenir) et
+#     ecrasait le texte de recuperation.
+#   - "power"   : texte d'amelioration du vaisseau, sans rapport avec un emplacement.
+HINTABLE_TEXT_KINDS = ("discovery", "info")
 
 
 def read_displayed_message_id(msgmgr: int) -> Optional[int]:
@@ -180,6 +207,38 @@ def read_displayed_part(game: Game) -> Optional[str]:
     if msg_id is None:
         return None
     return part_from_message_id(msg_id)
+
+
+def is_save_loaded(game: Game) -> bool:
+    """Vrai si le joueur controle Olimar dans un niveau (journee en cours).
+
+    On lit `gameflow.mNextOnePlayerSectionID`, qui identifie la SOUS-section de
+    OnePlayer. Il vaut ONEPLAYER_NewPikiGame (7) uniquement pendant une journee
+    reellement jouee. Aux menus internes au mode histoire — selection de
+    sauvegarde (CardSelect), carte du monde (MapSelect), chargement — il vaut
+    autre chose.
+
+    `mCurrGameSectionID` (section externe) ne suffisait pas : CardSelect et
+    MapSelect sont des sous-sections de SECTION_OnePlayer, donc le menu de
+    sauvegarde etait pris a tort pour une partie chargee. `DAY_NUMBER` non plus :
+    il garde une valeur residuelle non nulle sur ce menu.
+
+    Sert de verrou global avant d'envoyer/recevoir des objets AP : sans ca, le
+    client lisait les octets de pieces et les compteurs de Pikmin sur de la
+    memoire non pertinente, et pouvait envoyer de faux checks ou ecrire des
+    objets recus dans le vide.
+    """
+    gf = SYM_GAMEFLOW.get(game)
+    if not gf:
+        return False
+    try:
+        section = struct.unpack(">i", dme.read_bytes(gf["GAME_SECTION"], 4))[0]
+        if section != SECTION_ONE_PLAYER:
+            return False
+        subsection = struct.unpack(">i", dme.read_bytes(gf["ONEPLAYER_SECTION"], 4))[0]
+    except Exception:
+        return False
+    return subsection == ONEPLAYER_NEW_PIKI_GAME
 
 
 def read_game_language(game: Game) -> Optional[str]:
@@ -380,44 +439,45 @@ class P1CommandProcessor(ClientCommandProcessor):
             logger.info(f"[DEBUG PBONUS] Pending DYN: {getattr(self.ctx, 'pikmin_dyn_pending', {})}")
         return True
 
-    def _cmd_debuglangue(self) -> bool:
-        """Affiche la langue actuellement détectée par le client."""
+    def _cmd_debuglanguage(self) -> bool:
+        """Show the language currently detected by the client."""
         lang = getattr(self.ctx, "detected_language", "en")
-        logger.info(f"[DEBUG LANGUE] Langue : {LANG_NAMES.get(lang, lang)} ({lang})")
+        logger.info(f"[DEBUG LANGUAGE] Language: {LANG_NAMES.get(lang, lang)} ({lang})")
 
         if not dme.is_hooked():
-            logger.info("[DEBUG LANGUE] Dolphin non connecté — lecture live impossible.")
+            logger.info("[DEBUG LANGUAGE] Dolphin not connected — live read unavailable.")
             return True
 
         try:
             game = dme.read_bytes(0x80000000, 6)
         except Exception as e:
-            logger.info(f"[DEBUG LANGUE] Lecture du Game ID impossible : {e}")
+            logger.info(f"[DEBUG LANGUAGE] Could not read Game ID: {e}")
             return True
 
-        logger.info(f"[DEBUG LANGUE] Game ID : {game!r}")
-        if game != b"GPIP01":
-            logger.info("[DEBUG LANGUE] Version non-PAL : anglais uniquement, "
-                        "gsys->mLanguageID n'existe pas.")
+        base_id = BASE_ID_BY_PATCHED_PREFIX.get(game[:3], game)
+        logger.info(f"[DEBUG LANGUAGE] Game ID: {game!r} (base {base_id.decode(errors='replace')})")
+        if base_id != b"GPIP01":
+            logger.info("[DEBUG LANGUAGE] Non-PAL version: English only, "
+                        "gsys->mLanguageID does not exist.")
             return True
 
-        gsys_ptr_addr = SYM_GSYS_PTR.get(game)
+        gsys_ptr_addr = SYM_GSYS_PTR.get(base_id)
         try:
             gsys = struct.unpack(">I", dme.read_bytes(gsys_ptr_addr, 4))[0]
-            logger.info(f"[DEBUG LANGUE] gsys @ 0x{gsys_ptr_addr:08X} -> 0x{gsys:08X}")
+            logger.info(f"[DEBUG LANGUAGE] gsys @ 0x{gsys_ptr_addr:08X} -> 0x{gsys:08X}")
             if not (_RAM_MIN <= gsys < _RAM_MAX):
-                logger.info("[DEBUG LANGUE] Pointeur gsys hors RAM (jeu pas encore initialisé).")
+                logger.info("[DEBUG LANGUAGE] gsys pointer out of RAM (game not initialized yet).")
                 return True
             addr = gsys + STDSYSTEM_LANGUAGE_OFFSET
             lang_id = struct.unpack(">I", dme.read_bytes(addr, 4))[0]
-            logger.info(f"[DEBUG LANGUE] mLanguageID @ 0x{addr:08X} = {lang_id} "
-                        f"-> {LANGUAGE_IDS.get(lang_id, '??? (hors enum)')}")
+            logger.info(f"[DEBUG LANGUAGE] mLanguageID @ 0x{addr:08X} = {lang_id} "
+                        f"-> {LANGUAGE_IDS.get(lang_id, '??? (out of enum)')}")
         except Exception as e:
-            logger.info(f"[DEBUG LANGUE] Erreur de lecture : {e}")
+            logger.info(f"[DEBUG LANGUAGE] Read error: {e}")
         return True
 
     def _cmd_debugtext(self) -> bool:
-        """Suit la chaine de pointeurs vers le texte affiche et compare au PAL connu."""
+        """Follow the pointer chain to the on-screen text and compare with the known PAL address."""
         if not dme.is_hooked():
             logger.info("[DEBUG TEXTE] Dolphin non connecté.")
             return True
@@ -480,19 +540,88 @@ class P1CommandProcessor(ClientCommandProcessor):
             logger.info(f"[DEBUG TEXTE] Erreur de lecture : {e}")
         return True
 
-    def _cmd_updatelanguage(self) -> bool:
-        """Force une relecture immédiate de la langue depuis la mémoire du jeu."""
+    def _cmd_debugsave(self) -> bool:
+        """Show whether the client considers a save file to be loaded."""
+        if not dme.is_hooked():
+            logger.info("[DEBUG SAVE] Dolphin non connecté.")
+            return True
         try:
-            game = dme.read_bytes(0x80000000, 6) if dme.is_hooked() else None
-        except Exception:
-            game = None
-        lang = read_game_language(game) if game else None
-        if lang:
-            self.ctx.detected_language = lang
-            logger.info(f"[UpdateLanguage] Langue : {LANG_NAMES.get(lang, lang)} ({lang})")
+            game = dme.read_bytes(0x80000000, 6)
+        except Exception as e:
+            logger.info(f"[DEBUG SAVE] Lecture du Game ID impossible : {e}")
+            return True
+        base_id = BASE_ID_BY_PATCHED_PREFIX.get(game[:3], game)
+        gf = SYM_GAMEFLOW.get(base_id)
+        if not gf:
+            logger.info(f"[DEBUG SAVE] Version inconnue : {base_id!r}")
+            return True
+        def u32(addr):
+            return struct.unpack(">I", dme.read_bytes(addr, 4))[0]
+
+        try:
+            section = struct.unpack(">i", dme.read_bytes(gf["GAME_SECTION"], 4))[0]
+            subsection = struct.unpack(">i", dme.read_bytes(gf["ONEPLAYER_SECTION"], 4))[0]
+            day = dme.read_byte(DAY_NUMBER[base_id])
+            sentinel = u32(gf["SENTINEL"])
+            item_mgr = u32(SYM_ITEM_MGR_PTR[base_id]) if base_id in SYM_ITEM_MGR_PTR else 0
+        except Exception as e:
+            logger.info(f"[DEBUG SAVE] Erreur de lecture : {e}")
+            return True
+
+        loaded = is_save_loaded(base_id)
+        logger.info(f"[DEBUG SAVE] mCurrGameSectionID = {section} (OnePlayer={SECTION_ONE_PLAYER})")
+        logger.info(f"[DEBUG SAVE] mNextOnePlayerSectionID = {subsection} "
+                    f"(NewPikiGame={ONEPLAYER_NEW_PIKI_GAME}, CardSelect={ONEPLAYER_CARD_SELECT})")
+        logger.info(f"[DEBUG SAVE] DAY_NUMBER = {day} | sentinel = 0x{sentinel:08X} "
+                    f"| itemMgr = 0x{item_mgr:08X}")
+        logger.info(f"[DEBUG SAVE] Sauvegarde chargée : {'OUI' if loaded else 'NON'} "
+                    f"— synchronisation AP {'active' if loaded else 'en pause'}")
+        return True
+
+    def _cmd_debugdump(self) -> bool:
+        """Dump every debug info at once, to attach when reporting a bug."""
+        ctx = self.ctx
+        log = logger.info
+
+        log("========== PIKMIN AP DEBUG DUMP ==========")
+        log("Copiez tout ce bloc dans votre signalement de bug.")
+        log("Copy this whole block when reporting a bug.")
+        log("------------------------------------------")
+
+        # --- Client / AP state -------------------------------------------
+        log(f"[DUMP] AP world: Pikmin | client connected: {ctx.server is not None}")
+        log(f"[DUMP] Slot: {getattr(ctx, 'auth', None)} | seed: {getattr(ctx, 'seed_name', None)}")
+        slot_data = getattr(ctx, "slot_data", {}) or {}
+        log(f"[DUMP] Hint mode: {slot_data.get('ship_part_hint_mode', 0)} | "
+            f"day cycle mode: {slot_data.get('day_cycle_mode', 0)} | "
+            f"game_id_suffix: {slot_data.get('game_id_suffix', '')!r}")
+        log(f"[DUMP] Detected language: {getattr(ctx, 'detected_language', 'en')}")
+        log(f"[DUMP] Dolphin status: {getattr(ctx, 'dolphin_status_text', '?')}")
+        log(f"[DUMP] Items received: {len(getattr(ctx, 'items_received', []))} | "
+            f"locations checked: {len(getattr(ctx, 'checked_locations', []))} | "
+            f"missing: {len(getattr(ctx, 'missing_locations', []))}")
+        log(f"[DUMP] Pikmin bonus applied: {getattr(ctx, 'pikmin_items_applied', {})}")
+        log(f"[DUMP] Pikmin bonus pending: {getattr(ctx, 'pikmin_dyn_pending', {})}")
+        log(f"[DUMP] Scouted locations: {len(getattr(ctx, 'scouted_locations', {}))} | "
+            f"server hints: {len(getattr(ctx, 'server_hints', {}))}")
+
+        if slot_data.get("hints"):
+            log(f"[DUMP] Hints in slot_data: {len(slot_data['hints'])}")
+            for part_name, hint_data in slot_data["hints"].items():
+                log(f"[DUMP]   {part_name}: {hint_data.get('Item', '?')} "
+                    f"@ {hint_data.get('Location', '?')}")
+
+        # --- Live memory diagnostics (read-only) -------------------------
+        log("------------------------------------------")
+        if not dme.is_hooked():
+            log("[DUMP] Dolphin not connected — no live memory dump.")
         else:
-            logger.info("[UpdateLanguage] Lecture impossible — langue inchangée "
-                        f"({self.ctx.detected_language}).")
+            # Reuse the read-only debug commands (none of them toggle state).
+            self._cmd_debugsave()
+            self._cmd_debuglanguage()
+            self._cmd_debugtext()
+
+        log("========== END OF DEBUG DUMP ==========")
         return True
 
 
@@ -557,6 +686,9 @@ class P1Context(CommonContext):
         self.hint_both_last_toggle: float = 0.0
         # Detected game language (set during DAY_NUMBER == 0 phase)
         self.detected_language: str = "en"  # default English
+        # Une partie etait-elle chargee au tick precedent ? Sert a ne journaliser
+        # que les transitions (chargement / retour au titre), pas chaque tick.
+        self._save_was_loaded: bool = False
 
     def _save_key(self) -> str:
         slot_data = getattr(self, "slot_data", {}) or {}
@@ -847,33 +979,59 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         current_day = 0
     in_game = (not ctx._onion_dyn_was_zero) and (current_day != 0)
 
-    def add_pikmin(color: str, stage: str, amount: int) -> None:
-        # Always write to stage persistent (survives day transitions)
+    def add_pikmin(color: str, stage: str, amount: int) -> bool:
+        """Applique un bonus. Renvoie True seulement si l'ecriture a durablement
+        abouti ; False si on doit reessayer plus tard (item non perdu).
+
+        En jeu, l'oignon vivant (DYN) est la source de verite : le jeu recalcule
+        STAGE a partir de lui. Si l'oignon de cette couleur n'est pas encore
+        resolu (pas encore deploye dans le niveau), on NE marque PAS l'item
+        applique et on n'ecrit rien — sinon l'ecriture STAGE serait ecrasee par
+        le jeu et l'item serait perdu. C'etait la cause des Pikmin recus par
+        moments non appliques.
+        """
+        if in_game and stage in DYN_OFFSETS:
+            base = getattr(ctx, DYN_BASE_CACHE.get(color, ""), None)
+            if not base:
+                # Oignon pas encore charge : on retente la resolution.
+                base = find_onion_containers(game).get(color)
+                if base:
+                    setattr(ctx, DYN_BASE_CACHE[color], base)
+            if not base:
+                # Impossible d'appliquer durablement maintenant -> on differe.
+                if ctx.debug_pbonus:
+                    logger.info(
+                        f"[DEBUG] {color}/{stage} +{amount} différé : oignon non résolu"
+                    )
+                return False
+
+            # STAGE persistant (survit aux transitions de journee).
+            s_addr = stage_addrs[color][stage]
+            old_s = read_u32(s_addr)
+            write_u32(s_addr, old_s + amount)
+            # DYN : oignon vivant, visible immediatement.
+            d_addr = base + DYN_OFFSETS[stage]
+            old_d = read_u32(d_addr)
+            write_u32(d_addr, old_d + amount)
+            if ctx.debug_pbonus:
+                logger.info(
+                    f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount})"
+                )
+                logger.info(
+                    f"[DEBUG] DYN   0x{d_addr:08X} {color}/{stage} : {old_d} -> {old_d + amount} (+{amount})"
+                )
+            return True
+
+        # Hors journee (oignon non vivant) : on persiste dans STAGE, lu au
+        # prochain chargement de journee.
         s_addr = stage_addrs[color][stage]
         old_s = read_u32(s_addr)
         write_u32(s_addr, old_s + amount)
         if ctx.debug_pbonus:
             logger.info(
-                f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount})"
+                f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount}) [hors jeu]"
             )
-
-        # Write to dynamic onion RAM when in-game (item received during the day).
-        if in_game and stage in DYN_OFFSETS:
-            base = getattr(ctx, DYN_BASE_CACHE.get(color, ""), None)
-            if not base:
-                # Oignon pas encore charge au demarrage de la journee : on
-                # retente la resolution maintenant plutot que de perdre l'item.
-                base = find_onion_containers(game).get(color)
-                if base:
-                    setattr(ctx, DYN_BASE_CACHE[color], base)
-            if base:
-                d_addr = base + DYN_OFFSETS[stage]
-                old_d = read_u32(d_addr)
-                write_u32(d_addr, old_d + amount)
-                if ctx.debug_pbonus:
-                    logger.info(
-                        f"[DEBUG] DYN   0x{d_addr:08X} {color}/{stage} : {old_d} -> {old_d + amount} (+{amount})"
-                    )
+        return True
 
     for item in ctx.items_received:
         item_id = item.item
@@ -890,8 +1048,11 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         bonus = count * to_apply
         if ctx.debug_pbonus:
             logger.info(f"[DEBUG] Item  {color}/{stage} +{bonus} (item_id={item_id})")
-        add_pikmin(color, stage, bonus)
-        ctx.pikmin_items_applied[item_id] = total_received
+        # On ne marque l'item applique QUE si l'ecriture a durablement abouti.
+        # Sinon on le laisse en attente : il sera re-tente au prochain tick, une
+        # fois l'oignon resolu. Evite de perdre des Pikmin recus.
+        if add_pikmin(color, stage, bonus):
+            ctx.pikmin_items_applied[item_id] = total_received
 
     ctx.save_applied()
 
@@ -1382,12 +1543,36 @@ async def dolphin_loop(ctx: P1Context):
             dme.un_hook()
             continue
 
+        # Verrou global : on n'envoie/recoit des objets AP que si une partie est
+        # reellement chargee. A l'ecran titre, les octets de pieces et les
+        # compteurs de Pikmin pointent sur de la memoire non initialisee.
+        save_loaded = is_save_loaded(game_version)
+        if save_loaded != ctx._save_was_loaded:
+            lang = getattr(ctx, "detected_language", "en")
+            if save_loaded:
+                msg = SYNC_ACTIVE_MSG.get(lang, SYNC_ACTIVE_MSG["en"])
+                logger.info(f"[Pikmin] {msg}")
+                # Repartir proprement a la reprise : on rescanne les locations et
+                # on laisse handle_pikmin_items re-appliquer les bonus recus.
+                ctx.needs_location_scout = True
+            else:
+                msg = SYNC_PAUSED_MSG.get(lang, SYNC_PAUSED_MSG["en"])
+                logger.info(f"[Pikmin] {msg}")
+            ctx._save_was_loaded = save_loaded
+
+        # Handlers d'envoi/reception d'objets AP : uniquement en partie chargee.
+        gated_handlers = (handle_parts, handle_pikmin_locations,
+                          handle_pikmin_items, handle_areas)
+        # Handlers cosmetiques/mecaniques : tournent toujours (ils ont leurs
+        # propres gardes internes de jour/texte).
+        always_handlers = (handle_day_cycle, handle_ship_part_hints)
+
         # Chaque handler est isole : une exception dans l'un d'eux ne doit pas
         # tuer la boucle entiere. Sans ca, une seule erreur (par exemple dans les
         # hints) arretait definitivement la detection des Pikmin, des locations,
         # du cycle de jour et des zones, sans que rien ne le signale en jeu.
-        for handler in (handle_parts, handle_pikmin_locations, handle_pikmin_items,
-                        handle_day_cycle, handle_ship_part_hints, handle_areas):
+        handlers = (gated_handlers + always_handlers) if save_loaded else always_handlers
+        for handler in handlers:
             try:
                 await handler(ctx, game_version)
             except Exception:
@@ -1471,7 +1656,7 @@ def _ask_target_version() -> Optional[bytes]:
 
     tk.Label(
         root,
-        text="Quelle version de Pikmin voulez-vous patcher ?",
+        text="Which version of Pikmin do you want to patch?",
         padx=24, pady=16,
     ).pack()
 

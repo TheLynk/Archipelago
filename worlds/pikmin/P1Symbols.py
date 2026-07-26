@@ -7,6 +7,8 @@ Regenerer: python gen_symbols.py <decomp>/config worlds/pikmin/P1Symbols.py
 SYM_GAMEFLOW = {
     b'GPIP01': {
         "UNLOCKED_AREAS": 0x803A2803,
+        "GAME_SECTION": 0x803A2824,
+        "ONEPLAYER_SECTION": 0x803A282C,
         "SENTINEL": 0x803A2924,
         "TIME_HOURS": 0x803A2930,
         "DAY_NUMBER": 0x803A2937,
@@ -15,6 +17,8 @@ SYM_GAMEFLOW = {
     },
     b'GPIE01': {
         "UNLOCKED_AREAS": 0x8039D983,
+        "GAME_SECTION": 0x8039D9A4,
+        "ONEPLAYER_SECTION": 0x8039D9AC,
         "SENTINEL": 0x8039DAA4,
         "TIME_HOURS": 0x8039DAB0,
         "DAY_NUMBER": 0x8039DAB7,
@@ -76,6 +80,15 @@ SYM_ITEM_MGR_PTR = {
     b'GPIP01': 0x803ECC8C,
     b'GPIE01': 0x803E7DCC,
 }
+
+# enum GameSectionID (include/Section.h). Valeur de gameflow.mCurrGameSectionID.
+SECTION_ONE_PLAYER = 4  # mode histoire/challenge : une partie est chargee
+SECTION_TITLES = 1      # ecran titre
+
+# enum OnePlayerSectionID (include/Section.h). Valeur de mNextOnePlayerSectionID.
+ONEPLAYER_NEW_PIKI_GAME = 7  # journee de jeu reelle (Olimar dans un niveau)
+ONEPLAYER_CARD_SELECT = 1    # menu de selection de sauvegarde
+ONEPLAYER_MAP_SELECT = 6     # carte du monde / selection de zone
 
 # tutorialWindow -- POINTEUR statique vers zen::ogScrTutorialMgr
 # (cree dans createTutorialWindow(), src/plugPikiColin/newPikiGame.cpp).
