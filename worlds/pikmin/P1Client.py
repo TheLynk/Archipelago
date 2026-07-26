@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import struct
 import time
@@ -86,6 +87,44 @@ SYNC_PAUSED_MSG = {
     "it": "Ritorno al menu — sincronizzazione AP in pausa.",
     "es": "Vuelta al menú — sincronización AP en pausa.",
 }
+
+def _read_apworld_version() -> str:
+    """Version de l'apworld, lue depuis archipelago.json (manifeste).
+
+    Fonctionne en source (dossier) comme en .apworld (zip) : on essaie d'abord
+    importlib.resources (gere le zip), puis un simple acces fichier en repli.
+    """
+    try:
+        from importlib.resources import files
+        data = (files(__package__) / "archipelago.json").read_text(encoding="utf-8")
+        return json.loads(data).get("version", "unknown")
+    except Exception:
+        pass
+    try:
+        path = os.path.join(os.path.dirname(__file__), "archipelago.json")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("version", "unknown")
+    except Exception:
+        return "unknown"
+
+
+APWORLD_VERSION = _read_apworld_version()
+
+# id d'objet -> nom lisible (bonus Pikmin), pour les logs de debug.
+ITEM_ID_TO_NAME: dict[int, str] = {ap_id: name for name, ap_id in FILLER_ITEMS.items()}
+
+
+def _named_counts(applied: dict) -> dict:
+    """Remplace les id d'objets par leur nom lisible dans un dict {id: n}.
+
+    Trie par nom d'objet pour une lecture stable, et garde l'id brut en repli si
+    un id est inconnu.
+    """
+    out = {}
+    for item_id, n in applied.items():
+        name = ITEM_ID_TO_NAME.get(item_id, f"#{item_id}")
+        out[name] = n
+    return dict(sorted(out.items()))
 
 # Detection de langue.
 #
@@ -454,8 +493,13 @@ class P1CommandProcessor(ClientCommandProcessor):
         state = "ON" if self.ctx.debug_pbonus else "OFF"
         logger.info(f"[DEBUG] Pikmin bonus debug: {state}")
         if self.ctx.debug_pbonus:
-            logger.info(f"[DEBUG PBONUS] Applied items: {getattr(self.ctx, 'pikmin_items_applied', {})}")
-            logger.info(f"[DEBUG PBONUS] Pending DYN: {getattr(self.ctx, 'pikmin_dyn_pending', {})}")
+            applied = _named_counts(getattr(self.ctx, "pikmin_items_applied", {}))
+            if applied:
+                logger.info("[DEBUG PBONUS] Applied items:")
+                for name, n in applied.items():
+                    logger.info(f"[DEBUG PBONUS]   {name}: {n}")
+            else:
+                logger.info("[DEBUG PBONUS] Applied items: (none)")
         return True
 
     def _cmd_debuglanguage(self) -> bool:
@@ -498,24 +542,24 @@ class P1CommandProcessor(ClientCommandProcessor):
     def _cmd_debugtext(self) -> bool:
         """Follow the pointer chain to the on-screen text and compare with the known PAL address."""
         if not dme.is_hooked():
-            logger.info("[DEBUG TEXTE] Dolphin non connecté.")
+            logger.info("[DEBUG TEXT] Dolphin not connected.")
             return True
 
         try:
             game = dme.read_bytes(0x80000000, 6)
         except Exception as e:
-            logger.info(f"[DEBUG TEXTE] Lecture du Game ID impossible : {e}")
+            logger.info(f"[DEBUG TEXT] Could not read Game ID: {e}")
             return True
 
         base_id = BASE_ID_BY_PATCHED_PREFIX.get(game[:3], game)
         if base_id != game:
-            logger.info(f"[DEBUG TEXTE] ISO patchée ({game.decode()}) "
-                        f"— version d'origine {base_id.decode()}.")
-        logger.info(f"[DEBUG TEXTE] Game ID : {game!r}")
+            logger.info(f"[DEBUG TEXT] Patched ISO ({game.decode()}) "
+                        f"— original version {base_id.decode()}.")
+        logger.info(f"[DEBUG TEXT] Game ID: {game!r}")
 
         tw_addr = SYM_TUTORIAL_WINDOW_PTR.get(base_id)
         if tw_addr is None:
-            logger.info(f"[DEBUG TEXTE] Version inconnue : {base_id!r}")
+            logger.info(f"[DEBUG TEXT] Unknown version: {base_id!r}")
             return True
 
         def u32(addr: int) -> int:
@@ -523,56 +567,56 @@ class P1CommandProcessor(ClientCommandProcessor):
 
         try:
             tut = u32(tw_addr)
-            logger.info(f"[DEBUG TEXTE] tutorialWindow @ 0x{tw_addr:08X} -> 0x{tut:08X}")
+            logger.info(f"[DEBUG TEXT] tutorialWindow @ 0x{tw_addr:08X} -> 0x{tut:08X}")
             if not (_RAM_MIN <= tut < _RAM_MAX):
-                logger.info("[DEBUG TEXTE] Pointeur nul/invalide : aucun texte affiché "
-                            "actuellement. Ouvre le texte d'une pièce puis relance.")
+                logger.info("[DEBUG TEXT] Null/invalid pointer: no text currently "
+                            "displayed. Open a ship part's text, then run again.")
                 return True
 
             msgmgr = u32(tut + TUTORIAL_TEXT_CHAIN["TUTORIALMGR_MESSAGEMGR"])
-            logger.info(f"[DEBUG TEXTE] mMessageMgr -> 0x{msgmgr:08X}")
+            logger.info(f"[DEBUG TEXT] mMessageMgr -> 0x{msgmgr:08X}")
             if not (_RAM_MIN <= msgmgr < _RAM_MAX):
-                logger.info("[DEBUG TEXTE] mMessageMgr invalide.")
+                logger.info("[DEBUG TEXT] mMessageMgr invalid.")
                 return True
 
             text_addr = msgmgr + TUTORIAL_TEXT_CHAIN["MSGMGR_FORMATTED"]
-            logger.info(f"[DEBUG TEXTE] texte formaté @ 0x{text_addr:08X}")
-            logger.info(f"[DEBUG TEXTE] adresse PAL codée en dur = 0x{SHIP_PART_TEXT_ADDR:08X} "
-                        f"(écart = {text_addr - SHIP_PART_TEXT_ADDR:+d})")
+            logger.info(f"[DEBUG TEXT] formatted text @ 0x{text_addr:08X}")
+            logger.info(f"[DEBUG TEXT] hardcoded PAL address = 0x{SHIP_PART_TEXT_ADDR:08X} "
+                        f"(offset = {text_addr - SHIP_PART_TEXT_ADDR:+d})")
 
             raw = dme.read_bytes(text_addr, 96)
             printable = "".join(chr(b) if 0x20 <= b < 0x7F else "." for b in raw)
-            logger.info(f"[DEBUG TEXTE] contenu : {printable}")
+            logger.info(f"[DEBUG TEXT] content: {printable}")
 
             msg_id = read_displayed_message_id(msgmgr)
-            kind = "aucune"
+            kind = "none"
             if msg_id is not None:
                 for k in ("discovery", "info", "collect", "power"):
                     base = TUT_PART_TEXT_RANGES[k]
                     if base <= msg_id < base + len(UFO_PART_ORDER):
                         kind = k
                         break
-            logger.info(f"[DEBUG TEXTE] ID du message (EnumTutorial) = {msg_id} "
-                        f"| plage pièce : {kind}")
-            logger.info(f"[DEBUG TEXTE] pièce détectée : {read_displayed_part(base_id)}")
+            logger.info(f"[DEBUG TEXT] message ID (EnumTutorial) = {msg_id} "
+                        f"| part range: {kind}")
+            logger.info(f"[DEBUG TEXT] detected part: {read_displayed_part(base_id)}")
         except Exception as e:
-            logger.info(f"[DEBUG TEXTE] Erreur de lecture : {e}")
+            logger.info(f"[DEBUG TEXT] Read error: {e}")
         return True
 
     def _cmd_debugsave(self) -> bool:
         """Show whether the client considers a save file to be loaded."""
         if not dme.is_hooked():
-            logger.info("[DEBUG SAVE] Dolphin non connecté.")
+            logger.info("[DEBUG SAVE] Dolphin not connected.")
             return True
         try:
             game = dme.read_bytes(0x80000000, 6)
         except Exception as e:
-            logger.info(f"[DEBUG SAVE] Lecture du Game ID impossible : {e}")
+            logger.info(f"[DEBUG SAVE] Could not read Game ID: {e}")
             return True
         base_id = BASE_ID_BY_PATCHED_PREFIX.get(game[:3], game)
         gf = SYM_GAMEFLOW.get(base_id)
         if not gf:
-            logger.info(f"[DEBUG SAVE] Version inconnue : {base_id!r}")
+            logger.info(f"[DEBUG SAVE] Unknown version: {base_id!r}")
             return True
         def u32(addr):
             return struct.unpack(">I", dme.read_bytes(addr, 4))[0]
@@ -584,7 +628,7 @@ class P1CommandProcessor(ClientCommandProcessor):
             sentinel = u32(gf["SENTINEL"])
             item_mgr = u32(SYM_ITEM_MGR_PTR[base_id]) if base_id in SYM_ITEM_MGR_PTR else 0
         except Exception as e:
-            logger.info(f"[DEBUG SAVE] Erreur de lecture : {e}")
+            logger.info(f"[DEBUG SAVE] Read error: {e}")
             return True
 
         in_level = is_in_level(base_id)
@@ -595,11 +639,11 @@ class P1CommandProcessor(ClientCommandProcessor):
                     f"CardSelect={ONEPLAYER_CARD_SELECT})")
         logger.info(f"[DEBUG SAVE] DAY_NUMBER = {day} | sentinel = 0x{sentinel:08X} "
                     f"| itemMgr = 0x{item_mgr:08X}")
-        logger.info(f"[DEBUG SAVE] Dans un niveau : {'OUI' if in_level else 'NON'} "
-                    f"(pièces + Pikmin de l'escouade)")
-        logger.info(f"[DEBUG SAVE] Partie active : {'OUI' if save_active else 'NON'} "
-                    f"— synchronisation AP {'active' if save_active else 'en pause'} "
-                    f"(réception d'objets + zones)")
+        logger.info(f"[DEBUG SAVE] In a level: {'YES' if in_level else 'NO'} "
+                    f"(ship parts + squad Pikmin)")
+        logger.info(f"[DEBUG SAVE] Game active: {'YES' if save_active else 'NO'} "
+                    f"— AP sync {'active' if save_active else 'paused'} "
+                    f"(item reception + areas)")
         return True
 
     def _cmd_debugdump(self) -> bool:
@@ -608,11 +652,11 @@ class P1CommandProcessor(ClientCommandProcessor):
         log = logger.info
 
         log("========== PIKMIN AP DEBUG DUMP ==========")
-        log("Copiez tout ce bloc dans votre signalement de bug.")
         log("Copy this whole block when reporting a bug.")
         log("------------------------------------------")
 
         # --- Client / AP state -------------------------------------------
+        log(f"[DUMP] Pikmin apworld version: {APWORLD_VERSION}")
         log(f"[DUMP] AP world: Pikmin | client connected: {ctx.server is not None}")
         log(f"[DUMP] Slot: {getattr(ctx, 'auth', None)} | seed: {getattr(ctx, 'seed_name', None)}")
         slot_data = getattr(ctx, "slot_data", {}) or {}
@@ -624,8 +668,13 @@ class P1CommandProcessor(ClientCommandProcessor):
         log(f"[DUMP] Items received: {len(getattr(ctx, 'items_received', []))} | "
             f"locations checked: {len(getattr(ctx, 'checked_locations', []))} | "
             f"missing: {len(getattr(ctx, 'missing_locations', []))}")
-        log(f"[DUMP] Pikmin bonus applied: {getattr(ctx, 'pikmin_items_applied', {})}")
-        log(f"[DUMP] Pikmin bonus pending: {getattr(ctx, 'pikmin_dyn_pending', {})}")
+        applied = _named_counts(getattr(ctx, "pikmin_items_applied", {}))
+        if applied:
+            log("[DUMP] Pikmin bonus applied:")
+            for name, n in applied.items():
+                log(f"[DUMP]   {name}: {n}")
+        else:
+            log("[DUMP] Pikmin bonus applied: (none)")
         log(f"[DUMP] Scouted locations: {len(getattr(ctx, 'scouted_locations', {}))} | "
             f"server hints: {len(getattr(ctx, 'server_hints', {}))}")
 
@@ -781,20 +830,19 @@ class P1Context(CommonContext):
         if self.debug_hint:
             logger.info(f"[DEBUG] on_package cmd={cmd}")
         super().on_package(cmd, args)
-        if cmd == "Connected":
+        if cmd == "RoomInfo":
+            # Le seed_name AUTHENTIQUE ne figure que dans RoomInfo. On le stocke
+            # ici, apres la garde de reconnexion de CommonClient (qui s'execute
+            # avant on_package). L'ancien code le mettait a "unknown" depuis le
+            # paquet Connected (qui n'a pas ce champ), donc la garde comparait
+            # "unknown" au vrai seed a chaque reconnexion et bloquait tout.
+            # En stockant la vraie valeur, la reconnexion compare seed==seed (OK)
+            # et le dump de debug affiche enfin le bon seed.
+            self.seed_name = args.get("seed_name") or self.seed_name
+        elif cmd == "Connected":
             self.slot_data = args.get("slot_data", {})
-            # NE PAS toucher a self.seed_name ici. Le paquet `Connected` ne
-            # contient aucun champ `seed_name` (il n'existe que dans `RoomInfo`),
-            # donc l'ancien code stockait la chaine litterale "unknown". Comme
-            # reset_server_state() de CommonClient ne remet pas seed_name a zero,
-            # la garde de RoomInfo comparait ensuite "unknown" au vrai seed a
-            # chaque reconnexion -> "The server is running a different multiworld
-            # than your client is. (invalid seed_name)", et server_auth() n'etait
-            # jamais appele, rendant toute reconnexion impossible sans redemarrer.
-            # La coherence seed/ISO est deja verifiee via slot_data.game_id_suffix
-            # compare au Game ID patche, dans dolphin_loop().
             if self.debug_hint:
-                logger.info(f"[DEBUG] slot_data reçu: {self.slot_data}")
+                logger.info(f"[DEBUG] slot_data received: {self.slot_data}")
             self.pikmin_items_applied = {}  # reset before loading with correct key
             self.pikmin_dyn_pending = {"red": 0, "yellow": 0, "blue": 0}
             self.load_applied()
@@ -992,9 +1040,9 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             setattr(ctx, DYN_BASE_CACHE[color], addr)
             if ctx.debug_pbonus:
                 if addr:
-                    logger.info(f"[DEBUG] oignon {color} @ 0x{addr:08X}")
+                    logger.info(f"[DEBUG] onion {color} @ 0x{addr:08X}")
                 else:
-                    logger.info(f"[DEBUG] oignon {color} introuvable")
+                    logger.info(f"[DEBUG] onion {color} not found")
 
     # In-game = sentinel nonzero AND DAY_NUMBER != 0
     try:
@@ -1025,7 +1073,7 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                 # Impossible d'appliquer durablement maintenant -> on differe.
                 if ctx.debug_pbonus:
                     logger.info(
-                        f"[DEBUG] {color}/{stage} +{amount} différé : oignon non résolu"
+                        f"[DEBUG] {color}/{stage} +{amount} deferred: onion not resolved"
                     )
                 return False
 
@@ -1053,7 +1101,7 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         write_u32(s_addr, old_s + amount)
         if ctx.debug_pbonus:
             logger.info(
-                f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount}) [hors jeu]"
+                f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount}) [not in level]"
             )
         return True
 
