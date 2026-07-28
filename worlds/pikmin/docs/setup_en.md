@@ -1,4 +1,4 @@
-# Pikmin 2 Archipelago Setup Guide
+# Pikmin 1 Archipelago Setup Guide
 
 ## For Windows
 ### Required Software
