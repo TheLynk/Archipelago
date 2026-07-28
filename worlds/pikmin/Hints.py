@@ -2,7 +2,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from BaseClasses import Location, MultiWorld
-from .P1Data import ALL_PARTS
+from .P1Data import ALL_PARTS, ship_part_location_name
 
 if TYPE_CHECKING:
     from . import P1World
@@ -48,15 +48,19 @@ SHIP_PART_IDS = {data.ap_id for data in ALL_PARTS.values()}
 def _get_location_for_item_mode(world: "P1World", player: int, hint_name: str) -> Location | None:
     """
     Mode 1 – "item" hint mode.
-    Returns the location that holds the named ship part belonging to `player`,
-    searching only among that player's own locations.
-    This tells the player *where their own copy* of each part was placed,
-    even if it ended up in another player's world.
+    Returns THIS player's own ship part location (e.g. "TDS - Bowsprit"), so the
+    hint can report which item is placed there.
+
+    The previous implementation scanned only `get_filled_locations(player)` for an
+    item named `hint_name` owned by `player`. In a multiworld with item shuffle
+    the player's own parts usually land in OTHER players' worlds, so it returned
+    None for most (or all) parts and logged a warning for each. Fetching the
+    location by name always succeeds and matches the item-mode semantics.
     """
-    for loc in world.multiworld.get_filled_locations(player):
-        if loc.item is not None and loc.item.name == hint_name and loc.item.player == player:
-            return loc
-    return None
+    try:
+        return world.get_location(ship_part_location_name(hint_name))
+    except KeyError:
+        return None
 
 
 def get_hints_by_option(multiworld: MultiWorld, player_hints: set[int]) -> None:
@@ -102,8 +106,8 @@ def get_hints_by_option(multiworld: MultiWorld, player_hints: set[int]) -> None:
                 else:
                     loc: Location = ship_part_index.get((hint_name, player_int))
 
-                if loc is None:
-                    logger.warning(f"[Hints] No location found for ({hint_name}, player={player_int}) "
+                if loc is None or loc.item is None:
+                    logger.warning(f"[Hints] No filled location found for ({hint_name}, player={player_int}) "
                                    f"— was get_hints_by_option called from post_fill()?")
                     continue
 

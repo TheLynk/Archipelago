@@ -1523,37 +1523,39 @@ async def dolphin_loop(ctx: P1Context):
         ctx.watcher_event.clear()
 
         if ctx.needs_location_scout:
-            ctx.needs_location_scout = False
-            ctx.scout_sent = True
-            ctx.scout_sent_time = time.monotonic()
-            ctx.scout_received = False
-
-            all_locations = list(ALL_LOCATIONS.values())
-
-            slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
-            hint_mode_val = slot_data.get("ship_part_hint_mode", 0)
-            if hint_mode_val == 2 or hint_mode_val == 3:
-                all_server_locs = set(ctx.checked_locations) | set(ctx.missing_locations)
-                all_locations = list(all_server_locs)
-                pass
-
-            await ctx.send_msgs([{
-                "cmd": "LocationScouts",
-                "locations": all_locations,
-                "create_as_hint": 0,
-            }])
+            # On ne scoute QUE les locations reellement existantes pour ce joueur,
+            # fournies par le serveur (missing | checked). Scouter ALL_LOCATIONS
+            # (la liste complete codee en dur, dont les 300 locations Pikmin
+            # possibles) faisait planter le serveur avec "No location 71500 for
+            # player" des que les locations Pikmin etaient activees avec un
+            # intervalle : seule une fraction est creee, les autres n'existent pas.
+            server_locs = list(set(ctx.checked_locations) | set(ctx.missing_locations))
+            if server_locs:
+                ctx.needs_location_scout = False
+                ctx.scout_sent = True
+                ctx.scout_sent_time = time.monotonic()
+                ctx.scout_received = False
+                await ctx.send_msgs([{
+                    "cmd": "LocationScouts",
+                    "locations": server_locs,
+                    "create_as_hint": 0,
+                }])
+            # Si l'ensemble est encore vide (Connected pas totalement traite),
+            # on laisse needs_location_scout a True : reessai au prochain tick.
 
         if ctx.scout_sent and not ctx.scout_received:
             elapsed = time.monotonic() - ctx.scout_sent_time
             if elapsed >= SCOUT_RETRY_INTERVAL:
                 ctx.scout_sent_time = time.monotonic()
+                server_locs = list(set(ctx.checked_locations) | set(ctx.missing_locations))
                 logger.info(f"[DEBUG] Retrying LocationScouts (no response after {elapsed:.0f}s, "
                             f"scouted={len(ctx.scouted_locations)})")
-                await ctx.send_msgs([{
-                    "cmd": "LocationScouts",
-                    "locations": list(ALL_LOCATIONS.values()),
-                    "create_as_hint": 0,
-                }])
+                if server_locs:
+                    await ctx.send_msgs([{
+                        "cmd": "LocationScouts",
+                        "locations": server_locs,
+                        "create_as_hint": 0,
+                    }])
 
         try:
             loop = asyncio.get_event_loop()
