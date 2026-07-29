@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import random
 import struct
 import time
 from typing import TYPE_CHECKING, Optional
@@ -37,6 +38,10 @@ from .P1Symbols import (
     SYM_NAVI_MGR_PTR,
     NAVI_CHAIN,
     NAVISTATE_PRESSED,
+    NAVISTATE_WALK,
+    SYM_ROUTE_MGR_PTR,
+    ROUTE_CHAIN,
+    WP_FLAG_INWATER,
 )
 from .P1Rom import BASE_ID_BY_PATCHED_PREFIX
 
@@ -92,6 +97,15 @@ SYNC_PAUSED_MSG = {
     "de": "Zurück zum Menü — AP-Synchronisierung pausiert.",
     "it": "Ritorno al menu — sincronizzazione AP in pausa.",
     "es": "Vuelta al menú — sincronización AP en pausa.",
+}
+
+# DeathLink recu : Olimar est tue, par langue du jeu.
+DEATHLINK_RECEIVED_MSG = {
+    "en": "DeathLink received — Olimar has been eliminated.",
+    "fr": "DeathLink reçu — Olimar est éliminé.",
+    "de": "DeathLink erhalten — Olimar wurde ausgeschaltet.",
+    "it": "DeathLink ricevuto — Olimar è stato eliminato.",
+    "es": "DeathLink recibido — Olimar ha sido eliminado.",
 }
 
 def _read_apworld_version() -> str:
@@ -280,6 +294,23 @@ def _oneplayer_subsection(game: Game) -> Optional[int]:
         return None
 
 
+def is_day_active(game: Game) -> bool:
+    """Vrai si la journee a reellement commence (gameplay interactif).
+
+    Lit `gameflow.mIsPauseAllowed` : TRUE seulement quand le joueur controle
+    Olimar, FALSE pendant le chargement, la cinematique d'intro de journee et la
+    fin de journee. Sert a mettre les traps en attente tant que la journee n'a
+    pas vraiment demarre.
+    """
+    gf = SYM_GAMEFLOW.get(game)
+    if not gf:
+        return False
+    try:
+        return struct.unpack(">i", dme.read_bytes(gf["PAUSE_ALLOWED"], 4))[0] != 0
+    except Exception:
+        return False
+
+
 def is_in_level(game: Game) -> bool:
     """Vrai si le joueur controle Olimar dans un niveau (journee en cours).
 
@@ -408,6 +439,229 @@ def kill_olimar(game: Game) -> bool:
         return True
     except Exception:
         return False
+
+
+# --- Traps ---------------------------------------------------------------
+
+# Reglages des effets de trap.
+TIME_TRAP_HOURS = 2      # heures de jeu ajoutees a l'horloge
+DAMAGE_TRAP_LOSS = 40.0  # points de vie retires a Olimar (sante max = 100)
+DAMAGE_TRAP_FLOOR = 2.0  # plancher pour ne pas tuer Olimar (mort a <= 1.0)
+TELEPORT_TRAP_RANGE = 600.0  # rayon horizontal du deplacement (unites monde)
+TELEPORT_TRAP_LIFT = 60.0    # hauteur ajoutee pour retomber sur le terrain
+
+
+def apply_time_trap(game: Game) -> bool:
+    """Avance l'horloge : reduit le temps restant dans la journee.
+
+    On ecrit mCurrentGameHour (l'entier de l'heure, TIME_HOURS), PAS mTimeOfDay :
+    WorldClock::update recalcule mTimeOfDay chaque frame depuis mCurrentGameHour,
+    donc ecrire mTimeOfDay etait immediatement ecrase (Time Trap sans effet).
+    """
+    gf = SYM_GAMEFLOW.get(game)
+    if not gf:
+        return False
+    addr = gf["TIME_HOURS"]
+    try:
+        h = struct.unpack(">i", dme.read_bytes(addr, 4))[0]
+        dme.write_bytes(addr, struct.pack(">i", h + TIME_TRAP_HOURS))
+        return True
+    except Exception:
+        return False
+
+
+def apply_end_day_trap(game: Game) -> bool:
+    """Force la fin de la journee : le jeu traite mIsDayEndTriggered au frame suivant."""
+    gf = SYM_GAMEFLOW.get(game)
+    if not gf:
+        return False
+    try:
+        dme.write_bytes(gf["DAY_END_TRIGGERED"], struct.pack(">h", 1))
+        return True
+    except Exception:
+        return False
+
+
+def apply_damage_trap(game: Game) -> bool:
+    """Blesse Olimar : reduit sa sante sans le tuer (plancher au-dessus de la mort)."""
+    navi = _resolve_olimar(game)
+    if navi is None:
+        return False
+    addr = navi + NAVI_CHAIN["CREATURE_HEALTH"]
+    try:
+        h = struct.unpack(">f", dme.read_bytes(addr, 4))[0]
+        new = max(DAMAGE_TRAP_FLOOR, h - DAMAGE_TRAP_LOSS)
+        # Ne jamais soigner : si Olimar est deja plus bas que le plancher, on
+        # laisse tel quel.
+        if new < h:
+            dme.write_bytes(addr, struct.pack(">f", new))
+        return True
+    except Exception:
+        return False
+
+
+def _random_waypoint_position(game: Game) -> Optional[tuple]:
+    """Position (x,y,z) d'un waypoint valide du graphe de navigation, ou None.
+
+    On choisit un waypoint ouvert (traversable) et hors de l'eau : c'est un point
+    du reseau que les Pikmin empruntent, donc garanti sur le terrain -- jamais
+    dans le vide. Evite les teleportations qui faisaient tomber Olimar.
+    """
+    mgr_ptr = SYM_ROUTE_MGR_PTR.get(game)
+    if mgr_ptr is None:
+        return None
+    R = ROUTE_CHAIN
+
+    def u32(addr: int) -> Optional[int]:
+        try:
+            v = struct.unpack(">I", dme.read_bytes(addr, 4))[0]
+        except Exception:
+            return None
+        return v if _RAM_MIN <= v < _RAM_MAX else None
+
+    route_mgr = u32(mgr_ptr)
+    if route_mgr is None:
+        return None
+    group = u32(route_mgr + R["ROUTEMGR_GROUPLIST"])
+    if group is None:
+        return None
+    waypoints = u32(group + R["GROUP_WAYPOINTS"])
+    if waypoints is None:
+        return None
+    try:
+        count = struct.unpack(">i", dme.read_bytes(group + R["GROUP_NUMPOINTS"], 4))[0]
+    except Exception:
+        return None
+    if not (0 < count <= 20000):
+        return None
+
+    import random as _random
+    # Quelques essais pour tomber sur un waypoint ouvert et hors de l'eau.
+    for _ in range(12):
+        idx = _random.randrange(count)
+        wp = waypoints + idx * R["WAYPOINT_SIZE"]
+        try:
+            is_open = dme.read_byte(wp + R["WP_ISOPEN"])
+            flags = dme.read_byte(wp + R["WP_FLAGS"])
+            if not is_open or (flags & WP_FLAG_INWATER):
+                continue
+            x, y, z = struct.unpack(">fff", dme.read_bytes(wp + R["WP_POSITION"], 12))
+        except Exception:
+            continue
+        return (x, y, z)
+    return None
+
+
+def apply_teleport_trap(game: Game) -> bool:
+    """Teleporte Olimar sur un waypoint aleatoire du graphe de navigation.
+
+    Cible un point du reseau de pathfinding des Pikmin : toujours sur le terrain,
+    jamais dans le vide. On ajoute une petite hauteur pour qu'il se pose au sol.
+    Repli : si le graphe n'est pas lisible, decalage horizontal borne autour de
+    la position courante.
+    """
+    navi = _resolve_olimar(game)
+    if navi is None:
+        return False
+    addr = navi + NAVI_CHAIN["CREATURE_POSITION"]
+    try:
+        dest = _random_waypoint_position(game)
+        if dest is not None:
+            x, y, z = dest
+            dme.write_bytes(addr, struct.pack(">fff", x, y + TELEPORT_TRAP_LIFT, z))
+            return True
+        # Repli : decalage horizontal autour de la position actuelle.
+        import random as _random
+        cx, cy, cz = struct.unpack(">fff", dme.read_bytes(addr, 12))
+        nx = cx + _random.uniform(-TELEPORT_TRAP_RANGE, TELEPORT_TRAP_RANGE)
+        nz = cz + _random.uniform(-TELEPORT_TRAP_RANGE, TELEPORT_TRAP_RANGE)
+        dme.write_bytes(addr, struct.pack(">fff", nx, cy + TELEPORT_TRAP_LIFT, nz))
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_state_instance(navi: int, state_id: int) -> Optional[int]:
+    """Pointeur de l'instance d'etat `state_id` via les tables de la StateMachine."""
+    C = NAVI_CHAIN
+
+    def u32(addr: int) -> Optional[int]:
+        try:
+            v = struct.unpack(">I", dme.read_bytes(addr, 4))[0]
+        except Exception:
+            return None
+        return v if _RAM_MIN <= v < _RAM_MAX else None
+
+    sm = u32(navi + C["NAVI_STATEMACHINE"])
+    if sm is None:
+        return None
+    state_indexes = u32(sm + C["SM_STATEINDEXES"])
+    states = u32(sm + C["SM_STATES"])
+    if state_indexes is None or states is None:
+        return None
+    try:
+        idx = struct.unpack(">i", dme.read_bytes(state_indexes + state_id * 4, 4))[0]
+    except Exception:
+        return None
+    if idx < 0 or idx > 64:
+        return None
+    return u32(states + idx * 4)
+
+
+async def apply_disband_trap(game: Game) -> bool:
+    """Disperse l'escouade de facon deterministe.
+
+    L'injection de la touche de disband etait trop dependante du timing des
+    frames. A la place on exploite le meme mecanisme que le jeu :
+      - NaviWalkState::exec transite vers NAVISTATE_Stuck des que
+        Creature.mStickListHead est non-nul ;
+      - NaviStuckState::init appelle releasePikis() -> la dispersion.
+    On force donc l'etat Walk et on met mStickListHead non-nul : le jeu execute
+    lui-meme la vraie transition et le disband. On remet ensuite mStickListHead a
+    zero pour que Stuck::exec ramene Olimar en Walk.
+    """
+    navi = _resolve_olimar(game)
+    if navi is None:
+        return False
+    walk_state = _resolve_state_instance(navi, NAVISTATE_WALK)
+    if walk_state is None:
+        return False
+    stick_addr = navi + NAVI_CHAIN["CREATURE_STICKLIST"]
+    curr_addr = navi + NAVI_CHAIN["NAVI_CURRSTATE"]
+    try:
+        # Forcer l'etat Walk (pour que son exec tourne) + amorcer le "stuck".
+        # mStickListHead = navi : pointeur non-nul et valide (evite tout deref
+        # sauvage si quelque chose le lit avant qu'on le remette a zero).
+        dme.write_bytes(curr_addr, struct.pack(">I", walk_state))
+        dme.write_bytes(stick_addr, struct.pack(">I", navi))
+    except Exception:
+        return False
+    # Laisser quelques frames au jeu pour transiter vers Stuck et disperser.
+    await asyncio.sleep(0.1)
+    try:
+        # Vider la liste : Stuck::exec ramene alors Olimar en Walk.
+        dme.write_bytes(stick_addr, struct.pack(">I", 0))
+    except Exception:
+        pass
+    return True
+
+
+# Appliers synchrones (une ecriture). Le disband est asynchrone (rafale) et
+# traite a part dans apply_trap.
+TRAP_APPLIERS = {
+    "time":     apply_time_trap,
+    "end_day":  apply_end_day_trap,
+    "damage":   apply_damage_trap,
+    "teleport": apply_teleport_trap,
+}
+
+
+async def apply_trap(game: Game, kind: str) -> bool:
+    """Applique un trap par type interne. Renvoie True si applique."""
+    if kind == "disband":
+        return await apply_disband_trap(game)
+    fn = TRAP_APPLIERS.get(kind)
+    return bool(fn and fn(game))
 
 
 def read_game_language(game: Game) -> Optional[str]:
@@ -613,6 +867,21 @@ class P1CommandProcessor(ClientCommandProcessor):
                 logger.info("[DEBUG PBONUS] Applied items: (none)")
         return True
 
+    def _cmd_debugtrap(self) -> bool:
+        """Toggle debug logging for trap and TrapLink messages."""
+        self.ctx.debug_trap = not getattr(self.ctx, "debug_trap", False)
+        state = "ON" if self.ctx.debug_trap else "OFF"
+        logger.info(f"[DEBUG] Trap / TrapLink debug: {state}")
+        if self.ctx.debug_trap:
+            logger.info(f"[DEBUG TRAP] TrapLink enabled: {getattr(self.ctx, 'trap_link_enabled', False)} "
+                        f"| tags: {sorted(getattr(self.ctx, 'tags', []))}")
+            traps = getattr(self.ctx, "traps_applied", {})
+            named = {_TRAP_KIND_TO_NAME.get(_TRAP_ID_TO_KIND.get(k, ""), f"#{k}"): v
+                     for k, v in traps.items()}
+            logger.info(f"[DEBUG TRAP] Traps applied: {named or '(none)'}")
+            logger.info(f"[DEBUG TRAP] Pending TrapLink: {getattr(self.ctx, 'pending_trap_links', [])}")
+        return True
+
     def _cmd_debuglanguage(self) -> bool:
         """Show the language currently detected by the client."""
         lang = getattr(self.ctx, "detected_language", "en")
@@ -790,6 +1059,11 @@ class P1CommandProcessor(ClientCommandProcessor):
                 log(f"[DUMP]   {name}: {n}")
         else:
             log("[DUMP] Pikmin bonus applied: (none)")
+        traps = getattr(ctx, "traps_applied", {})
+        trap_named = {_TRAP_KIND_TO_NAME.get(_TRAP_ID_TO_KIND.get(k, ""), f"#{k}"): v
+                      for k, v in traps.items()}
+        log(f"[DUMP] Traps applied: {trap_named or '(none)'} | "
+            f"pending TrapLink: {getattr(ctx, 'pending_trap_links', [])}")
         log(f"[DUMP] Scouted locations: {len(getattr(ctx, 'scouted_locations', {}))} | "
             f"server hints: {len(getattr(ctx, 'server_hints', {}))}")
 
@@ -838,6 +1112,7 @@ class P1Context(CommonContext):
         self.debug_hint: bool = False
         self.debug_days: bool = False
         self.debug_pbonus: bool = False
+        self.debug_trap: bool = False
         # Tracks whether the dynamic onion sentinel was zero last tick.
         # Used to detect the 0->nonzero transition = onion freshly loaded for new day.
         self._onion_dyn_was_zero: bool = True
@@ -905,8 +1180,10 @@ class P1Context(CommonContext):
         self._in_level_prev: bool = False
         # Mode both : auto-mort d'Olimar en attente si non resolvable a l'envoi.
         self._pending_self_kill: bool = False
-        # Traps recus (via item ou TrapLink) en attente d'application en jeu.
+        # Traps recus via TrapLink (transitoires), en attente d'application en jeu.
         self.pending_trap_links: list = []
+        # Traps recus en tant qu'items AP, deja appliques : {item_id: nb}.
+        self.traps_applied: dict[int, int] = {}
         # Suivi de transition pour reinitialiser l'etat DeathLink par journee.
         self._save_was_loaded_prev_death: bool = False
 
@@ -929,6 +1206,12 @@ class P1Context(CommonContext):
                 logger.info(f"[DEBUG] Loaded {len(self.pikmin_items_applied)} applied Pikmin items")
         except Exception as e:
             logger.debug(f"Could not load applied items: {e}")
+        # Traps deja appliques (pour ne pas rejouer un trap au redemarrage).
+        try:
+            tdata = Utils.persistent_load().get("pikmin_traps", {}).get(self._save_key(), {})
+            self.traps_applied = {int(k): v for k, v in tdata.items()}
+        except Exception as e:
+            logger.debug(f"Could not load applied traps: {e}")
 
     def save_applied(self) -> None:
         # Apres une deconnexion, reset_server_state() remet self.auth a None :
@@ -940,6 +1223,11 @@ class P1Context(CommonContext):
                                    {str(k): v for k, v in self.pikmin_items_applied.items()})
         except Exception as e:
             logger.debug(f"Could not save applied items: {e}")
+        try:
+            Utils.persistent_store("pikmin_traps", self._save_key(),
+                                   {str(k): v for k, v in self.traps_applied.items()})
+        except Exception as e:
+            logger.debug(f"Could not save applied traps: {e}")
 
     def reset_server_state(self) -> None:
         """Repart d'un etat propre a chaque deconnexion.
@@ -991,6 +1279,7 @@ class P1Context(CommonContext):
             if self.debug_hint:
                 logger.info(f"[DEBUG] slot_data received: {self.slot_data}")
             self.pikmin_items_applied = {}  # reset before loading with correct key
+            self.traps_applied = {}
             self.pikmin_dyn_pending = {"red": 0, "yellow": 0, "blue": 0}
             self.load_applied()
             self.needs_location_scout = True
@@ -1065,11 +1354,31 @@ class P1Context(CommonContext):
             # TrapLink : un autre joueur a recu un trap et le diffuse. On applique
             # le meme trap chez nous. (DeathLink est deja gere par CommonClient.)
             tags = args.get("tags", [])
-            if self.trap_link_enabled and "TrapLink" in tags:
+            if "TrapLink" in tags:
                 data = args.get("data", {}) or {}
-                if data.get("source") != self.player_names.get(self.slot):
-                    trap_name = data.get("trap_name") or data.get("cause") or ""
+                source = data.get("source")
+                mine = self.player_names.get(self.slot)
+                trap_name = data.get("trap_name") or data.get("cause") or ""
+                if self.debug_trap:
+                    logger.info(f"[TrapLink] Bounce received: trap='{trap_name}' source={source} "
+                                f"(me={mine}, enabled={self.trap_link_enabled}).")
+                if not self.trap_link_enabled:
+                    pass  # ignore (logged if debug)
+                elif source == mine:
+                    if self.debug_trap:
+                        logger.info("[TrapLink] Ignored: this is our own broadcast.")
+                else:
+                    # TrapLink est INTER-JEUX : le nom vient du jeu emetteur. Si on
+                    # ne le connait pas (ex. un trap de Hollow Knight), on applique
+                    # quand meme un trap Pikmin au hasard, comme le veut la
+                    # convention TrapLink.
+                    if trap_name not in TRAP_KINDS:
+                        trap_name = random.choice(list(TRAP_KINDS))
+                        if self.debug_trap:
+                            logger.info(f"[TrapLink] Unknown name -> random Pikmin trap: '{trap_name}'.")
                     self.queue_trap_link(trap_name)
+                    if self.debug_trap:
+                        logger.info(f"[TrapLink] Trap '{trap_name}' queued for application.")
 
     async def send_death(self, death_text: str = "") -> None:
         """Envoie un DeathLink et memorise son timestamp.
@@ -1098,6 +1407,29 @@ class P1Context(CommonContext):
     def queue_trap_link(self, trap_name: str) -> None:
         """Place un trap recu via TrapLink dans la file d'application (surchargeable)."""
         self.pending_trap_links.append(trap_name)
+
+    async def send_trap_link(self, trap_name: str) -> None:
+        """Diffuse aux autres joueurs TrapLink le trap qu'on vient de subir."""
+        if not self.trap_link_enabled:
+            if self.debug_trap:
+                logger.info("[TrapLink] Send skipped: TrapLink disabled.")
+            return
+        if not (self.server and self.server.socket):
+            if self.debug_trap:
+                logger.info("[TrapLink] Send skipped: not connected to the server.")
+            return
+        source = self.player_names.get(self.slot, "Pikmin")
+        if self.debug_trap:
+            logger.info(f"[TrapLink] Sending trap '{trap_name}' (source={source}, tags={sorted(self.tags)}).")
+        await self.send_msgs([{
+            "cmd": "Bounce",
+            "tags": ["TrapLink"],
+            "data": {
+                "time": time.time(),
+                "source": source,
+                "trap_name": trap_name,
+            },
+        }])
 
 
 COLOR_BY_INDEX = {0: "blue", 1: "red", 2: "yellow"}  # GlobalGameOptions.h
@@ -1214,7 +1546,8 @@ async def handle_death_link(ctx: P1Context, game: Game) -> None:
             # renvoyer via la detection classic.
             ctx._suppress_orima_send = True
             ctx._deathlink_locked_this_day = True
-            logger.info("[Pikmin] DeathLink reçu — Olimar est éliminé.")
+            _lang = getattr(ctx, "detected_language", "en")
+            logger.info(f"[Pikmin] {DEATHLINK_RECEIVED_MSG.get(_lang, DEATHLINK_RECEIVED_MSG['en'])}")
         # sinon : Olimar pas encore resolvable, on retente au prochain tick.
 
     if ctx.death_link_mode == 0:
@@ -1286,6 +1619,62 @@ async def handle_death_link(ctx: P1Context, game: Game) -> None:
                     ctx._suppress_orima_send = True
                 else:
                     ctx._pending_self_kill = True  # Olimar pas resolvable, on reessaie
+
+
+# id d'item de trap -> type interne, construit une fois.
+_TRAP_ID_TO_KIND = {TRAP_ITEMS[name]: TRAP_KINDS[name] for name in TRAP_ITEMS}
+_TRAP_KIND_TO_NAME = {TRAP_KINDS[name]: name for name in TRAP_ITEMS}
+
+
+async def handle_traps(ctx: P1Context, game: Game) -> None:
+    """Applique les traps recus (items AP) et ceux recus via TrapLink.
+
+    Un trap a la fois par tick. Les traps-items sont persistes (traps_applied)
+    pour ne pas etre rejoues au redemarrage ; les traps TrapLink sont
+    transitoires (file pending_trap_links).
+    """
+    # On n'applique AUCUN trap tant que la journee n'a pas vraiment commence :
+    # au choix du niveau, pendant le chargement et pendant la cinematique d'intro,
+    # le joueur ne controle pas Olimar (mIsPauseAllowed FALSE). On exige aussi
+    # qu'Olimar soit resolvable. Les traps recus a ce moment restent en attente
+    # (items_received / pending_trap_links) et s'appliqueront une fois la journee
+    # reellement en cours.
+    if not is_day_active(game) or _resolve_olimar(game) is None:
+        return
+
+    # 1) Traps recus comme items AP.
+    for item in ctx.items_received:
+        item_id = item.item
+        kind = _TRAP_ID_TO_KIND.get(item_id)
+        if kind is None:
+            continue
+        total = sum(1 for i in ctx.items_received if i.item == item_id)
+        already = ctx.traps_applied.get(item_id, 0)
+        if total <= already:
+            continue
+        if await apply_trap(game, kind):
+            ctx.traps_applied[item_id] = already + 1  # un a la fois
+            ctx.save_applied()
+            name = _TRAP_KIND_TO_NAME.get(kind, kind)
+            if ctx.debug_trap:
+                logger.info(f"[DEBUG TRAP] Trap applied: {name}")
+            # TrapLink : diffuser le trap qu'on vient de subir aux autres.
+            if ctx.trap_link_enabled:
+                await ctx.send_trap_link(name)
+            return  # un seul trap par tick
+
+    # 2) Traps recus via TrapLink (transitoires).
+    if ctx.pending_trap_links:
+        name = ctx.pending_trap_links[0]
+        kind = TRAP_KINDS.get(name)
+        if kind is None:
+            ctx.pending_trap_links.pop(0)
+            return
+        if await apply_trap(game, kind):
+            ctx.pending_trap_links.pop(0)
+            if ctx.debug_trap:
+                logger.info(f"[DEBUG TRAP] TrapLink trap applied: {name}")
+        # sinon : pas applicable maintenant, on retentera au prochain tick.
 
 
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
@@ -1974,7 +2363,7 @@ async def dolphin_loop(ctx: P1Context):
 
         # Handlers qui LISENT de la memoire propre au niveau (collecte de pieces,
         # compteurs de l'escouade, DeathLink) : uniquement dans un niveau.
-        in_level_handlers = (handle_parts, handle_pikmin_locations, handle_death_link)
+        in_level_handlers = (handle_parts, handle_pikmin_locations, handle_death_link, handle_traps)
         # Handlers actifs aussi sur la carte du monde : reception d'objets
         # (persistee via STAGE) et deblocage des zones (visible sur la carte).
         save_active_handlers = (handle_pikmin_items, handle_areas)

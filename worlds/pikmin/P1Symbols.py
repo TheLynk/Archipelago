@@ -8,6 +8,9 @@ SYM_GAMEFLOW = {
     b'GPIP01': {
         "UNLOCKED_AREAS": 0x803A2803,
         "GAME_SECTION": 0x803A2824,
+        "DAY_END_TRIGGERED": 0x803A281E,
+        "TIME_OF_DAY": 0x803A2928,
+        "PAUSE_ALLOWED": 0x803A296C,
         "ONEPLAYER_SECTION": 0x803A282C,
         "SENTINEL": 0x803A2924,
         "TIME_HOURS": 0x803A2930,
@@ -18,6 +21,9 @@ SYM_GAMEFLOW = {
     b'GPIE01': {
         "UNLOCKED_AREAS": 0x8039D983,
         "GAME_SECTION": 0x8039D9A4,
+        "DAY_END_TRIGGERED": 0x8039D99E,
+        "TIME_OF_DAY": 0x8039DAA8,
+        "PAUSE_ALLOWED": 0x8039DAEC,
         "ONEPLAYER_SECTION": 0x8039D9AC,
         "SENTINEL": 0x8039DAA4,
         "TIME_HOURS": 0x8039DAB0,
@@ -109,11 +115,36 @@ NAVI_CHAIN = {
     "NAVI_STATEMACHINE": 0x320,
     "NAVI_PRESSED_TIMER": 0x814,
     "NAVI_CURRSTATE": 0xADC,
+    "CREATURE_POSITION": 0x94,
+    "CREATURE_STICKLIST": 0x180,
+    "NAVI_KONTROLLER": 0x2E4,
+    "CONTROLLER_INPUT_PRESSED": 0x28,
     "SM_STATES": 0x4,
     "SM_STATEINDEXES": 0x14,
 }
 NAVISTATE_DEAD = 29     # enum NaviStateID (include/NaviState.h) -- etat mort
 NAVISTATE_PRESSED = 7   # etat 'ecrase' : son exec() verifie la sante et transite vers Dead
+NAVISTATE_WALK = 0      # etat marche : son exec() transite vers Stuck si mStickListHead != 0
+KBBTN_X = 0x4000        # bouton X = touche de disband par defaut (keyConfig.cpp:39)
+
+# routeMgr -- POINTEUR global vers RouteMgr (graphe de navigation Pikmin).
+# Sert au Teleport Trap : on teleporte Olimar sur un waypoint valide (donc
+# sur le terrain navigable, jamais dans le vide).
+SYM_ROUTE_MGR_PTR = {
+    b'GPIP01': 0x803ECC0C,
+    b'GPIE01': 0x803E7D4C,
+}
+# Chaine routeMgr -> waypoints et champs de WayPoint (include/Route.h).
+ROUTE_CHAIN = {
+    "ROUTEMGR_GROUPLIST": 0x20,
+    "GROUP_WAYPOINTS": 0x0,
+    "GROUP_NUMPOINTS": 0x4,
+    "WAYPOINT_SIZE": 0xC4,
+    "WP_POSITION": 0x0,
+    "WP_ISOPEN": 0x38,
+    "WP_FLAGS": 0x40,
+}
+WP_FLAG_INWATER = 0x01  # WayPointFlags::InWater (bit 0)
 
 # enum GameSectionID (include/Section.h). Valeur de gameflow.mCurrGameSectionID.
 SECTION_ONE_PLAYER = 4  # mode histoire/challenge : une partie est chargee

@@ -143,6 +143,30 @@ PIKMIN_BONUS_ITEMS: dict[str, tuple[str, str, int]] = {
 
 
 # ====================================================================
+# TRAP ITEMS
+# ====================================================================
+# Items de trap (effets negatifs). Appliques en jeu par le client.
+# Cle interne -> id AP. Le nom lisible sert d'identifiant unique.
+
+TRAP_ITEMS: dict[str, int] = {
+    "Time Trap":      71818,   # avance l'horloge (reduit le temps restant)
+    "End Day Trap":   71819,   # force la fin de la journee en cours
+    "Damage Trap":    71820,   # blesse Olimar (sante reduite)
+    "Teleport Trap":  71821,   # teleporte Olimar a un endroit aleatoire proche
+    "Disbanding Trap": 71822,  # disperse l'escouade (siffle le disband)
+}
+
+# Nom d'item -> type interne, pour le client.
+TRAP_KINDS: dict[str, str] = {
+    "Time Trap":       "time",
+    "End Day Trap":    "end_day",
+    "Damage Trap":     "damage",
+    "Teleport Trap":   "teleport",
+    "Disbanding Trap": "disband",
+}
+
+
+# ====================================================================
 # PIKMIN LOCATIONS - Complete mapping of all possible Pikmin locations
 # to their AP IDs. Generated sequentially starting from 71500.
 # Format: "Color Pikmin: threshold": AP_ID

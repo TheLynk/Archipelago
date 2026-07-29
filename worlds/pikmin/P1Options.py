@@ -179,22 +179,31 @@ class Weight5BlueFlower(Range):
 
 
 # ====================================================================
-# TRAP (WIP AND DOES NOT WORKING)
+# TRAP
 # ====================================================================
 class TrapPercentage(Range):
-    """Percentage of filler items that are traps. Default is 0%."""
+    """Percentage of filler items that are traps. Default is 0% (traps off)."""
     display_name = "Trap Percentage"
     range_start = 0
     range_end = 100
     default = 0
 
-# Trap weights (traps not yet implemented, weights reserved for future use)
+
+class TrapLink(Toggle):
+    """
+    When enabled, traps you receive are broadcast to every other TrapLink player,
+    and you receive theirs. Requires traps to be present in the item pool.
+    """
+    display_name = "Trap Link"
+
+
+# Weight (relative likelihood) of each trap type when traps are enabled.
 class WeightTimeTrap(Range):
     """Weight for Time Trap items (reduces remaining day time)."""
     display_name = "Time Trap Weight"
     range_start = 0
     range_end = 100
-    default = 0
+    default = 50
 
 
 class WeightEndDayTrap(Range):
@@ -202,15 +211,31 @@ class WeightEndDayTrap(Range):
     display_name = "End Day Trap Weight"
     range_start = 0
     range_end = 100
-    default = 0
+    default = 50
 
 
 class WeightDamageTrap(Range):
-    """Weight for Damage Trap items (deals damage to Pikmin)."""
+    """Weight for Damage Trap items (damages Olimar)."""
     display_name = "Damage Trap Weight"
     range_start = 0
     range_end = 100
-    default = 0
+    default = 50
+
+
+class WeightTeleportTrap(Range):
+    """Weight for Teleport Trap items (teleports Olimar to a random nearby spot)."""
+    display_name = "Teleport Trap Weight"
+    range_start = 0
+    range_end = 100
+    default = 50
+
+
+class WeightDisbandingTrap(Range):
+    """Weight for Disbanding Trap items (scatters your whole squad)."""
+    display_name = "Disbanding Trap Weight"
+    range_start = 0
+    range_end = 100
+    default = 50
 
 
 # ====================================================================
@@ -314,14 +339,6 @@ class PikminDeathAmount(Range):
     default = 20
 
 
-class TrapLink(Toggle):
-    """
-    When enabled, traps you receive are broadcast to every other TrapLink player,
-    and you receive theirs. Requires traps to be present in the item pool.
-    """
-    display_name = "Trap Link"
-
-
 @dataclass
 class P1Options(PerGameCommonOptions):
 # SHIP PART
@@ -356,13 +373,15 @@ class P1Options(PerGameCommonOptions):
     weight_5_blue_flower:   Weight5BlueFlower
 # TRAP
     trap_percentage: TrapPercentage
+    trap_link: TrapLink
     weight_time_trap: WeightTimeTrap
     weight_end_day_trap: WeightEndDayTrap
     weight_damage_trap: WeightDamageTrap
-# DEATH LINK / TRAP LINK
+    weight_teleport_trap: WeightTeleportTrap
+    weight_disbanding_trap: WeightDisbandingTrap
+# DEATH LINK
     death_link: DeathLink
     pikmin_death_amount: PikminDeathAmount
-    trap_link: TrapLink
 # QUALITY OF LIFE (QOL)
 # - DAY CYCLE MODE
     day_cycle_mode: DayCycleMode

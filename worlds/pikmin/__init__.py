@@ -125,10 +125,12 @@ class P1World(World):
     item_name_to_id: ClassVar[dict[str, int]] = {
         **{name: data.ap_id for name, data in ALL_PARTS.items()},
         **FILLER_ITEMS,
+        **TRAP_ITEMS,
     }
 
     item_name_groups: ClassVar[dict[str, set[str]]] = {
         "Ship Part": set(ALL_PARTS.keys()),
+        "Trap": set(TRAP_ITEMS.keys()),
     }
 
     location_name_to_id: ClassVar[dict[str, int]] = {
@@ -142,6 +144,8 @@ class P1World(World):
         self.hints: dict = {}
 
     def create_item(self, name: str) -> "P1Item":
+        if name in TRAP_ITEMS:
+            return P1Item(name, ItemClassification.trap, TRAP_ITEMS[name], self.player)
         if name in FILLER_ITEMS:
             return P1Item(name, ItemClassification.filler, FILLER_ITEMS[name], self.player)
         return P1Item(name, ItemClassification.progression, ALL_PARTS[name].ap_id, self.player)
@@ -258,9 +262,32 @@ class P1World(World):
         trap_count = int(count * self.options.trap_percentage.value / 100)
         filler_count = count - trap_count
 
-        names = list(active.keys())
-        ws = list(active.values())
-        return self.multiworld.random.choices(names, weights=ws, k=filler_count)
+        pool: list[str] = []
+
+        # Filler (bonus Pikmin), pondere par les options.
+        if filler_count > 0:
+            names = list(active.keys())
+            ws = list(active.values())
+            pool += self.multiworld.random.choices(names, weights=ws, k=filler_count)
+
+        # Traps, pondere par les options de poids de trap.
+        if trap_count > 0:
+            trap_weights = {
+                "Time Trap":       self.options.weight_time_trap.value,
+                "End Day Trap":    self.options.weight_end_day_trap.value,
+                "Damage Trap":     self.options.weight_damage_trap.value,
+                "Teleport Trap":   self.options.weight_teleport_trap.value,
+                "Disbanding Trap": self.options.weight_disbanding_trap.value,
+            }
+            active_traps = {k: v for k, v in trap_weights.items() if v > 0}
+            if not active_traps:
+                # Aucun poids de trap defini : repartition egale sur les 3 types.
+                active_traps = {k: 1 for k in trap_weights}
+            t_names = list(active_traps.keys())
+            t_ws = list(active_traps.values())
+            pool += self.multiworld.random.choices(t_names, weights=t_ws, k=trap_count)
+
+        return pool
 
     def set_rules(self) -> None:
         for name, data in ALL_PARTS.items():
