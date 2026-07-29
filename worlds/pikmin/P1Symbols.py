@@ -81,6 +81,40 @@ SYM_ITEM_MGR_PTR = {
     b'GPIE01': 0x803E7DCC,
 }
 
+# DeathLink -- deadPikis (ColCounter: 3 int Blue/Red/Yellow, total = somme).
+SYM_DEAD_PIKIS = {
+    b'GPIP01': 0x803D6CD8,
+    b'GPIE01': 0x803D1E58,
+}
+
+# DeathLink -- orimaDead (bool, 1 = Olimar mort). Mis a 1 par NaviDeadState.
+SYM_ORIMA_DEAD = {
+    b'GPIP01': 0x803ECCE8,
+    b'GPIE01': 0x803E7E28,
+}
+
+# naviMgr -- POINTEUR global vers NaviMgr (pour atteindre Olimar).
+SYM_NAVI_MGR_PTR = {
+    b'GPIP01': 0x803ECD00,
+    b'GPIE01': 0x803E7E40,
+}
+
+# Chaine naviMgr -> Olimar (Navi) et champs de Navi/Creature.
+#   naviMgr -> +MONO_OBJECTLIST (Creature**) -> [0] = Navi (Olimar 1 joueur)
+#   Navi + CREATURE_HEALTH = mHealth (f32), <= 1.0 => mort
+#   Navi + NAVI_STATEMACHINE = mStateMachine
+NAVI_CHAIN = {
+    "MONO_OBJECTLIST": 0x28,
+    "CREATURE_HEALTH": 0x58,
+    "NAVI_STATEMACHINE": 0x320,
+    "NAVI_PRESSED_TIMER": 0x814,
+    "NAVI_CURRSTATE": 0xADC,
+    "SM_STATES": 0x4,
+    "SM_STATEINDEXES": 0x14,
+}
+NAVISTATE_DEAD = 29     # enum NaviStateID (include/NaviState.h) -- etat mort
+NAVISTATE_PRESSED = 7   # etat 'ecrase' : son exec() verifie la sante et transite vers Dead
+
 # enum GameSectionID (include/Section.h). Valeur de gameflow.mCurrGameSectionID.
 SECTION_ONE_PLAYER = 4  # mode histoire/challenge : une partie est chargee
 SECTION_TITLES = 1      # ecran titre

@@ -342,6 +342,9 @@ class P1World(World):
             "ship_part_hint_mode": self.options.ship_part_hint_mode.value,
             "hints":               self.hints,
             "game_id_suffix":      suffix,
+            "death_link":          self.options.death_link.value,
+            "pikmin_death_amount": self.options.pikmin_death_amount.value,
+            "trap_link":           self.options.trap_link.value,
         }
 
     def post_fill(self) -> None:

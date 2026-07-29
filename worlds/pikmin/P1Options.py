@@ -278,6 +278,50 @@ class ShipPartHintMode(Choice):
     default = 1
 
 
+# ====================================================================
+# DEATH LINK / TRAP LINK
+# ====================================================================
+
+class DeathLink(Choice):
+    """
+    Link deaths with the other players in your multiworld.
+
+    off     : DeathLink disabled.
+    classic : Send a DeathLink whenever Olimar goes down (dies).
+    pikmin  : Send a DeathLink for every X Pikmin that die during the day
+              (see Pikmin Death Amount).
+    both    : Send a DeathLink when Olimar dies OR when too many Pikmin die in
+              the day, and losing too many Pikmin also kills Olimar.
+
+    In every mode, receiving a DeathLink kills Olimar.
+    """
+    display_name = "Death Link"
+    option_off = 0
+    option_classic = 1
+    option_pikmin = 2
+    option_both = 3
+    default = 0
+
+
+class PikminDeathAmount(Range):
+    """
+    Number of Pikmin deaths within a single day that triggers one DeathLink.
+    Used when Death Link is set to 'pikmin' or 'both'. The counter resets each day.
+    """
+    display_name = "Pikmin Death Amount"
+    range_start = 1
+    range_end = 100
+    default = 20
+
+
+class TrapLink(Toggle):
+    """
+    When enabled, traps you receive are broadcast to every other TrapLink player,
+    and you receive theirs. Requires traps to be present in the item pool.
+    """
+    display_name = "Trap Link"
+
+
 @dataclass
 class P1Options(PerGameCommonOptions):
 # SHIP PART
@@ -310,11 +354,15 @@ class P1Options(PerGameCommonOptions):
     weight_5_blue_bud:      Weight5BlueBud
     weight_1_blue_flower:   Weight1BlueFlower
     weight_5_blue_flower:   Weight5BlueFlower
-# TRAP (WIP AND DOES NOT WORKING)
+# TRAP
     trap_percentage: TrapPercentage
     weight_time_trap: WeightTimeTrap
     weight_end_day_trap: WeightEndDayTrap
     weight_damage_trap: WeightDamageTrap
+# DEATH LINK / TRAP LINK
+    death_link: DeathLink
+    pikmin_death_amount: PikminDeathAmount
+    trap_link: TrapLink
 # QUALITY OF LIFE (QOL)
 # - DAY CYCLE MODE
     day_cycle_mode: DayCycleMode

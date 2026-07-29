@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 import dolphin_memory_engine as dme
 
 import Utils
+from Utils import async_start
 from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, logger, server_loop
 from NetUtils import ClientStatus
 from .P1UI import P1UI
@@ -31,6 +32,11 @@ from .P1Symbols import (
     ONEPLAYER_CARD_SELECT,
     ONION_CHAIN,
     OBJTYPE_GOAL,
+    SYM_DEAD_PIKIS,
+    SYM_ORIMA_DEAD,
+    SYM_NAVI_MGR_PTR,
+    NAVI_CHAIN,
+    NAVISTATE_PRESSED,
 )
 from .P1Rom import BASE_ID_BY_PATCHED_PREFIX
 
@@ -297,6 +303,111 @@ def is_save_active(game: Game) -> bool:
     pause".
     """
     return _oneplayer_subsection(game) in (ONEPLAYER_NEW_PIKI_GAME, ONEPLAYER_MAP_SELECT)
+
+
+def read_orima_dead(game: Game) -> bool:
+    """Vrai si Olimar est mort (GameStat::orimaDead, mis a 1 par NaviDeadState)."""
+    addr = SYM_ORIMA_DEAD.get(game)
+    if addr is None:
+        return False
+    try:
+        return dme.read_byte(addr) != 0
+    except Exception:
+        return False
+
+
+def read_dead_pikis_total(game: Game) -> Optional[int]:
+    """Total de Pikmin morts (GameStat::deadPikis, somme Blue+Red+Yellow), ou None."""
+    addr = SYM_DEAD_PIKIS.get(game)
+    if addr is None:
+        return None
+    try:
+        blue, red, yellow = struct.unpack(">iii", dme.read_bytes(addr, 12))
+    except Exception:
+        return None
+    return blue + red + yellow
+
+
+def _resolve_olimar(game: Game) -> Optional[int]:
+    """Adresse de l'objet Navi d'Olimar, ou None.
+
+    naviMgr -> +MONO_OBJECTLIST (Creature**) -> [0] = Navi (Olimar en 1 joueur).
+    """
+    mgr_ptr = SYM_NAVI_MGR_PTR.get(game)
+    if mgr_ptr is None:
+        return None
+    try:
+        mgr = struct.unpack(">I", dme.read_bytes(mgr_ptr, 4))[0]
+        if not (_RAM_MIN <= mgr < _RAM_MAX):
+            return None
+        obj_list = struct.unpack(">I", dme.read_bytes(mgr + NAVI_CHAIN["MONO_OBJECTLIST"], 4))[0]
+        if not (_RAM_MIN <= obj_list < _RAM_MAX):
+            return None
+        navi = struct.unpack(">I", dme.read_bytes(obj_list, 4))[0]
+        if not (_RAM_MIN <= navi < _RAM_MAX):
+            return None
+        return navi
+    except Exception:
+        return None
+
+
+def kill_olimar(game: Game) -> bool:
+    """Tue Olimar a la reception d'un DeathLink.
+
+    Ecrire mHealth = 0 ne suffit PAS : le jeu ne verifie la sante que dans les
+    etats de degats, pas en continu. On force donc Olimar dans l'etat 'ecrase'
+    (NaviPressedState) avec un timer deja ecoule : son exec(), appele chaque
+    frame par le jeu, verifie alors mHealth <= 1 et declenche lui-meme la vraie
+    transition vers NaviDeadState (avec toute la sequence : orimaDead, fin de
+    journee, animation). C'est le jeu qui execute la transition, on ne fait
+    qu'amorcer.
+
+    Sequence :
+      1. Resoudre Olimar (Navi).
+      2. Retrouver l'instance NaviPressedState via les tables de la StateMachine.
+      3. Ecrire mCurrState = NaviPressedState, mPressedTimer < 0, mHealth = 0.
+
+    En cas d'echec d'une lecture, repli sur l'ecriture de mHealth seule.
+    Renvoie True si l'amorce a abouti.
+    """
+    navi = _resolve_olimar(game)
+    if navi is None:
+        return False
+
+    C = NAVI_CHAIN
+
+    def u32(addr: int) -> Optional[int]:
+        try:
+            v = struct.unpack(">I", dme.read_bytes(addr, 4))[0]
+        except Exception:
+            return None
+        return v if _RAM_MIN <= v < _RAM_MAX else None
+
+    try:
+        # Toujours mettre la sante a 0.
+        dme.write_bytes(navi + C["CREATURE_HEALTH"], struct.pack(">f", 0.0))
+
+        sm = u32(navi + C["NAVI_STATEMACHINE"])
+        if sm is None:
+            return True  # sante a 0 ecrite, mais pas d'etat forcable
+        state_indexes = u32(sm + C["SM_STATEINDEXES"])
+        states = u32(sm + C["SM_STATES"])
+        if state_indexes is None or states is None:
+            return True
+        # mStateIndexes[NAVISTATE_Pressed] -> index dans mStates
+        idx = struct.unpack(">i", dme.read_bytes(state_indexes + NAVISTATE_PRESSED * 4, 4))[0]
+        if idx < 0 or idx > 64:
+            return True
+        pressed_state = u32(states + idx * 4)
+        if pressed_state is None:
+            return True
+
+        # Amorcer : timer ecoule + etat Pressed. Le exec() du jeu fera la mort.
+        dme.write_bytes(navi + C["NAVI_PRESSED_TIMER"], struct.pack(">f", -1.0))
+        dme.write_bytes(navi + C["NAVI_CURRSTATE"], struct.pack(">I", pressed_state))
+        return True
+    except Exception:
+        return False
 
 
 def read_game_language(game: Game) -> Optional[str]:
@@ -664,6 +775,10 @@ class P1CommandProcessor(ClientCommandProcessor):
             f"day cycle mode: {slot_data.get('day_cycle_mode', 0)} | "
             f"game_id_suffix: {slot_data.get('game_id_suffix', '')!r}")
         log(f"[DUMP] Detected language: {getattr(ctx, 'detected_language', 'en')}")
+        dl_mode = {0: "off", 1: "classic", 2: "pikmin", 3: "both"}.get(getattr(ctx, "death_link_mode", 0), "?")
+        log(f"[DUMP] DeathLink: {dl_mode} | pikmin death amount: "
+            f"{getattr(ctx, 'pikmin_death_amount', 0)} | TrapLink: "
+            f"{getattr(ctx, 'trap_link_enabled', False)} | tags: {sorted(getattr(ctx, 'tags', []))}")
         log(f"[DUMP] Dolphin status: {getattr(ctx, 'dolphin_status_text', '?')}")
         log(f"[DUMP] Items received: {len(getattr(ctx, 'items_received', []))} | "
             f"locations checked: {len(getattr(ctx, 'checked_locations', []))} | "
@@ -763,6 +878,38 @@ class P1Context(CommonContext):
         # que les transitions (chargement / retour au titre), pas chaque tick.
         self._save_was_loaded: bool = False
 
+        # --- DeathLink / TrapLink ---
+        # Configures depuis slot_data a la connexion.
+        self.death_link_mode: int = 0        # 0=off, 1=classic, 2=pikmin, 3=both
+        self.pikmin_death_amount: int = 10
+        self.trap_link_enabled: bool = False
+        # Detection cote envoi.
+        self._orima_was_dead: bool = False   # etat mort au tick precedent (front montant)
+        # deadPikis est deja remis a zero par le jeu a chaque journee ; on suit
+        # la valeur du tick precedent pour detecter la remise a zero (nouvelle
+        # journee) et repartir le comptage des DeathLink.
+        self._dead_pikis_last: Optional[int] = None
+        self._dead_pikis_sent: int = 0       # nb de DeathLink deja envoyes cette journee
+        # Reception : un DeathLink recu demande de tuer Olimar au prochain tick en jeu.
+        self.pending_kill: bool = False
+        # Empeche l'echo : une mort d'Olimar provoquee par un DeathLink recu ne
+        # doit pas re-emettre un DeathLink (mode classic).
+        self._suppress_orima_send: bool = False
+        # Timestamps de nos propres DeathLink envoyes, pour filtrer nos morts qui
+        # reviennent du serveur (le filtre de CommonClient ne garde que le dernier).
+        self._sent_death_times: set = set()
+        # Securite : un seul evenement DeathLink (envoi OU reception) par journee.
+        # Verrouille apres le 1er evenement, rearme au debut de la journee suivante
+        # (front montant de "dans un niveau"). Empeche toute cascade residuelle.
+        self._deathlink_locked_this_day: bool = False
+        self._in_level_prev: bool = False
+        # Mode both : auto-mort d'Olimar en attente si non resolvable a l'envoi.
+        self._pending_self_kill: bool = False
+        # Traps recus (via item ou TrapLink) en attente d'application en jeu.
+        self.pending_trap_links: list = []
+        # Suivi de transition pour reinitialiser l'etat DeathLink par journee.
+        self._save_was_loaded_prev_death: bool = False
+
     def _save_key(self) -> str:
         slot_data = getattr(self, "slot_data", {}) or {}
         suffix = slot_data.get("game_id_suffix", "")
@@ -849,6 +996,28 @@ class P1Context(CommonContext):
             self.needs_location_scout = True
             # Register for hints notifications
             self.stored_data_notification_keys.add(f"_read_hints_{self.team}_{self.slot}")
+
+            # --- DeathLink / TrapLink : configurer les tags depuis slot_data ---
+            self.death_link_mode = int(self.slot_data.get("death_link", 0))
+            self.pikmin_death_amount = max(1, int(self.slot_data.get("pikmin_death_amount", 10)))
+            self.trap_link_enabled = bool(self.slot_data.get("trap_link", 0))
+            self._orima_was_dead = False
+            self._dead_pikis_baseline = None
+            self._dead_pikis_sent = 0
+            self.pending_kill = False
+            tags = set(self.tags)
+            if self.death_link_mode != 0:
+                tags.add("DeathLink")
+            if self.trap_link_enabled:
+                tags.add("TrapLink")
+            if tags != set(self.tags):
+                self.tags = tags
+                async_start(self.send_msgs([{"cmd": "ConnectUpdate", "tags": list(self.tags)}]))
+            if self.death_link_mode != 0:
+                _dl = {1: "classic", 2: "pikmin", 3: "both"}.get(self.death_link_mode, "?")
+                logger.info(f"[Pikmin] DeathLink actif (mode {_dl}).")
+            if self.trap_link_enabled:
+                logger.info("[Pikmin] TrapLink actif.")
         elif cmd == "LocationInfo":
             count = len(args.get("locations", []))
             if self.debug_hint:
@@ -891,6 +1060,44 @@ class P1Context(CommonContext):
                     self.server_hints[loc_id] = hint
             if self.debug_hint:
                 logger.info(f"[DEBUG] Server hints total: {len(self.server_hints)}")
+
+        elif cmd == "Bounced":
+            # TrapLink : un autre joueur a recu un trap et le diffuse. On applique
+            # le meme trap chez nous. (DeathLink est deja gere par CommonClient.)
+            tags = args.get("tags", [])
+            if self.trap_link_enabled and "TrapLink" in tags:
+                data = args.get("data", {}) or {}
+                if data.get("source") != self.player_names.get(self.slot):
+                    trap_name = data.get("trap_name") or data.get("cause") or ""
+                    self.queue_trap_link(trap_name)
+
+    async def send_death(self, death_text: str = "") -> None:
+        """Envoie un DeathLink et memorise son timestamp.
+
+        Le filtre anti-echo de CommonClient ne retient que le DERNIER timestamp
+        envoye (last_death_link). Si on envoie plusieurs morts rapprochees, les
+        precedentes reviennent du serveur et sont prises pour des morts recues
+        -> re-declenchement en boucle (surtout en mode both). On memorise donc
+        TOUS nos timestamps pour filtrer nos propres morts dans on_deathlink.
+        """
+        await super().send_death(death_text)
+        self._sent_death_times.add(self.last_death_link)
+        # Borne la memoire (les vieux timestamps ne reviendront plus).
+        if len(self._sent_death_times) > 64:
+            self._sent_death_times = set(sorted(self._sent_death_times)[-32:])
+
+    def on_deathlink(self, data: dict) -> None:
+        """DeathLink recu : planifie la mort d'Olimar, en ignorant nos propres morts."""
+        if data.get("time") in self._sent_death_times:
+            # C'est une de nos propres morts renvoyee par le serveur : ignorer.
+            self.last_death_link = max(data["time"], self.last_death_link)
+            return
+        super().on_deathlink(data)
+        self.pending_kill = True
+
+    def queue_trap_link(self, trap_name: str) -> None:
+        """Place un trap recu via TrapLink dans la file d'application (surchargeable)."""
+        self.pending_trap_links.append(trap_name)
 
 
 COLOR_BY_INDEX = {0: "blue", 1: "red", 2: "yellow"}  # GlobalGameOptions.h
@@ -972,6 +1179,113 @@ def find_onion_containers(game: Game) -> dict[str, int]:
         node = deref(node + C["NODE_NEXT"])
 
     return found
+
+
+async def handle_death_link(ctx: P1Context, game: Game) -> None:
+    """DeathLink : detection (envoi) et application (reception).
+
+    Modes (ctx.death_link_mode) :
+      0 off, 1 classic, 2 pikmin, 3 both.
+    Envoi :
+      - classic / both : front montant de orimaDead (Olimar vient de mourir).
+      - pikmin  / both : tous les X Pikmin morts dans la journee (deadPikis,
+        deja remis a zero par journee).
+      - both : en plus, quand le seuil de Pikmin est franchi, Olimar est aussi
+        tue localement.
+    Reception :
+      - un DeathLink recu (ctx.pending_kill) tue Olimar au prochain tick en jeu.
+    """
+    # --- Auto-mort (mode both) : consequence de notre propre envoi, non soumise
+    # au verrou. Retente si Olimar n'etait pas resolvable au moment de l'envoi.
+    if ctx._pending_self_kill:
+        if kill_olimar(game):
+            ctx._pending_self_kill = False
+            ctx._suppress_orima_send = True
+
+    # --- Reception : tuer Olimar ---
+    if ctx.pending_kill:
+        if ctx._deathlink_locked_this_day:
+            # Un evenement DeathLink a deja eu lieu cette journee : on ignore les
+            # morts recues jusqu'au reset de debut de journee.
+            ctx.pending_kill = False
+        elif kill_olimar(game):
+            ctx.pending_kill = False
+            # La mort qui va suivre vient d'un DeathLink recu : ne pas la
+            # renvoyer via la detection classic.
+            ctx._suppress_orima_send = True
+            ctx._deathlink_locked_this_day = True
+            logger.info("[Pikmin] DeathLink reçu — Olimar est éliminé.")
+        # sinon : Olimar pas encore resolvable, on retente au prochain tick.
+
+    if ctx.death_link_mode == 0:
+        return
+
+    # Verrou de securite : plus aucun envoi/reception tant que la journee n'a pas
+    # ete reinitialisee (front montant "dans un niveau", voir dolphin_loop). On
+    # continue de suivre l'etat de detection pour ne pas declencher un envoi
+    # differe une fois le verrou leve.
+    if ctx._deathlink_locked_this_day:
+        ctx._orima_was_dead = read_orima_dead(game)
+        dt = read_dead_pikis_total(game)
+        if dt is not None:
+            ctx._dead_pikis_last = dt
+        return
+
+    send_on_olimar = ctx.death_link_mode in (1, 3)   # classic, both
+    send_on_pikmin = ctx.death_link_mode in (2, 3)   # pikmin, both
+    pikmin_kills_olimar = ctx.death_link_mode == 3    # both
+
+    # --- Envoi sur mort d'Olimar (front montant) ---
+    if send_on_olimar:
+        is_dead = read_orima_dead(game)
+        if is_dead and not ctx._orima_was_dead:
+            if ctx._suppress_orima_send:
+                # Mort provoquee par un DeathLink recu (ou par le seuil pikmin en
+                # mode both) : on la consomme sans re-emettre.
+                ctx._suppress_orima_send = False
+            else:
+                await ctx.send_death(
+                    f"{ctx.player_names.get(ctx.slot, 'Olimar')} was lost on the planet."
+                )
+                ctx._deathlink_locked_this_day = True
+        ctx._orima_was_dead = is_dead
+        if ctx._deathlink_locked_this_day:
+            return
+
+    # --- Envoi sur morts de Pikmin (tous les X, par journee) ---
+    if send_on_pikmin:
+        dead_total = read_dead_pikis_total(game)
+        if dead_total is None:
+            return
+        # deadPikis est deja par journee, mais au tout debut de la journee il
+        # peut encore etre RESIDUEL (pas remis a zero). A la 1re lecture (last
+        # None), on prend la valeur courante comme reference deja comptee : sinon
+        # un compte residuel serait pris pour des morts nouvelles et enverrait un
+        # DeathLink en debut de journee. Une decroissance ulterieure = remise a
+        # zero par le jeu -> on repart le comptage.
+        if ctx._dead_pikis_last is None:
+            ctx._dead_pikis_last = dead_total
+            ctx._dead_pikis_sent = dead_total // ctx.pikmin_death_amount
+        elif dead_total < ctx._dead_pikis_last:
+            ctx._dead_pikis_sent = 0
+            ctx._dead_pikis_last = dead_total
+        else:
+            ctx._dead_pikis_last = dead_total
+        should_have_sent = dead_total // ctx.pikmin_death_amount
+        if ctx._dead_pikis_sent < should_have_sent:
+            ctx._dead_pikis_sent += 1
+            await ctx.send_death(
+                f"{ctx.player_names.get(ctx.slot, 'Olimar')} lost too many Pikmin."
+            )
+            ctx._deathlink_locked_this_day = True
+            # Mode both : franchir le seuil tue aussi Olimar localement. C'est une
+            # consequence de NOTRE envoi (pas une reception), donc on tue en ligne
+            # meme si le verrou vient d'etre pose. Pas d'echo : _suppress_orima_send.
+            if pikmin_kills_olimar:
+                if kill_olimar(game):
+                    ctx._suppress_orima_send = True
+                else:
+                    ctx._pending_self_kill = True  # Olimar pas resolvable, on reessaie
 
 
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
@@ -1639,9 +1953,28 @@ async def dolphin_loop(ctx: P1Context):
                 logger.info(f"[Pikmin] {msg}")
             ctx._save_was_loaded = save_active
 
+        # Reinitialise l'etat DeathLink au debut de chaque journee : front montant
+        # de "dans un niveau" (entree dans NewPikiGame). Rearme le verrou de
+        # securite et repart le comptage. Independant du day cycle (qui peut figer
+        # DAY_NUMBER), car il se base sur l'entree effective dans un niveau.
+        if in_level and not ctx._in_level_prev:
+            # IMPORTANT : initialiser _orima_was_dead avec la VRAIE valeur
+            # courante, pas False. Au tout debut de la journee, orimaDead peut
+            # encore valoir True (residuel de la mort de la veille, avant que le
+            # jeu ne le remette a zero). Forcer False creait un faux front montant
+            # True->... et renvoyait un DeathLink au debut de la journee suivante.
+            ctx._orima_was_dead = read_orima_dead(game_version)
+            ctx._dead_pikis_last = None
+            ctx._dead_pikis_sent = 0
+            ctx._suppress_orima_send = False
+            ctx._deathlink_locked_this_day = False
+            ctx._pending_self_kill = False
+        ctx._in_level_prev = in_level
+        ctx._save_was_loaded_prev_death = save_active
+
         # Handlers qui LISENT de la memoire propre au niveau (collecte de pieces,
-        # compteurs de l'escouade) : uniquement dans un niveau.
-        in_level_handlers = (handle_parts, handle_pikmin_locations)
+        # compteurs de l'escouade, DeathLink) : uniquement dans un niveau.
+        in_level_handlers = (handle_parts, handle_pikmin_locations, handle_death_link)
         # Handlers actifs aussi sur la carte du monde : reception d'objets
         # (persistee via STAGE) et deblocage des zones (visible sur la carte).
         save_active_handlers = (handle_pikmin_items, handle_areas)
