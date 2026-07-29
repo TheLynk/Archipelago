@@ -20,6 +20,8 @@ from .P1Symbols import (
     SYM_ONION_DYN_ADDRS,
     SYM_ONION_STAGE_ADDRS,
     SYM_ITEM_MGR_PTR,
+    SYM_PLAYER_STATE_PTR,
+    PLAYERSTATE_OFFSETS,
     SYM_GSYS_PTR,
     STDSYSTEM_LANGUAGE_OFFSET,
     LANGUAGE_IDS,
@@ -33,6 +35,12 @@ from .P1Symbols import (
     ONEPLAYER_CARD_SELECT,
     ONION_CHAIN,
     OBJTYPE_GOAL,
+    OBJTYPE_PELLET,
+    PELLET_CHAIN,
+    SYM_PELLET_MGR_PTR,
+    ENTRYSTATUS_KILL,
+    SYM_RADAR_INFO_PTR,
+    RADAR_CHAIN,
     SYM_DEAD_PIKIS,
     SYM_ORIMA_DEAD,
     SYM_NAVI_MGR_PTR,
@@ -1513,6 +1521,210 @@ def find_onion_containers(game: Game) -> dict[str, int]:
     return found
 
 
+# fourCC (model ID) -> ap_id de la piece, pour identifier un Pellet in-game.
+_MODELID_TO_AP_ID = {
+    PART_MODEL_ID[name]: ALL_PARTS[name].ap_id
+    for name in PART_MODEL_ID if name in ALL_PARTS
+}
+
+# ap_id -> zone/stage, pour reconstituer les compteurs PlayerState.
+_APID_TO_STAGE = {
+    data.ap_id: AREA_STAGE_ID[data.area]
+    for data in ALL_PARTS.values() if data.area in AREA_STAGE_ID
+}
+# ap_id -> bit d'effet vaisseau (radar, jets).
+_APID_TO_EFFECT = {
+    ALL_PARTS[name].ap_id: bit
+    for name, bit in SHIP_EFFECT_PARTS.items() if name in ALL_PARTS
+}
+
+
+def sync_playerstate_parts(ctx: P1Context, game: Game) -> None:
+    """Reconcilie les compteurs de pieces de PlayerState avec les locations
+    validees cote serveur, pour que les capacites (radar, jets) et les etoiles
+    par niveau soient correctes meme pour des pieces collectees hors du jeu.
+
+    Idempotent et jamais decroissant : on ne fait qu'ajouter des bits d'effet et
+    remonter les compteurs au max, on n'ecrase jamais un total du jeu plus eleve.
+    """
+    ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ptr is None:
+        return
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
+    except Exception:
+        return
+    if not (_RAM_MIN <= ps < _RAM_MAX):
+        return
+    O = PLAYERSTATE_OFFSETS
+
+    checked = ctx.checked_locations
+    ship_ids = {data.ap_id for data in ALL_PARTS.values()}
+    checked_parts = [ap for ap in ship_ids if ap in checked]
+
+    try:
+        # Capacites du vaisseau (radar / jets) : OR des bits, idempotent.
+        want_flag = 0
+        for ap in checked_parts:
+            want_flag |= _APID_TO_EFFECT.get(ap, 0)
+        if want_flag:
+            addr = ps + O["mShipEffectPartFlag"]
+            cur = dme.read_byte(addr)
+            if (cur | want_flag) != cur:
+                dme.write_byte(addr, cur | want_flag)
+
+        # Etoiles par niveau : nb de pieces validees par stage, sans decroitre.
+        per_stage: dict[int, int] = {}
+        for ap in checked_parts:
+            st = _APID_TO_STAGE.get(ap)
+            if st is not None:
+                per_stage[st] = per_stage.get(st, 0) + 1
+        base = ps + O["mStagePartsCollected"]
+        for st, count in per_stage.items():
+            a = base + st  # u8 par stage
+            if dme.read_byte(a) < count:
+                dme.write_byte(a, count)
+
+        # Total de pieces (upgrade vaisseau, affichage) : au max.
+        total = len(checked_parts)
+        caddr = ps + O["mCurrParts"]
+        cur_total = struct.unpack(">i", dme.read_bytes(caddr, 4))[0]
+        if cur_total < total:
+            dme.write_bytes(caddr, struct.pack(">i", total))
+    except Exception:
+        pass
+
+
+def _detach_part_from_radar(game: Game, pellet: int) -> None:
+    """Retire du radar l'icone d'une piece (replique RadarInfo::detachParts).
+
+    Delie le noeud de mAlivePartsList dont mPart == pellet : sinon le radar
+    continue d'afficher une icone pour une piece qu'on a fait disparaitre
+    (MonoObjectMgr::kill ne declenche pas Creature::kill -> pas de detachParts).
+    """
+    ptr = SYM_RADAR_INFO_PTR.get(game)
+    if ptr is None:
+        return
+    R = RADAR_CHAIN
+
+    def u32(addr: int) -> int:
+        try:
+            v = struct.unpack(">I", dme.read_bytes(addr, 4))[0]
+        except Exception:
+            return 0
+        return v if _RAM_MIN <= v < _RAM_MAX else 0
+
+    radar = u32(ptr)
+    if not radar:
+        return
+    head_slot = radar + R["ALIVE_CHILD"]   # &mAlivePartsList.mChild
+    node = u32(head_slot)
+    prev = 0
+    for _ in range(64):
+        if not node:
+            return
+        part = u32(node + R["NODE_PART"])
+        nxt = u32(node + R["NODE_NEXT"])
+        if part == pellet:
+            # Delier : relier le precedent (ou le slot de tete) au suivant.
+            try:
+                if prev:
+                    dme.write_bytes(prev + R["NODE_NEXT"], struct.pack(">I", nxt))
+                else:
+                    dme.write_bytes(head_slot, struct.pack(">I", nxt))
+                # Detacher le noeud + nettoyer son mPart.
+                dme.write_bytes(node + R["NODE_NEXT"], struct.pack(">I", 0))
+                dme.write_bytes(node + R["NODE_PART"], struct.pack(">I", 0))
+            except Exception:
+                pass
+            return
+        prev = node
+        node = nxt
+
+
+def despawn_collected_part_pellets(ctx: P1Context, game: Game) -> int:
+    """Fait disparaitre les Pellets des pieces validees cote serveur.
+
+    Les pellets sont geres par pelletMgr (un MonoObjectMgr), PAS par itemMgr.
+    On enumere ses slots actifs (mEntryStatus[i] == 0), on repere les pellets de
+    pieces de vaisseau (mObjType == OBJTYPE_Pellet et mConfig->mModelId connu),
+    et si la location est deja validee cote serveur on les retire :
+      - mIsAlive = 0 (invisible tout de suite) ;
+      - mEntryStatus[i] = -2 -> MonoObjectMgr::update appelle kill() (retrait
+        propre par le jeu au prochain update).
+    Renvoie le nombre de pieces retirees.
+    """
+    mgr_ptr = SYM_PELLET_MGR_PTR.get(game)
+    if mgr_ptr is None:
+        return 0
+    P = PELLET_CHAIN
+
+    def u32(addr: int) -> int:
+        try:
+            v = int.from_bytes(dme.read_bytes(addr, 4), "big")
+        except Exception:
+            return 0
+        return v if 0x80000000 <= v < 0x81800000 else 0
+
+    mgr = u32(mgr_ptr)
+    if not mgr:
+        return 0
+    obj_list = u32(mgr + P["MONO_OBJECTLIST"])
+    entry_status = u32(mgr + P["MONO_ENTRYSTATUS"])
+    if not obj_list or not entry_status:
+        return 0
+    try:
+        max_elems = int.from_bytes(dme.read_bytes(mgr + P["MONO_MAXELEMENTS"], 4), "big", signed=True)
+    except Exception:
+        return 0
+    if not (0 < max_elems <= 4096):
+        return 0
+
+    removed = 0
+    for i in range(max_elems):
+        try:
+            status = int.from_bytes(dme.read_bytes(entry_status + i * 4, 4), "big", signed=True)
+        except Exception:
+            continue
+        if status != 0:  # slot inactif
+            continue
+        creature = u32(obj_list + i * 4)
+        if not creature:
+            continue
+        try:
+            obj_type = int.from_bytes(
+                dme.read_bytes(creature + ONION_CHAIN["CREATURE_OBJTYPE"], 4), "big", signed=True
+            )
+        except Exception:
+            continue
+        if obj_type != OBJTYPE_PELLET:
+            continue
+        config = u32(creature + P["PELLET_CONFIG"])
+        if not config:
+            continue
+        try:
+            model_id = dme.read_bytes(config + P["PELLETCONFIG_MODELID"], 4)
+        except Exception:
+            continue
+        ap_id = _MODELID_TO_AP_ID.get(model_id)
+        if ap_id is None or ap_id not in ctx.checked_locations:
+            continue
+        # Piece validee cote serveur, encore presente : la retirer.
+        try:
+            # Retirer l'icone du radar (le kill du manager ne le fait pas).
+            _detach_part_from_radar(game, creature)
+            dme.write_byte(creature + P["PELLET_ISALIVE"], 0)
+            dme.write_bytes(entry_status + i * 4, struct.pack(">i", ENTRYSTATUS_KILL))
+            removed += 1
+            if ctx.debug_hint:
+                logger.info(f"[DEBUG] Pellet de pièce retiré "
+                            f"(slot={i}, model={model_id!r}, ap_id={ap_id})")
+        except Exception:
+            pass
+
+    return removed
+
+
 async def handle_death_link(ctx: P1Context, game: Game) -> None:
     """DeathLink : detection (envoi) et application (reception).
 
@@ -1832,15 +2044,73 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
     ctx.save_applied()
 
 
-async def handle_parts(ctx: P1Context, game: Game):
-    for name, data in ALL_PARTS.items():
-        # check locations if something got collected
-        read = dme.read_byte(data.memory_address[game])
+async def _create_super_radar_hint(ctx: P1Context, part_name: str) -> None:
+    """Cree le hint Super Radar (emplacement de la piece du joueur) pour part_name.
 
-        # freshly collected
+    Reutilise les hints de slot_data (comme handle_ship_part_hints). Sans effet si
+    aucun hint n'est disponible ou s'il a deja ete cree.
+    """
+    slot_hints: dict = (ctx.slot_data or {}).get("hints", {})
+    hint_data = slot_hints.get(f"{part_name}_radar") or slot_hints.get(part_name)
+    if not hint_data:
+        return
+    key = f"{part_name}_radar"
+    if key in ctx.created_hints:
+        return
+    try:
+        target_loc_id = int(hint_data.get("Location ID", 0))
+        target_player = int(hint_data.get("Send Player ID", ctx.slot))
+    except (ValueError, TypeError):
+        return
+    if not target_loc_id:
+        return
+    ctx.created_hints.add(key)
+    await ctx.send_msgs([{
+        "cmd": "CreateHints",
+        "locations": [target_loc_id],
+        "player": target_player,
+    }])
+    if ctx.debug_hint:
+        logger.info(f"[DEBUG] Super Radar hint créé pour {part_name} "
+                    f"(pièce collectée côté serveur)")
+
+
+async def handle_parts(ctx: P1Context, game: Game):
+    slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+    hint_mode = slot_data.get("ship_part_hint_mode", 0)
+
+    # Fait disparaitre physiquement du niveau les pieces validees cote serveur
+    # (ex. autre jeu termine) et non ramassees en jeu. Un seul parcours par tick.
+    despawn_collected_part_pellets(ctx, game)
+    # Met a jour capacites du vaisseau (radar/jets) et etoiles par niveau pour
+    # les pieces validees cote serveur (que le jeu n'a pas enregistrees).
+    sync_playerstate_parts(ctx, game)
+
+    for name, data in ALL_PARTS.items():
+        addr = data.memory_address[game]
+        try:
+            read = dme.read_byte(addr)
+        except Exception:
+            continue
+
+        # Sens normal : collectee en jeu -> on envoie le check au serveur.
         if read == data.collected_byte and data.ap_id not in ctx.checked_locations:
             ctx.locations_checked.add(data.ap_id)
             await ctx.check_locations([data.ap_id])
+
+        # Sens inverse : la location est validee cote serveur (ex. !collect,
+        # autre jeu termine) mais la piece n'est pas collectee en jeu -> on ecrit
+        # l'octet "collectee" pour qu'elle disparaisse physiquement du niveau.
+        elif data.ap_id in ctx.checked_locations and read != data.collected_byte:
+            try:
+                dme.write_byte(addr, data.collected_byte)
+            except Exception:
+                continue
+            if ctx.debug_hint:
+                logger.info(f"[DEBUG] Pièce {name} auto-collectée (validée côté serveur)")
+            # Hint de l'emplacement de la piece si Super Radar / Both.
+            if hint_mode in (2, 3):
+                await _create_super_radar_hint(ctx, name)
 
 
 async def handle_pikmin_locations(ctx: P1Context, game: Game):

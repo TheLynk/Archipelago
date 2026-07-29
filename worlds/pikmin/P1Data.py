@@ -156,6 +156,43 @@ TRAP_ITEMS: dict[str, int] = {
     "Disbanding Trap": 71822,  # disperse l'escouade (siffle le disband)
 }
 
+# Nom de piece -> model ID (fourCC) du Pellet in-game (enum UfoPartID,
+# include/Pellet.h). Sert a retrouver le Pellet physique d'une piece dans le
+# niveau pour le faire disparaitre quand la location est validee cote serveur.
+PART_MODEL_ID: dict[str, bytes] = {
+    "Bowsprit":            b"ust1",
+    "Gluon Drive":         b"ust2",
+    "Anti-Dioxin Filter":  b"ust3",
+    "Eternal Fuel Dynamo": b"ust4",
+    "Main Engine":         b"ust5",
+    "Whimsical Radar":     b"uf01",
+    "Interstellar Radio":  b"uf02",
+    "Guard Satellite":     b"uf03",
+    "Chronos Reactor":     b"uf04",
+    "Radiation Canopy":    b"uf05",
+    "Geiger Counter":      b"uf06",
+    "Sagittarius":         b"uf07",
+    "Libra":               b"uf08",
+    "Omega Stabilizer":    b"uf09",
+    "#1 Ionium Jet":       b"uf10",
+    "#2 Ionium Jet":       b"uf11",
+    "Shock Absorber":      b"un01",
+    "Gravity Jumper":      b"un02",
+    "Pilot's Seat":        b"un03",
+    "Nova Blaster":        b"un04",
+    "Automatic Gear":      b"un05",
+    "Zirconium Rotor":     b"un06",
+    "Extraordinary Bolt":  b"un07",
+    "Repair-type Bolt":    b"un08",
+    "Space Float":         b"un09",
+    "Massage Machine":     b"un10",
+    "Secret Safe":         b"un11",
+    "Positron Generator":  b"un12",
+    "Analog Computer":     b"un13",
+    "UV Lamp":             b"un14",
+}
+
+
 # Nom d'item -> type interne, pour le client.
 TRAP_KINDS: dict[str, str] = {
     "Time Trap":       "time",
@@ -198,6 +235,25 @@ AREA_ABBREV: Dict[str, str] = {
     "The Forest Navel":   "TFN",
     "The Distant Spring": "TDS",
     "The Final Trial":    "TFT",
+}
+
+# Zone -> stageID (enum StageID, GlobalGameOptions.h). Sert au comptage des
+# etoiles par niveau (PlayerState.mStagePartsCollected) quand une piece est
+# validee cote serveur.
+AREA_STAGE_ID: Dict[str, int] = {
+    "The Impact Site":    0,   # STAGE_Practice
+    "The Forest of Hope": 1,   # STAGE_Forest
+    "The Forest Navel":   2,   # STAGE_Cave
+    "The Distant Spring": 3,   # STAGE_Yakushima
+    "The Final Trial":    4,   # STAGE_Last
+}
+
+# Pieces qui donnent une capacite au vaisseau (PlayerState.mShipEffectPartFlag) :
+# nom -> bit. Radar = bit 0, jets ioniques = bits 1 et 2.
+SHIP_EFFECT_PARTS: Dict[str, int] = {
+    "Whimsical Radar": 0x01,
+    "#1 Ionium Jet":   0x02,
+    "#2 Ionium Jet":   0x04,
 }
 
 

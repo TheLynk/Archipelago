@@ -262,9 +262,42 @@ ONION_CHAIN = {
     "GOAL_HELDPIKIS": 0x42C,
 }
 OBJTYPE_GOAL = 16  # ObjType.h
+OBJTYPE_PELLET = 52  # ObjType.h -- tous les pellets (dont pieces de vaisseau)
+
+# pelletMgr -- POINTEUR global vers PelletMgr (MonoObjectMgr des pellets,
+# dont les pieces de vaisseau). C'est ICI que sont les pellets, PAS itemMgr.
+SYM_PELLET_MGR_PTR = {
+    b'GPIP01': 0x803ECBFC,
+    b'GPIE01': 0x803E7D3C,
+}
+# Champs de MonoObjectMgr (include/ObjectMgr.h) + Pellet/PelletConfig
+# (include/Pellet.h) pour enumerer et retirer un Pellet de piece de vaisseau.
+PELLET_CHAIN = {
+    "MONO_OBJECTLIST": 0x28,
+    "MONO_MAXELEMENTS": 0x2C,
+    "MONO_ENTRYSTATUS": 0x34,
+    "PELLET_CONFIG": 0x55C,
+    "PELLETCONFIG_MODELID": 0x2C,
+    "PELLET_ISALIVE": 0x5B8,
+}
+ENTRYSTATUS_KILL = -2  # mEntryStatus[i] = -2 -> MonoObjectMgr::update tue l'objet
+
+# radarInfo -- POINTEUR global vers RadarInfo. Le radar dessine une icone
+# par noeud de mAlivePartsList ; retirer une piece = delier son noeud
+# (comme RadarInfo::detachParts). Noeuds = CoreNode (mNext _0C), mPart _14.
+SYM_RADAR_INFO_PTR = {
+    b'GPIP01': 0x803ECB08,
+    b'GPIE01': 0x803E7C48,
+}
+RADAR_CHAIN = {
+    "ALIVE_CHILD": 0x10,
+    "NODE_NEXT": 0xC,
+    "NODE_PART": 0x14,
+}
 
 # Offsets dans la struct PlayerState (include/PlayerState.h)
 PLAYERSTATE_OFFSETS = {
+    "mShipEffectPartFlag": 0x11,
     "mTotalRegisteredParts": 0x170,
     "mTotalParts": 0x174,
     "mCurrParts": 0x17C,
