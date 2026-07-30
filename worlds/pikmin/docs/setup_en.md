@@ -25,7 +25,7 @@ Place all of the players' ```.yaml``` files into the ```Players``` folder of you
 #### Step 2
 Open the Archipelago Launcher (```ArchipelagoLauncher.exe```) and click the "Generate Button". If the generation succeeds, this should create a ```.zip``` archive in the ```output``` directory of your Archipelago installation.
 #### Step 3
-Unzip the archive that was just generated. There should be an ```.appik1``` file inside called ```AP_<seed>_P<slot>_<name>.appik1```. This file will be referred to as the Pikmin 2 setup file for the rest of the guide.
+Unzip the archive that was just generated. There should be an ```.appik1``` file inside called ```AP_<seed>_P<slot>_<name>.appik1```. This file will be referred to as the Pikmin 1 setup file for the rest of the guide.
 #### Step 4
 Open the Archipelago Launcher (```ArchipelagoLauncher.exe```) and click the "Open Patch". It will prompt you for the Pikmin 1 setup file (the ```.appik1``` file from Step 3) and the Pikmin USA .iso file or Pikmin PAL .iso file. It will output a patched version of the game to the same directory that the patch file is in, called ```AP_<seed>_P<slot>_<name>.iso```.
 #### Step 5
