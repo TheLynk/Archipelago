@@ -225,6 +225,198 @@ def build_stub(cave_addr: int = CAVE_RAM_ADDR,
     return stub
 
 
+# ---------------------------------------------------------------------------
+# QOL : desactivation du trebuchement des Pikmin (feature "Disable Pikmin Trip")
+#
+# Le trebuchement est declenche dans ActCrowd::exec() (src/plugPikiKando/aiCrowd.cpp) :
+#
+#     if (!hasBomb && mTravelDistance >= 100 && vel.length() > 110) {
+#         if (getRand(1) >= 0.9999f && getRand(1) > 0.7f) {   // ~0.003% de chance
+#             mIsTripping = true;                              // -> anim PIKIANIM_Korobu
+#             ...
+#             return ACTOUT_Continue;
+#         }
+#         mTravelDistance = 0.0f;                              // "rien ne se passe"
+#     }
+#
+# On rend le PREMIER branchement conditionnel (bne, saut vers le reset
+# mTravelDistance) inconditionnel : le bloc de trip n'est alors JAMAIS execute,
+# et l'odometre est toujours remis a zero comme dans le cas "rien ne se passe".
+#
+# En PAL (GPIP01) le bne est a 0x800B6394 : 40 82 00 d4  ->  48 00 00 d4
+# (meme cible 0x800B6468, opcode conditionnel remplace par un b inconditionnel).
+# Verifie en desassemblant l'ISO PAL patchee : la signature ci-dessous tombe sur
+# ce bne de maniere unique.
+#
+# Le site est localise par SIGNATURE plutot que par adresse codee en dur, pour
+# couvrir PAL et NTSC avec le meme code : la signature n'utilise que des mots
+# machine independants de la version (operations flottantes, fcmpo, cror, et les
+# ecritures mIsTripping = true), pas les offsets r2 ni les cibles de bl qui, eux,
+# different entre versions. La distance relative du bne (0xD4) est identique dans
+# les deux versions car la disposition des instructions de la fonction est la meme.
+# ---------------------------------------------------------------------------
+
+# fsubs f3,f3,f4 ; fdivs f2,f3,f2 ; fmuls f1,f1,f2 ; fcmpo cr0,f1,f0 ; cror cr0eq,cr0gt,cr0eq
+TRIP_SIG_PREFIX = bytes.fromhex("ec632028" "ec431024" "ec2100b2" "fc010040" "4c411382")
+TRIP_BNE_OFF   = 0x14        # le bne a patcher, apres la signature
+TRIP_SETTRUE_OFF = 0x50      # li r0,1        (mIsTripping = true)
+TRIP_STB_OFF     = 0x54      # stb r0,0x64(r31)
+TRIP_SETTRUE_WORD = 0x38000001
+TRIP_STB_WORD     = 0x981F0064
+
+
+def find_trip_bne(f) -> list[tuple[int, int, int]]:
+    """Localise le bne du declencheur de trip. Renvoie [(adresse RAM, offset ISO,
+    mot bne d'origine)] pour chaque site qualifie (normalement exactement un)."""
+    sites = []
+    for file_off, ram_addr, size in dol_text_sections(f):
+        f.seek(file_off)
+        data = f.read(size)
+        start = 0
+        while True:
+            i = data.find(TRIP_SIG_PREFIX, start)
+            if i < 0:
+                break
+            start = i + 4
+
+            def word(off: int):
+                p = i + off
+                if 0 <= p <= size - 4:
+                    return struct.unpack(">I", data[p:p + 4])[0]
+                return None
+
+            bne = word(TRIP_BNE_OFF)
+            if bne is None or (bne >> 16) != 0x4082:      # bne sur cr0
+                continue
+            if word(TRIP_SETTRUE_OFF) != TRIP_SETTRUE_WORD:  # li r0,1
+                continue
+            if word(TRIP_STB_OFF) != TRIP_STB_WORD:          # stb r0,0x64(r31)
+                continue
+            sites.append((ram_addr + i + TRIP_BNE_OFF,
+                          file_off + i + TRIP_BNE_OFF, bne))
+    return sites
+
+
+def apply_trip_patch(f) -> tuple[bool, object]:
+    """Applique le patch anti-trebuchement. Best-effort : ne modifie rien si le
+    site n'est pas trouve de maniere unique (0 ou >1 correspondance), pour ne
+    jamais corrompre une ISO. Renvoie (applique, info)."""
+    sites = find_trip_bne(f)
+    if len(sites) != 1:
+        return False, len(sites)
+    ram, iso_off, bne = sites[0]
+    new_word = 0x48000000 | (bne & 0x0000FFFC)  # bne target -> b target
+    f.seek(iso_off)
+    f.write(struct.pack(">I", new_word))
+    return True, ram
+
+
+# ---------------------------------------------------------------------------
+# QOL : skip de la cinematique de collecte d'une piece par le vaisseau.
+#
+# Dans PelletGoalState::init (pelletState.cpp), quand une piece atteint le
+# vaisseau, le jeu joue UN seul film camera+texte :
+#     gameflow.mGameInterface->movie(DEMOID_CollectPart=79, ...);
+# On remplace l'appel virtuel (blrl) par un nop -> ni camera ni texte.
+#
+# Localise par signature version-independante (registres/immediats), unique dans
+# le DOL, autour de l'appel :
+#     li r4,79 ; lwz r12,0(r3) ; li r5,0 ; li r9,-1 ; lwz r12,0xC(r12) ;
+#     li r10,1 ; mtlr r12 ; blrl
+# En PAL le blrl est a 0x800B... (verifie a l'ISO) ; le dernier mot de la
+# signature EST le blrl (offset +0x1C), remplace par 0x60000000 (nop).
+# ---------------------------------------------------------------------------
+PART_COLLECT_SIG = bytes.fromhex(
+    "3880004f" "81830000" "38a00000" "3920ffff" "818c000c" "39400001" "7d8803a6" "4e800021"
+)
+PART_COLLECT_BLRL_OFF  = 0x1C
+PART_COLLECT_BLRL_WORD = 0x4E800021
+PPC_NOP                = 0x60000000
+
+
+def find_part_collect_blrl(f) -> list[tuple[int, int]]:
+    """Localise le blrl de movie(DEMOID_CollectPart). Renvoie [(adresse RAM,
+    offset ISO)] pour chaque site (normalement exactement un)."""
+    sites = []
+    sig_last = PART_COLLECT_SIG[-4:]
+    for file_off, ram_addr, size in dol_text_sections(f):
+        f.seek(file_off)
+        data = f.read(size)
+        start = 0
+        while True:
+            i = data.find(PART_COLLECT_SIG, start)
+            if i < 0:
+                break
+            start = i + 4
+            blrl_i = i + PART_COLLECT_BLRL_OFF
+            if data[blrl_i:blrl_i + 4] != sig_last:  # doit etre le blrl attendu
+                continue
+            sites.append((ram_addr + blrl_i, file_off + blrl_i))
+    return sites
+
+
+def apply_part_collect_patch(f) -> tuple[bool, object]:
+    """Neutralise (nop) le blrl du film de collecte de piece. Best-effort : ne
+    modifie rien si le site n'est pas trouve de maniere unique."""
+    sites = find_part_collect_blrl(f)
+    if len(sites) != 1:
+        return False, len(sites)
+    ram, iso_off = sites[0]
+    f.seek(iso_off)
+    f.write(struct.pack(">I", PPC_NOP))
+    return True, ram
+
+
+# ---------------------------------------------------------------------------
+# QOL : skip de la cinematique d'amelioration du vaisseau.
+#
+# Juste apres le film de collecte, PelletGoalState::init appelle
+# playerState->preloadHenkaMovie(), qui joue movie(DEMOID_ShipUpgrade*) quand le
+# vaisseau change de niveau. Cet appel `bl` est situe a +0x24 du debut de la
+# signature part-collect (verifie a l'ISO : 0x8009A870 = bl, en PAL). On le nop.
+# preloadHenkaMovie ne fait QUE jouer ce film -> aucun effet de bord.
+#
+# IMPORTANT : ce patch cherche la signature part-collect (dont le dernier mot est
+# le blrl). Il doit donc etre applique AVANT apply_part_collect_patch (qui nop le
+# blrl et casserait la signature). Le nop de +0x24 est hors signature (0x24>0x20),
+# donc part-collect trouve encore la signature ensuite.
+# ---------------------------------------------------------------------------
+PART_COLLECT_HENKA_OFF = 0x24  # bl preloadHenkaMovie(), juste apres le blrl
+
+
+def _find_part_collect_sites(f) -> list[tuple[int, int]]:
+    """Renvoie [(adresse RAM, offset ISO)] du DEBUT de la signature part-collect."""
+    sites = []
+    for file_off, ram_addr, size in dol_text_sections(f):
+        f.seek(file_off)
+        data = f.read(size)
+        start = 0
+        while True:
+            i = data.find(PART_COLLECT_SIG, start)
+            if i < 0:
+                break
+            start = i + 4
+            sites.append((ram_addr + i, file_off + i))
+    return sites
+
+
+def apply_ship_upgrade_patch(f) -> tuple[bool, object]:
+    """Neutralise (nop) l'appel a preloadHenkaMovie() -> plus de cinematique
+    d'amelioration du vaisseau. Best-effort ; verifie que la cible est bien un bl."""
+    sites = _find_part_collect_sites(f)
+    if len(sites) != 1:
+        return False, len(sites)
+    sig_ram, sig_iso = sites[0]
+    bl_iso = sig_iso + PART_COLLECT_HENKA_OFF
+    f.seek(bl_iso)
+    bl = struct.unpack(">I", f.read(4))[0]
+    if (bl >> 26) != 18 or (bl & 1) != 1:  # doit etre un bl (opcode 18, bit link)
+        return False, "not-bl"
+    f.seek(bl_iso)
+    f.write(struct.pack(">I", PPC_NOP))
+    return True, sig_ram + PART_COLLECT_HENKA_OFF
+
+
 class InvalidISOError(Exception):
     pass
 
@@ -286,11 +478,18 @@ def _verify_iso_ntsc(iso_path: str) -> None:
         find_code_cave(f)
 
 
-def patch_iso(iso_path: str, seed: str = "") -> None:
-    """Patche l'ISO. Aiguille vers le NTSC si besoin, sinon chemin PAL d'origine."""
+def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
+              skip_part_collect: bool = True, skip_ship_upgrade: bool = True) -> dict:
+    """Patche l'ISO. Aiguille vers le NTSC si besoin, sinon chemin PAL d'origine.
+
+    `disable_trip` : patch QOL anti-trebuchement (best-effort).
+    `skip_part_collect` : patch QOL skip cinematique de collecte de piece.
+    `skip_ship_upgrade` : patch QOL skip cinematique d'amelioration du vaisseau.
+    Renvoie un dict de statut (trip_patched / part_collect_patched / ship_upgrade_patched).
+    """
     if read_game_id(iso_path) == NTSC_GAME_ID:
-        return _patch_iso_ntsc(iso_path, seed)
-    return _patch_iso_pal(iso_path, seed)
+        return _patch_iso_ntsc(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade)
+    return _patch_iso_pal(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade)
 
 
 def _new_game_id(seed: str, prefix: bytes = PATCHED_GAME_ID_PREFIX) -> bytes:
@@ -298,12 +497,14 @@ def _new_game_id(seed: str, prefix: bytes = PATCHED_GAME_ID_PREFIX) -> bytes:
     return prefix + suffix
 
 
-def _patch_iso_pal(iso_path: str, seed: str = "") -> None:
+def _patch_iso_pal(iso_path: str, seed: str = "", disable_trip: bool = True,
+                   skip_part_collect: bool = True, skip_ship_upgrade: bool = True) -> dict:
     stub   = build_stub()
     branch = ppc_b(HOOK_RAM_ADDR, CAVE_RAM_ADDR)
 
     new_game_id = _new_game_id(seed, PATCHED_PREFIX_BY_VERSION[PAL_GAME_ID])
 
+    status = {"trip_patched": False, "part_collect_patched": False, "ship_upgrade_patched": False}
     with open(iso_path, "r+b") as f:
         f.seek(CAVE_ISO_OFF)
         f.write(stub)
@@ -311,11 +512,21 @@ def _patch_iso_pal(iso_path: str, seed: str = "") -> None:
         f.write(branch)
         f.seek(0)
         f.write(new_game_id)
+        if disable_trip:
+            status["trip_patched"] = apply_trip_patch(f)[0]
+        # ship-upgrade AVANT part-collect (voir note : part-collect casse la signature).
+        if skip_ship_upgrade:
+            status["ship_upgrade_patched"] = apply_ship_upgrade_patch(f)[0]
+        if skip_part_collect:
+            status["part_collect_patched"] = apply_part_collect_patch(f)[0]
+    return status
 
 
-def _patch_iso_ntsc(iso_path: str, seed: str = "") -> None:
+def _patch_iso_ntsc(iso_path: str, seed: str = "", disable_trip: bool = True,
+                    skip_part_collect: bool = True, skip_ship_upgrade: bool = True) -> dict:
     new_game_id = _new_game_id(seed, PATCHED_PREFIX_BY_VERSION[NTSC_GAME_ID])
 
+    status = {"trip_patched": False, "part_collect_patched": False, "ship_upgrade_patched": False}
     with open(iso_path, "r+b") as f:
         hook_off = ram_to_iso_offset(f, NTSC_HOOK_RAM_ADDR)
         cave_ram, cave_off = find_code_cave(f)
@@ -335,6 +546,13 @@ def _patch_iso_ntsc(iso_path: str, seed: str = "") -> None:
         f.write(branch)
         f.seek(0)
         f.write(new_game_id)
+        if disable_trip:
+            status["trip_patched"] = apply_trip_patch(f)[0]
+        if skip_ship_upgrade:
+            status["ship_upgrade_patched"] = apply_ship_upgrade_patch(f)[0]
+        if skip_part_collect:
+            status["part_collect_patched"] = apply_part_collect_patch(f)[0]
+    return status
 
 
 class P1PlayerContainer(APPlayerContainer):

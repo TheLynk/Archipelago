@@ -156,6 +156,18 @@ TRAP_ITEMS: dict[str, int] = {
     "Disbanding Trap": 71822,  # disperse l'escouade (siffle le disband)
 }
 
+# ====================================================================
+# USEFUL ITEMS
+# ====================================================================
+# Items "Useful" (amelioration). Appliques en jeu par le client.
+USEFUL_ITEMS: dict[str, int] = {
+    # Desactive definitivement le trebuchement des Pikmin quand recu.
+    # Utilise uniquement quand l'option Disable Pikmin Trip = "item".
+    "Trip Immunity": 71823,
+}
+
+TRIP_IMMUNITY_ITEM_ID = USEFUL_ITEMS["Trip Immunity"]
+
 # Nom de piece -> model ID (fourCC) du Pellet in-game (enum UfoPartID,
 # include/Pellet.h). Sert a retrouver le Pellet physique d'une piece dans le
 # niveau pour le faire disparaitre quand la location est validee cote serveur.

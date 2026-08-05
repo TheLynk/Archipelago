@@ -126,6 +126,7 @@ class P1World(World):
         **{name: data.ap_id for name, data in ALL_PARTS.items()},
         **FILLER_ITEMS,
         **TRAP_ITEMS,
+        **USEFUL_ITEMS,
     }
 
     item_name_groups: ClassVar[dict[str, set[str]]] = {
@@ -148,6 +149,8 @@ class P1World(World):
             return P1Item(name, ItemClassification.trap, TRAP_ITEMS[name], self.player)
         if name in FILLER_ITEMS:
             return P1Item(name, ItemClassification.filler, FILLER_ITEMS[name], self.player)
+        if name in USEFUL_ITEMS:
+            return P1Item(name, ItemClassification.useful, USEFUL_ITEMS[name], self.player)
         return P1Item(name, ItemClassification.progression, ALL_PARTS[name].ap_id, self.player)
 
     def create_event(self, name: str) -> "P1Item":
@@ -207,6 +210,12 @@ class P1World(World):
 
         for part in ALL_PARTS:
             items.append(self.create_item(part))
+
+        # Disable Pikmin Trip en mode "item" : ajoute l'upgrade Useful au pool.
+        # On l'ajoute avant le calcul des fillers pour qu'il remplace un filler
+        # (le total d'items reste egal au total de locations).
+        if self.options.disable_pikmin_trip == 2:  # option_item
+            items.append(self.create_item("Trip Immunity"))
 
         if self.options.first_part_is_local:
             self.get_location(ship_part_location_name("Main Engine")).place_locked_item(
@@ -338,7 +347,11 @@ class P1World(World):
         for field in fields(self.options):
             if field.name == "plando_items":
                 continue
-            output_data["Options"][field.name] = getattr(self.options, field.name).value
+            val = getattr(self.options, field.name).value
+            # OptionSet -> liste triee (JSON-serialisable).
+            if isinstance(val, (set, frozenset)):
+                val = sorted(val)
+            output_data["Options"][field.name] = val
 
         patch_path = os.path.join(
             output_directory,
@@ -362,6 +375,10 @@ class P1World(World):
         suffix = seed_name[-3:] if len(seed_name) >= 3 else seed_name.ljust(3, "0")
 
         return {
+            "normal_first_day":    self.options.normal_first_day.value,
+            "disable_pikmin_trip": self.options.disable_pikmin_trip.value,
+            "skip_events":         sorted(self.options.skip_events.value),
+            "always_min_one_leaf":           self.options.always_min_one_leaf.value,
             "day_cycle_mode":      self.options.day_cycle_mode.value,
             "day_cycle_min":       self.options.day_cycle_min.value,
             "day_cycle_max":       self.options.day_cycle_max.value,

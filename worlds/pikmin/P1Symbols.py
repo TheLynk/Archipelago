@@ -121,6 +121,11 @@ NAVI_CHAIN = {
     "CONTROLLER_INPUT_PRESSED": 0x28,
     "SM_STATES": 0x4,
     "SM_STATEINDEXES": 0x14,
+    # Navi.mGoalItem (_708, include/Navi.h) : GoalItem (oignon) auquel Olimar
+    # accede quand le menu de l'oignon est ouvert. Sert a savoir quel oignon le
+    # joueur a reellement utilise (et non juste croise), pour n'activer le suivi
+    # (hasContainer) que de cette couleur.
+    "NAVI_GOALITEM": 0x708,
 }
 NAVISTATE_DEAD = 29     # enum NaviStateID (include/NaviState.h) -- etat mort
 NAVISTATE_PRESSED = 7   # etat 'ecrase' : son exec() verifie la sante et transite vers Dead
@@ -189,6 +194,129 @@ TUT_PART_TEXT_RANGES = {
     "collect": 92,
     "power": 122,
 }
+
+# MessageStatus (include/zen/ogMessage.h) : etat REEL de la fenetre de texte,
+# dans ogScrMessageMgr.mState (offset MSGMGR_STATE = 0x4CC). ogScrTutorialMgr.mStatus
+# n'est qu'un miroir recalcule chaque frame depuis mState -> il faut ecrire ICI.
+# Ecrire STATE_Exiting ferme la fenetre au prochain update (comme la fin d'un texte).
+MSG_STATE_EXITING = 4
+
+# EDemoFlags de l'explication "container out/in" (texte TUT_OnyonInOut = 12,
+# "l'onion rouge t'a suivi") declenchee par Navi::demoCheck des que !isTutorial
+# (donc au 1er atterrissage avec normal_first_day). On la PRE-MARQUE "vue" pour
+# annuler le declencheur en amont : fermer la fenetre a posteriori soft-lock
+# (la demo/camera associee reste active). Aucun effet de bord (cible nullptr).
+DEMOFLAG_ONYON_MENU_INFO = 16  # DEMOFLAG_OnyonMenuInfo
+
+# Indices EDemoFlags (include/Demo.h) des cinematiques de decouverte des onions.
+DEMOFLAG_DISCOVER_ONION = {
+    "red": 0,     # DEMOFLAG_DiscoverRedOnyon
+    "yellow": 1,  # DEMOFLAG_DiscoverYellowOnyon
+    "blue": 2,    # DEMOFLAG_DiscoverBlueOnyon
+}
+
+# Indices EDemoFlags des cinematiques de premiere extraction d'une couleur de Pikmin.
+DEMOFLAG_PLUCK_PIKMIN = {
+    "red": 4,     # DEMOFLAG_PluckRedPikmin
+    "yellow": 5,  # DEMOFLAG_PluckYellowPikmin
+    "blue": 6,    # DEMOFLAG_PluckBluePikmin
+}
+
+# EDemoFlags de la 1re rentree d'un pellet dans un onion (texte TUT_Pelette = 6).
+DEMOFLAG_COLLECT_FIRST_PELLET = 10  # DEMOFLAG_CollectFirstPellet
+
+# EDemoFlags de la decouverte du Main Engine dans The Impact Site.
+DEMOFLAG_APPROACH_ENGINE = 12  # DEMOFLAG_ApproachEngine
+
+# EDemoFlags de la COLLECTE du Main Engine (1re piece). En le marquant "vu", la
+# collecte du moteur passe par la branche "piece normale" de PelletGoalState::init
+# (dont le film movie(DEMOID_CollectPart) est deja nop-e par le patch DOL) au lieu
+# de la branche tutoriel qui joue movie(20). -> plus de cinematique pour le moteur.
+DEMOFLAG_COLLECT_ENGINE = 13  # DEMOFLAG_CollectEngine
+
+# EDemoFlags de la cinematique "10 Pikmin poussent la boite" (The Impact Site).
+DEMOFLAG_BOX_PUSH = (14, 15)  # StartBoxPush (film) + FinishBoxPush
+
+# EDemoFlags de la cinematique "Pikmin jaune rapporte une bombe" (texte
+# TUT_FoundBomb = 16), posee dans ActCrowd (aiCrowd.cpp) via DEMOFLAG_GrabFirstBomb.
+DEMOFLAG_GRAB_FIRST_BOMB = 18  # DEMOFLAG_GrabFirstBomb
+
+# EDemoFlags du texte d'explication du nectar (TUT_Mitu = 22).
+DEMOFLAG_FIRST_NECTAR = 26  # DEMOFLAG_FirstNectar
+
+# EDemoFlags du texte de 1re explosion de bombe (TUT_BombInfo = 20). Envoye
+# directement dans DemoFlags::update(). update() court-circuite via isFlag(),
+# donc pre-marquer le flag suffit a annuler le texte.
+DEMOFLAG_FIRST_BOMB_EXPLODE = 20  # DEMOFLAG_FirstBombExplode
+
+# EDemoFlags du texte de degats sur Olimar (affiche ID 24 en jeu ; le flag est
+# nomme "ORIMA DAMAGED" dans la decomp).
+DEMOFLAG_OLIMAR_LOW_HEALTH = 29  # DEMOFLAG_OlimarLowHealth
+
+# EDemoFlags du texte sur le chemin de transport bloque (TUT_Rute = 23 ;
+# flag "GURU GURU" = les Pikmin tournent en rond).
+DEMOFLAG_CARRY_PATH_BLOCKED = 28  # DEMOFLAG_CarryPathBlocked
+
+# EDemoFlags des textes "vous avez depasse 100 Pikmin" (un par zone, 21..25).
+DEMOFLAG_PIKMIN_LIMIT = (21, 22, 23, 24, 25)
+
+# EDemoFlags du texte d'info affiche au 1er midi (TUT_InfoDisplay = 31),
+# declenche dans GameCoreSection::update gardé par !isFlag(DEMOFLAG_FirstNoon).
+DEMOFLAG_FIRST_NOON = 31  # DEMOFLAG_FirstNoon
+
+# Adresse de la constante flottante 0.9999f du test de trebuchement
+# (ActCrowd::exec : `getRand(1.0f) >= 0.9999f`), en .sdata2, par version.
+# Mode "item" de Disable Pikmin Trip : a la reception de l'item, le client ecrit
+# 2.0f ici. getRand(1.0f) renvoie [0,1[ -> la condition n'est jamais vraie -> plus
+# de trip. C'est une DONNEE (pas du code) : le JIT de Dolphin la relit a chaque
+# execution, contrairement a une reecriture de code a chaud qui reste sans effet.
+# Cette copie de 0.9999 n'est utilisee QUE par le test de trip (les autres tests
+# 0.9999 du jeu utilisent d'autres copies .sdata2). PAL verifie a l'ISO ; NTSC
+# absent (adresse a deriver d'une ISO NTSC) -> mode item non applique en NTSC.
+SYM_TRIP_RAND_CONST = {
+    b"GPIP01": 0x803EE264,
+}
+TRIP_DISABLED_FLOAT = 2.0  # ecrit a la place de 0.9999 pour annuler le trip
+
+# ---------------------------------------------------------------------------
+# OptionSet "skip_events" : cle lisible -> indices EDemoFlags a pre-marquer.
+# Une cle presente dans l'OptionSet du joueur = cette cinematique / ce texte est
+# saute (le client pre-marque les DemoFlags correspondants).
+#   - "Onion Discovery" declenche aussi la reparation suivi/affichage d'onion
+#     (voir handle_qol_skip_cutscenes).
+#   - "Part Collection" implique EN PLUS le patch DOL du film de collecte.
+#   - "Ship Upgrade" est un patch DOL uniquement (aucun DemoFlag) -> pas ici.
+# ---------------------------------------------------------------------------
+SKIP_EVENT_DEMOFLAGS = {
+    # --- Cinematiques ---
+    "Onion Discovery":       tuple(DEMOFLAG_DISCOVER_ONION.values()),
+    "New Pikmin":            tuple(DEMOFLAG_PLUCK_PIKMIN.values()),
+    "Main Engine Discovery": (DEMOFLAG_APPROACH_ENGINE,),
+    "First Pellet":          (DEMOFLAG_COLLECT_FIRST_PELLET,),
+    "Part Collection":       (DEMOFLAG_COLLECT_ENGINE,),  # + patch DOL
+    "Box Push":              tuple(DEMOFLAG_BOX_PUSH),
+    "First Bomb":            (DEMOFLAG_GRAB_FIRST_BOMB,),
+    # --- Textes ---
+    "Pikmin Limit":          tuple(DEMOFLAG_PIKMIN_LIMIT),
+    "Bomb Explosion":        (DEMOFLAG_FIRST_BOMB_EXPLODE,),
+    "Olimar Damage":         (DEMOFLAG_OLIMAR_LOW_HEALTH,),
+    "Carry Path":            (DEMOFLAG_CARRY_PATH_BLOCKED,),
+    "First Noon":            (DEMOFLAG_FIRST_NOON,),
+    "Onion Followed":        (DEMOFLAG_ONYON_MENU_INFO,),
+    "Nectar":                (DEMOFLAG_FIRST_NECTAR,),
+}
+# Toutes les cles valides de l'OptionSet (DemoFlags + "Ship Upgrade" DOL-only).
+SKIP_EVENT_ALL_KEYS = tuple(SKIP_EVENT_DEMOFLAGS.keys()) + ("Ship Upgrade",)
+
+# PlayerState.mContainerFlag (offset 0x184) : octet 00 yyy xxx.
+#   x (bits 0..2) = hasContainer(couleur) : l'oignon est possede et suit entre zones.
+#       bit = 1 << indexCouleur (Blue=0, Red=1, Yellow=2).
+#   y (bits 3..5) = hasBootContainer(couleur) : l'oignon est "demarre" (actif).
+#       bit = 1 << (indexCouleur + 3).
+# Sauter la cinematique de decouverte prive le jeu de ces mises a jour : on les
+# reproduit (boot pour activer, container pour le suivi entre journees/zones).
+CONTAINER_COLOR_BIT = {"blue": 0x01, "red": 0x02, "yellow": 0x04}  # hasContainer (x)
+CONTAINER_BOOT_ALL = 0x38  # tous les bits hasBootContainer (y), bits 3/4/5
 
 # enum UfoPartIndex (include/Pellet.h) -> nom de piece dans ALL_PARTS.
 # L'index lu dans gameflow.mShipTextPartID indexe directement cette liste.
@@ -303,7 +431,22 @@ PLAYERSTATE_OFFSETS = {
     "mCurrParts": 0x17C,
     "mRequiredUfoPartCount": 0x180,
     "mContainerFlag": 0x184,
+    # PlayerState.mDemoFlags (_54) est un DemoFlags ; son champ mStoredFlags (_08)
+    # est un pointeur vers u8[32] (bitset des cinematiques deja vues, indexe par
+    # EDemoFlags). Offset du POINTEUR dans PlayerState : 0x54 + 0x08 = 0x5C.
+    # Marquer un bit = la cinematique correspondante ne se joue plus (le jeu voit
+    # isFlag()==true). include/Demo.h + include/PlayerState.h.
+    "mDemoFlagsStoredPtr": 0x5C,
+    # bool PlayerState.mIsTutorialMode (_185, include/PlayerState.h). isTutorial()
+    # le renvoie tel quel. TRUE => jour 1 special : intro du crash (DEMOID_OlimarWakeUp),
+    # horloge figee et pop-ups de tutoriel. Le forcer a 0 rend le jour 1 classique.
+    "mIsTutorialMode": 0x185,
     "mStagePartsCollected": 0x187,
+    # u8 PlayerState.mDisplayPikiFlag (_1AC) : bit (1<<couleur) par couleur dont le
+    # compteur de Pikmin s'affiche (HUD, carte du monde, resume de fin de journee).
+    # Pose par setDisplayPikiCount(). Sauter la decouverte d'onion le laissait a 0
+    # pour bleu/jaune -> onions possedes non affiches dans les menus.
+    "mDisplayPikiFlag": 0x1AC,
     "mLivingPikiNum": 0x1A8,
     "mPartsCollectedByDay": 0x18,
 }

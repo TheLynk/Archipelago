@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from Options import DefaultOnToggle, Toggle, Range, Choice, PerGameCommonOptions
+from Options import DefaultOnToggle, Toggle, Range, Choice, OptionSet, PerGameCommonOptions
+from .P1Symbols import SKIP_EVENT_ALL_KEYS
 
 
 # ====================================================================
@@ -240,6 +241,84 @@ class WeightDisbandingTrap(Range):
 
 # ====================================================================
 # QUALITY OF LIFE (QOL)
+# NORMAL FIRST DAY
+# ====================================================================
+
+class NormalFirstDay(DefaultOnToggle):
+    """
+    Play the very first day like any other day.
+
+    Normally the first day is a tutorial: it opens with Olimar's long
+    crash-landing cutscene, the day timer stays frozen, and pop-up tips keep
+    interrupting you. Turn this on and the first day behaves like a normal one:
+    no crash cutscene, the clock runs, and the tutorial pop-ups are skipped.
+    """
+    display_name = "Normal First Day"
+
+
+class DisablePikminTrip(Choice):
+    """
+    Pikmin sometimes stumble and fall flat on their face while walking behind
+    you, and stay down for a few seconds. This lets you turn that off.
+
+    off    - Pikmin can trip, just like in the original game.
+    always - Pikmin never trip, right from the start.
+    item   - Pikmin can trip until you find the "Trip Immunity" item somewhere in
+             the multiworld; once you get it, they never trip again. This adds one
+             extra useful item to the pool.
+    """
+    display_name = "Disable Pikmin Trip"
+    option_off    = 0
+    option_always = 1
+    option_item   = 2
+    default = 1
+
+
+class SkipEvents(OptionSet):
+    """
+    Choose which one-time cutscenes and tutorial messages to skip. List only the
+    entries you want skipped (default: all of them). Remove an entry to keep it.
+
+    Cutscenes:
+      Onion Discovery       : short cutscene the first time you meet each Onion (red/yellow/blue).
+      New Pikmin            : cutscene the first time you pluck a new colour of Pikmin from the ground.
+      Main Engine Discovery : cutscene when you first find the Main Engine in The Impact Site.
+      First Pellet          : cutscene the first time a pellet is carried into an Onion.
+      Part Collection       : cutscene when Pikmin bring a ship part to the ship (camera, absorption
+                              and its description text), plus the Main Engine's version. Ship-part
+                              hints (on approach) are NOT affected. [ISO DOL patch: re-patch needed.]
+      Ship Upgrade          : cutscene when the ship upgrades and a new area unlocks.
+                              [ISO DOL patch: re-patch needed.]
+      Box Push              : cutscene the first time your Pikmin push the big box (The Impact Site).
+      First Bomb            : cutscene the first time a Yellow Pikmin brings back a bomb-rock.
+
+    Tutorial messages:
+      Pikmin Limit   : message the first time you exceed 100 Pikmin on the field.
+      Bomb Explosion : message the first time a bomb-rock explodes.
+      Olimar Damage  : message the first time Olimar takes damage.
+      Carry Path     : message when your Pikmin can't find a path to carry an object.
+      First Noon     : info message shown at noon on the first day.
+      Onion Followed : message where Olimar notes the red Onion followed him (first landing).
+      Nectar         : message explaining nectar the first time a Pikmin drinks some.
+
+    Most entries are applied live by the client; "Part Collection" and
+    "Ship Upgrade" are baked into the ISO at patch time (re-patch to change them).
+    """
+    display_name = "Skip Cutscenes and Messages"
+    valid_keys = set(SKIP_EVENT_ALL_KEYS)
+    default = set(SKIP_EVENT_ALL_KEYS)
+
+
+class AlwaysMinOneLeaf(DefaultOnToggle):
+    """
+    Always keep at least one leaf-stage Pikmin of each colour around. This skips
+    the "new sprouts" cutscene that plays at the start of a day when an Onion
+    grows fresh Pikmin.
+    """
+    display_name = "Always Keep One Leaf Pikmin"
+
+
+# ====================================================================
 # DAY CYCLE MODE
 # ====================================================================
 
@@ -383,6 +462,13 @@ class P1Options(PerGameCommonOptions):
     death_link: DeathLink
     pikmin_death_amount: PikminDeathAmount
 # QUALITY OF LIFE (QOL)
+# - NORMAL FIRST DAY
+    normal_first_day: NormalFirstDay
+# - DISABLE PIKMIN TRIP
+    disable_pikmin_trip: DisablePikminTrip
+# - CUTSCENE / TEXT SKIPS (fusionnes en un seul OptionSet)
+    skip_events: SkipEvents
+    always_min_one_leaf: AlwaysMinOneLeaf
 # - DAY CYCLE MODE
     day_cycle_mode: DayCycleMode
     day_cycle_min: DayCycleMin

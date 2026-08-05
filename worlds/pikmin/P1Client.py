@@ -29,6 +29,11 @@ from .P1Symbols import (
     SYM_TUTORIAL_WINDOW_PTR,
     TUTORIAL_TEXT_CHAIN,
     TUT_PART_TEXT_RANGES,
+    SKIP_EVENT_DEMOFLAGS,
+    SYM_TRIP_RAND_CONST,
+    TRIP_DISABLED_FLOAT,
+    CONTAINER_COLOR_BIT,
+    CONTAINER_BOOT_ALL,
     SECTION_ONE_PLAYER,
     ONEPLAYER_NEW_PIKI_GAME,
     ONEPLAYER_MAP_SELECT,
@@ -479,11 +484,40 @@ def apply_time_trap(game: Game) -> bool:
 
 
 def apply_end_day_trap(game: Game) -> bool:
-    """Force la fin de la journee : le jeu traite mIsDayEndTriggered au frame suivant."""
+    """Force la fin de la journee : ecrit gameflow.mIsDayEndTriggered.
+
+    La sequence de fin de journee (OnePlayerSection) consomme ce flag "hors menu"
+    et demarre la cinematique de fin de journee via gameflow.mGameInterface. Si on
+    arme le flag a un mauvais moment, le consommateur deref un pointeur nul et lit
+    a l'offset +0xEC (crash "Invalid read from 0x000000ec", menu de fin de journee
+    qui ne s'affiche plus). Deux cas dangereux :
+      - la fin de journee est deja active ou en attente (coucher de soleil, mort
+        d'Olimar, ou un End Day Trap precedent pas encore consomme) ;
+      - mGameInterface est nul (transition de section en cours).
+    On n'arme donc le flag que dans un etat stable ; sinon on renvoie False et le
+    trap reste en attente pour se rejouer a la prochaine journee propre.
+
+    Offsets deduits de include/gameflow.h autour de mCurrGameSectionID (_1EC) :
+      _1E4 s16 mIsDayEndActive           = DAY_END_TRIGGERED - 2
+      _1E6 s16 mIsDayEndTriggered        = DAY_END_TRIGGERED
+      _1E8 GameInterface* mGameInterface = GAME_SECTION - 4
+    """
     gf = SYM_GAMEFLOW.get(game)
     if not gf:
         return False
+    day_end_active = gf["DAY_END_TRIGGERED"] - 2
+    game_interface_ptr = gf["GAME_SECTION"] - 4
     try:
+        # Fin de journee deja active ou deja armee : ne pas re-declencher.
+        if struct.unpack(">h", dme.read_bytes(day_end_active, 2))[0] != 0:
+            return False
+        if struct.unpack(">h", dme.read_bytes(gf["DAY_END_TRIGGERED"], 2))[0] != 0:
+            return False
+        # mGameInterface doit pointer sur un objet valide : c'est lui que la
+        # cinematique de fin de journee deref (source directe du crash +0xEC).
+        gi = struct.unpack(">I", dme.read_bytes(game_interface_ptr, 4))[0]
+        if not (_RAM_MIN <= gi < _RAM_MAX):
+            return False
         dme.write_bytes(gf["DAY_END_TRIGGERED"], struct.pack(">h", 1))
         return True
     except Exception:
@@ -1161,6 +1195,10 @@ class P1Context(CommonContext):
         # que les transitions (chargement / retour au titre), pas chaque tick.
         self._save_was_loaded: bool = False
 
+        # QOL Disable Pikmin Trip mode 'item' : le patch RAM du trebuchement
+        # n'est applique qu'une fois, une fois l'item 'Trip Immunity' recu.
+        self._trip_ram_patched: bool = False
+
         # --- DeathLink / TrapLink ---
         # Configures depuis slot_data a la connexion.
         self.death_link_mode: int = 0        # 0=off, 1=classic, 2=pikmin, 3=both
@@ -1192,6 +1230,14 @@ class P1Context(CommonContext):
         self.pending_trap_links: list = []
         # Traps recus en tant qu'items AP, deja appliques : {item_id: nb}.
         self.traps_applied: dict[int, int] = {}
+        # Apres un End Day Trap : on suspend TOUTE application de trap jusqu'au
+        # debut de la prochaine journee. Deux End Day Trap enchaines renvoyaient
+        # le jeu au menu principal sans sauvegarde ; ce verrou l'empeche.
+        self._traps_suspended_until_next_day: bool = False
+        # Delai de grace en debut de journee : on saute quelques ticks de gameplay
+        # actif avant d'appliquer un trap, pour ne pas en gaspiller un juste apres
+        # l'atterrissage (Olimar pas encore vraiment operationnel).
+        self._trap_grace_ticks: int = 0
         # Suivi de transition pour reinitialiser l'etat DeathLink par journee.
         self._save_was_loaded_prev_death: bool = False
 
@@ -1854,6 +1900,17 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
     if not is_day_active(game) or _resolve_olimar(game) is None:
         return
 
+    # Verrou post-End-Day-Trap : aucun trap tant que la prochaine journee n'a pas
+    # commence (leve au front montant de "dans un niveau", cf. dolphin_loop).
+    if ctx._traps_suspended_until_next_day:
+        return
+
+    # Delai de grace en tout debut de journee (gameplay actif) : evite de gaspiller
+    # un trap juste apres l'atterrissage.
+    if ctx._trap_grace_ticks > 0:
+        ctx._trap_grace_ticks -= 1
+        return
+
     # 1) Traps recus comme items AP.
     for item in ctx.items_received:
         item_id = item.item
@@ -1873,6 +1930,11 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
             # TrapLink : diffuser le trap qu'on vient de subir aux autres.
             if ctx.trap_link_enabled:
                 await ctx.send_trap_link(name)
+            # End Day Trap : la journee va se terminer ; on gele les traps
+            # jusqu'a la prochaine pour ne pas en appliquer un 2e dans la fenetre
+            # de fin de journee (ce qui renvoyait au menu sans sauvegarde).
+            if kind == "end_day":
+                ctx._traps_suspended_until_next_day = True
             return  # un seul trap par tick
 
     # 2) Traps recus via TrapLink (transitoires).
@@ -1886,6 +1948,8 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
             ctx.pending_trap_links.pop(0)
             if ctx.debug_trap:
                 logger.info(f"[DEBUG TRAP] TrapLink trap applied: {name}")
+            if kind == "end_day":
+                ctx._traps_suspended_until_next_day = True
         # sinon : pas applicable maintenant, on retentera au prochain tick.
 
 
@@ -2245,6 +2309,190 @@ async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
             dme.write_byte(DAY_NUMBER[game], new_day)
         except Exception:
             pass
+
+
+async def handle_qol_first_day(ctx: P1Context, game: Game) -> None:
+    """QOL 'Normal First Day' : efface PlayerState.mIsTutorialMode.
+
+    Tant que ce flag vaut 1, le jeu traite le jour 1 comme un tutoriel : intro du
+    crash (DEMOID_OlimarWakeUp au lieu de l'atterrissage normal), horloge figee et
+    pop-ups scriptes. Le forcer a 0 des qu'une sauvegarde est chargee rend le jour 1
+    classique. Le jour 1 charge le niveau sans passer par la carte du monde, donc on
+    l'efface a chaque tick (tres tot) et on continue de le corriger si l'intro est
+    passee avant notre premier tick.
+    """
+    slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+    if not slot_data.get("normal_first_day", 1):
+        return
+
+    ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ptr is None:
+        return
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
+    except Exception:
+        return
+    if not (_RAM_MIN <= ps < _RAM_MAX):
+        return
+
+    addr = ps + PLAYERSTATE_OFFSETS["mIsTutorialMode"]
+    try:
+        if dme.read_byte(addr) != 0:
+            dme.write_byte(addr, 0)
+    except Exception:
+        pass
+
+
+def _set_demo_flags(stored: int, indices) -> None:
+    """Marque une liste d'index EDemoFlags comme deja vus dans le bitset RAM."""
+    for idx in indices:
+        byte_addr = stored + (idx >> 3)
+        cur = dme.read_byte(byte_addr)
+        bit = 1 << (idx & 7)
+        if not (cur & bit):
+            dme.write_byte(byte_addr, cur | bit)
+
+
+async def handle_qol_skip_cutscenes(ctx: P1Context, game: Game) -> None:
+    """QOL : saute les cinematiques/textes listes dans l'OptionSet 'skip_events',
+    en marquant leurs DemoFlags comme deja vus (mStoredFlags = u8[32] pointe par
+    PlayerState+0x5C ; bit du flag i = mStoredFlags[i>>3] & (1 << (i & 7))).
+
+    Cas special "Onion Discovery" : sauter la decouverte prive aussi le jeu de
+    l'activation (boot) et de l'enregistrement (suivi + affichage) de l'oignon.
+    On repare via mContainerFlag + mDisplayPikiFlag :
+      * bits boot (y) actives pour toutes les couleurs (oignon actif au spawn) ;
+      * bit suivi (x) + bit affichage active pour l'oignon reellement accede par
+        Olimar (navi->mGoalItem), pas a la simple arrivee dans la zone.
+    ("Part Collection" et "Ship Upgrade" sont des patches DOL, appliques au patch.)
+    """
+    slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+    skips = set(slot_data.get("skip_events", []))
+    if not skips:
+        return
+
+    ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ptr is None:
+        return
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
+        if not (_RAM_MIN <= ps < _RAM_MAX):
+            return
+        stored = struct.unpack(">I", dme.read_bytes(ps + PLAYERSTATE_OFFSETS["mDemoFlagsStoredPtr"], 4))[0]
+        if not (_RAM_MIN <= stored < _RAM_MAX):
+            return
+
+        # Pre-marque les DemoFlags de toutes les entrees selectionnees.
+        flags = []
+        for key in skips:
+            flags.extend(SKIP_EVENT_DEMOFLAGS.get(key, ()))
+        if flags:
+            _set_demo_flags(stored, flags)
+
+        # Reparation onion (suivi + affichage) si sa decouverte est sautee.
+        if "Onion Discovery" in skips:
+            cf_addr = ps + PLAYERSTATE_OFFSETS["mContainerFlag"]
+            cf = dme.read_byte(cf_addr)
+            new_cf = cf | CONTAINER_BOOT_ALL
+            if (new_cf & 0x07) != 0x07:  # un bit de suivi manque encore
+                navi = _resolve_olimar(game)
+                if navi:
+                    goal = struct.unpack(">I", dme.read_bytes(navi + NAVI_CHAIN["NAVI_GOALITEM"], 4))[0]
+                    # On NE pose hasContainer QUE si mGoalItem pointe vraiment sur
+                    # un onion vivant (mObjType == OBJTYPE_Goal). Un pointeur
+                    # perime donnerait une couleur erronee -> hasContainer d'une
+                    # couleur sans onion present -> null->refresh() a la fin de
+                    # journee (cinematique d'envol d'onion) -> crash.
+                    if _RAM_MIN <= goal < _RAM_MAX:
+                        objtype = int.from_bytes(
+                            dme.read_bytes(goal + ONION_CHAIN["CREATURE_OBJTYPE"], 4), "big", signed=True
+                        )
+                        if objtype == OBJTYPE_GOAL:
+                            colour = int.from_bytes(dme.read_bytes(goal + ONION_CHAIN["GOAL_COLOUR"], 2), "big")
+                            name = COLOR_BY_INDEX.get(colour)
+                            if name:
+                                new_cf |= CONTAINER_COLOR_BIT.get(name, 0)
+            if new_cf != cf:
+                dme.write_byte(cf_addr, new_cf)
+
+            # mDisplayPikiFlag doit couvrir les memes couleurs que le suivi (x),
+            # sinon les onions possedes/compteurs manquent dans la carte du monde
+            # et le resume de fin de journee. Bits identiques (1<<couleur).
+            owned = new_cf & 0x07
+            df_addr = ps + PLAYERSTATE_OFFSETS["mDisplayPikiFlag"]
+            df = dme.read_byte(df_addr)
+            if (df | owned) != df:
+                dme.write_byte(df_addr, df | owned)
+    except Exception:
+        pass
+
+
+async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
+    """QOL 'Always Keep One Leaf Pikmin' : garde >=1 Pikmin Leaf, UNIQUEMENT pour
+    les couleurs reellement possedees (hasContainer). Forcer une couleur non
+    possedee creait des Pikmin fantomes sans onion associe -> la sequence de fin
+    de journee (cinematique d'envol par onion + resultats) plantait sur un
+    pointeur nul. Skip la cinematique de nouvelle pousse en debut de journee.
+    """
+    slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+    if not slot_data.get("always_min_one_leaf", 1):
+        return
+
+    stage = SYM_ONION_STAGE_ADDRS.get(game)
+    if not stage:
+        return
+    ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ptr is None:
+        return
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
+        if not (_RAM_MIN <= ps < _RAM_MAX):
+            return
+        owned = dme.read_byte(ps + PLAYERSTATE_OFFSETS["mContainerFlag"]) & 0x07
+    except Exception:
+        return
+
+    for color in ("red", "yellow", "blue"):
+        if not (owned & CONTAINER_COLOR_BIT.get(color, 0)):
+            continue  # couleur non possedee -> pas de Pikmin fantome
+        addr = stage.get(color, {}).get("leaf")
+        if addr is None:
+            continue
+        try:
+            cur = struct.unpack(">I", dme.read_bytes(addr, 4))[0]
+            if cur == 0:
+                dme.write_bytes(addr, struct.pack(">I", 1))
+        except Exception:
+            pass
+
+
+async def handle_qol_trip_item(ctx: P1Context, game: Game) -> None:
+    """QOL Disable Pikmin Trip en mode 'item' : quand l'item 'Trip Immunity' est
+    recu, ecrit 2.0f a la place de la constante 0.9999f du test de trip. getRand
+    renvoie [0,1[ -> la condition n'est jamais vraie -> plus de trip.
+
+    On ecrit une DONNEE (pas du code) : le JIT de Dolphin la relit a chaque
+    execution. Une reecriture de code a chaud (bne->b), elle, restait sans effet
+    car Dolphin ne recompile pas un bloc deja JIT-e. On re-verifie/reapplique
+    chaque tick (bon marche) pour survivre a un rechargement de la .sdata2."""
+    slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
+    if int(slot_data.get("disable_pikmin_trip", 1)) != 2:  # option_item
+        return
+    if not any(it.item == TRIP_IMMUNITY_ITEM_ID for it in ctx.items_received):
+        return
+
+    addr = SYM_TRIP_RAND_CONST.get(game)
+    if addr is None:
+        return  # version sans adresse connue (NTSC) : non applique
+    want = struct.pack(">f", TRIP_DISABLED_FLOAT)
+    try:
+        if dme.read_bytes(addr, 4) != want:
+            dme.write_bytes(addr, want)
+            if not getattr(ctx, "_trip_ram_patched", False):
+                ctx._trip_ram_patched = True
+                logger.info(f"[Pikmin] Trip Immunity applique (constante @ 0x{addr:08X}).")
+    except Exception:
+        pass
 
 
 def build_hint_bytes(ctx: P1Context, part_name: str, hint_mode: int) -> bytes:
@@ -2628,6 +2876,10 @@ async def dolphin_loop(ctx: P1Context):
             ctx._suppress_orima_send = False
             ctx._deathlink_locked_this_day = False
             ctx._pending_self_kill = False
+            # Nouvelle journee : on leve le verrou pose par un End Day Trap et on
+            # arme un court delai de grace avant de reappliquer des traps.
+            ctx._traps_suspended_until_next_day = False
+            ctx._trap_grace_ticks = 3
         ctx._in_level_prev = in_level
         ctx._save_was_loaded_prev_death = save_active
 
@@ -2636,9 +2888,12 @@ async def dolphin_loop(ctx: P1Context):
         in_level_handlers = (handle_parts, handle_pikmin_locations, handle_death_link, handle_traps)
         # Handlers actifs aussi sur la carte du monde : reception d'objets
         # (persistee via STAGE) et deblocage des zones (visible sur la carte).
-        save_active_handlers = (handle_pikmin_items, handle_areas)
+        save_active_handlers = (handle_pikmin_items, handle_areas,
+                                handle_qol_skip_cutscenes,
+                                handle_qol_min_leaf)
         # Handlers cosmetiques/mecaniques : tournent toujours (gardes internes).
-        always_handlers = (handle_day_cycle, handle_ship_part_hints)
+        always_handlers = (handle_qol_first_day, handle_qol_trip_item,
+                           handle_day_cycle, handle_ship_part_hints)
 
         handlers = list(always_handlers)
         if save_active:
@@ -2833,25 +3088,57 @@ def _handle_patch(appik1_path: str) -> None:
         Utils.messagebox("Cannot Patch Pikmin 1", f"Could not copy ISO:\n{e}", error=True)
         return
 
-    # Read seed from .appik1
+    # Read seed + options from .appik1
     seed = ""
+    disable_trip = True
+    skip_part_collect = True
+    skip_ship_upgrade = True
     try:
         import zipfile, json
         with zipfile.ZipFile(appik1_path, "r") as zf:
             with zf.open("patch.appik1") as f:
                 data = json.load(f)
                 seed = str(data.get("Seed", ""))
+                opts = data.get("Options", {})
+                # Disable Pikmin Trip : 0=off, 1=patch (DOL), 2=item (runtime).
+                # On ne grave le patch DOL QUE pour le mode "patch".
+                trip_mode = int(opts.get("disable_pikmin_trip", 1))
+                disable_trip = (trip_mode == 1)
+                # Skips fusionnes dans l'OptionSet skip_events (liste JSON).
+                skips = set(opts.get("skip_events", []))
+                skip_part_collect = "Part Collection" in skips
+                skip_ship_upgrade = "Ship Upgrade" in skips
     except Exception as e:
-        logger.warning(f"[Pikmin] Could not read seed from .appik1: {e}")
+        logger.warning(f"[Pikmin] Could not read seed/options from .appik1: {e}")
 
     # Verify and patch the copy
     try:
         verify_iso(output_iso)
-        patch_iso(output_iso, seed=seed)
+        status = patch_iso(output_iso, seed=seed, disable_trip=disable_trip,
+                           skip_part_collect=skip_part_collect,
+                           skip_ship_upgrade=skip_ship_upgrade) or {}
         logger.info(f"[Pikmin] ISO patched successfully: {output_iso}")
+        trip_line = ""
+        if disable_trip:
+            trip_line = ("\n\nDisable Pikmin Trip: applied."
+                         if status.get("trip_patched")
+                         else "\n\nDisable Pikmin Trip: could NOT be applied "
+                              "(trip code not located in this ISO revision).")
+        pc_line = ""
+        if skip_part_collect:
+            pc_line = ("\n\nSkip Part Collection Cutscene: applied."
+                       if status.get("part_collect_patched")
+                       else "\n\nSkip Part Collection Cutscene: could NOT be applied "
+                            "(code not located in this ISO revision).")
+        su_line = ""
+        if skip_ship_upgrade:
+            su_line = ("\n\nSkip Ship Upgrade Cutscene: applied."
+                       if status.get("ship_upgrade_patched")
+                       else "\n\nSkip Ship Upgrade Cutscene: could NOT be applied "
+                            "(code not located in this ISO revision).")
         Utils.messagebox(
             "Pikmin 1 Patched",
-            f"Patched ISO created successfully!\n{output_iso}"
+            f"Patched ISO created successfully!\n{output_iso}{trip_line}{pc_line}{su_line}"
         )
     except InvalidISOError as e:
         logger.error(f"[Pikmin] ISO verification failed: {e}")
