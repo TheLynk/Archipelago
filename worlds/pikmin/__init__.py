@@ -389,6 +389,8 @@ class P1World(World):
             "death_link":          self.options.death_link.value,
             "pikmin_death_amount": self.options.pikmin_death_amount.value,
             "trap_link":           self.options.trap_link.value,
+            "trap_link_conversion": self.options.trap_link_conversion.value,
+            "trap_link_conversion_traps": sorted(self.options.trap_link_conversion_traps.value),
         }
 
     def post_fill(self) -> None:

@@ -198,6 +198,44 @@ class TrapLink(Toggle):
     display_name = "Trap Link"
 
 
+# Noms d'affichage des traps Pikmin (doivent correspondre a TRAP_KINDS/TRAP_ITEMS).
+TRAP_LINK_TRAP_NAMES = (
+    "Time Trap",
+    "End Day Trap",
+    "Damage Trap",
+    "Teleport Trap",
+    "Disbanding Trap",
+)
+
+
+class TrapLinkConversion(DefaultOnToggle):
+    """
+    TrapLink is cross-game: a trap sent by another game usually has a name Pikmin
+    doesn't know (e.g. a Hollow Knight trap). By default such unknown traps are
+    "converted" into a random Pikmin trap so you still receive something.
+
+    Turn this OFF to ignore any unknown/foreign trap instead: you then only ever
+    receive traps whose name matches a real Pikmin trap (i.e. from other Pikmin
+    players). Traps you send out are unaffected.
+    """
+    display_name = "Trap Link Conversion"
+
+
+class TrapLinkConversionTraps(OptionSet):
+    """
+    When Trap Link Conversion is ON, restrict which Pikmin traps an unknown/foreign
+    trap can be converted into. List only the traps you are willing to receive from
+    conversion (default: all of them). Has no effect if conversion is OFF, and does
+    not affect traps that already match a Pikmin trap name.
+
+    Valid entries: Time Trap, End Day Trap, Damage Trap, Teleport Trap,
+    Disbanding Trap.
+    """
+    display_name = "Trap Link Conversion Allowed Traps"
+    valid_keys = set(TRAP_LINK_TRAP_NAMES)
+    default = set(TRAP_LINK_TRAP_NAMES)
+
+
 # Weight (relative likelihood) of each trap type when traps are enabled.
 class WeightTimeTrap(Range):
     """Weight for Time Trap items (reduces remaining day time)."""
@@ -453,6 +491,8 @@ class P1Options(PerGameCommonOptions):
 # TRAP
     trap_percentage: TrapPercentage
     trap_link: TrapLink
+    trap_link_conversion: TrapLinkConversion
+    trap_link_conversion_traps: TrapLinkConversionTraps
     weight_time_trap: WeightTimeTrap
     weight_end_day_trap: WeightEndDayTrap
     weight_damage_trap: WeightDamageTrap

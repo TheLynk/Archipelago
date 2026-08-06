@@ -1204,6 +1204,12 @@ class P1Context(CommonContext):
         self.death_link_mode: int = 0        # 0=off, 1=classic, 2=pikmin, 3=both
         self.pikmin_death_amount: int = 10
         self.trap_link_enabled: bool = False
+        # Conversion des traps TrapLink inter-jeux inconnus : True = un trap
+        # inconnu (d'un autre jeu) est converti en trap Pikmin aleatoire ; False =
+        # il est ignore. `trap_link_conversion_traps` restreint le pool de traps
+        # Pikmin utilisables pour la conversion (vide = tous).
+        self.trap_link_conversion: bool = True
+        self.trap_link_conversion_traps: list = []
         # Detection cote envoi.
         self._orima_was_dead: bool = False   # etat mort au tick precedent (front montant)
         # deadPikis est deja remis a zero par le jeu a chaque journee ; on suit
@@ -1344,6 +1350,12 @@ class P1Context(CommonContext):
             self.death_link_mode = int(self.slot_data.get("death_link", 0))
             self.pikmin_death_amount = max(1, int(self.slot_data.get("pikmin_death_amount", 10)))
             self.trap_link_enabled = bool(self.slot_data.get("trap_link", 0))
+            # Conversion des traps inter-jeux inconnus (defaut : activee).
+            self.trap_link_conversion = bool(self.slot_data.get("trap_link_conversion", 1))
+            # Pool de traps autorises pour la conversion : on ne garde que des
+            # noms de traps Pikmin valides ; vide -> tous.
+            allowed = self.slot_data.get("trap_link_conversion_traps", []) or []
+            self.trap_link_conversion_traps = [n for n in allowed if n in TRAP_KINDS]
             self._orima_was_dead = False
             self._dead_pikis_baseline = None
             self._dead_pikis_sent = 0
@@ -1421,15 +1433,27 @@ class P1Context(CommonContext):
                 elif source == mine:
                     if self.debug_trap:
                         logger.info("[TrapLink] Ignored: this is our own broadcast.")
-                else:
+                elif trap_name not in TRAP_KINDS:
                     # TrapLink est INTER-JEUX : le nom vient du jeu emetteur. Si on
-                    # ne le connait pas (ex. un trap de Hollow Knight), on applique
-                    # quand meme un trap Pikmin au hasard, comme le veut la
-                    # convention TrapLink.
-                    if trap_name not in TRAP_KINDS:
-                        trap_name = random.choice(list(TRAP_KINDS))
+                    # ne le connait pas (ex. un trap de Hollow Knight), soit on le
+                    # convertit en trap Pikmin aleatoire (convention TrapLink), soit
+                    # on l'ignore selon l'option `trap_link_conversion`.
+                    if not self.trap_link_conversion:
                         if self.debug_trap:
-                            logger.info(f"[TrapLink] Unknown name -> random Pikmin trap: '{trap_name}'.")
+                            logger.info(f"[TrapLink] Unknown trap '{trap_name}' ignored "
+                                        "(conversion disabled).")
+                    else:
+                        # Pool restreint par l'option (vide -> tous les traps Pikmin).
+                        pool = self.trap_link_conversion_traps or list(TRAP_KINDS)
+                        converted = random.choice(pool)
+                        if self.debug_trap:
+                            logger.info(f"[TrapLink] Unknown name -> random Pikmin trap: "
+                                        f"'{converted}' (pool={pool}).")
+                        self.queue_trap_link(converted)
+                        if self.debug_trap:
+                            logger.info(f"[TrapLink] Trap '{converted}' queued for application.")
+                else:
+                    # Nom deja connu (trap Pikmin) : applique tel quel, pas de conversion.
                     self.queue_trap_link(trap_name)
                     if self.debug_trap:
                         logger.info(f"[TrapLink] Trap '{trap_name}' queued for application.")
