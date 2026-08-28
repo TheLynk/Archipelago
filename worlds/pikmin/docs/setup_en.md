@@ -54,6 +54,12 @@ There are a few important quirks that must be observed when playing.
 | The Distant Spring | TDS |  
 | The Final Trial | TFT |  
 
+## Troubleshooting
+
+- Do not run the Archipelago Launcher or Dolphin as an administrator on Windows.
+- Ensure that you do not have any Dolphin cheats or codes enabled. Some cheats or codes can unexpectedly interfere with emulation and make troubleshooting errors difficult.
+- Ensure that Enable Emulated Memory Size Override in Dolphin (under Options > Configuration > Advanced) is disabled.
+- If the client cannot connect to Dolphin, ensure Dolphin is on the same drive as Archipelago. Having Dolphin on an external drive has reportedly caused connection issues.
 
 ## Report Bugs
 You can report any issues [here](https://github.com/TheLynk/Archipelago/issues) or to [the Pikmin 1 Archipelago server thread](https://discord.com/channels/731205301247803413/1397286080184844390).
