@@ -8,7 +8,7 @@
 - A Pikmin 1 GameCube (USA) (Rev 1) .iso file | ID : GPIE01 | SHA-1 : 23a153cb225fef488f57073e76df0de26789c218
 - Or A Pikmin 1 GameCube (PAL) .iso file | ID : GPIP01 | SHA-1 : 40c46bd6921e55558e9838930a9ffd2179802b4f
 ### Installing the APWorld
-Put the pikmin2.apworld file in the ```custom_worlds``` folder of your Archipelago installation. You can also just double-click the file to automatically install it.
+Put the pikmin.apworld file in the ```custom_worlds``` folder of your Archipelago installation. You can also just double-click the file to automatically install it.
 ### Configuring the YAML file
 #### What is a YAML file and why do I need one?
 Your YAML file contains a set of configuration options which provide the generator with information about how it should generate your game. Each player of a multiworld will provide their own YAML file. This setup allows each player to enjoy an experience customized for their taste, and different players in the same multiworld can all have different options.
