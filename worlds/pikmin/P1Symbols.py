@@ -61,6 +61,20 @@ SYM_ONION_DYN_ADDRS = {
     },
 }
 
+# allPikis__8GameStat -- total live REELLEMENT affiche au HUD (mTotalPikiNum)
+SYM_ALLPIKIS_ADDRS = {
+    b'GPIP01': {
+        "blue": 0x803D6D50,
+        "red": 0x803D6D54,
+        "yellow": 0x803D6D58,
+    },
+    b'GPIE01': {
+        "blue": 0x803D1ED0,
+        "red": 0x803D1ED4,
+        "yellow": 0x803D1ED8,
+    },
+}
+
 # pikiInfMgr.mPikiCounts[couleur][stade] (u32)
 SYM_ONION_STAGE_ADDRS = {
     b'GPIP01': {

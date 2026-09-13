@@ -20,6 +20,7 @@ from .P1Symbols import (
     SYM_GAMEFLOW,
     SYM_PIKMIN_ADDRESSES,
     SYM_ONION_DYN_ADDRS,
+    SYM_ALLPIKIS_ADDRS,
     SYM_ONION_STAGE_ADDRS,
     SYM_ITEM_MGR_PTR,
     SYM_PLAYER_STATE_PTR,
@@ -854,8 +855,20 @@ def _encode_hint(text: str) -> bytes:
 # Sert au check de locations.
 PIKMIN_ADDRESSES = SYM_PIKMIN_ADDRESSES
 
-# containerPikis__8GameStat -- total de Pikmin par couleur dans l'oignon.
+# GameStat::containerPikis__8GameStat -- total live par couleur (Pikmin
+# actuellement "dans un oignon"), incremente par le jeu en temps reel des
+# qu'un Piki entre/sort d'un oignon (goalItem.cpp, itemAI.cpp).
 ONION_DYN_ADDRS = SYM_ONION_DYN_ADDRS
+
+# GameStat::allPikis__8GameStat -- LE total reellement affiche au HUD
+# (bas-droite, "compteur total tout confondu") et sur l'ecran de resultats,
+# via zen::pGameInfo->mTotalPikiNum = GameStat::allPikis (gameCoreSection.cpp).
+# Recalcule uniquement quand GameStat::update() tourne (evenements de jeu
+# reels : Piki qui entre/sort d'un oignon, formation, etc., ou une fois par
+# jour au chargement du niveau) -- jamais a partir de pikiInfMgr.mPikiCounts
+# en continu. C'est pour ca qu'ecrire seulement STAGE ne change rien tant
+# que le jeu ne refait pas ce calcul lui-meme.
+GAMESTAT_ALLPIKIS_ADDRS = SYM_ALLPIKIS_ADDRS
 
 # Sentinelle de debut de journee: gameflow+0x2EC (0 au menu, non-nul en jeu).
 ONION_DYN_SENTINEL = _gf("SENTINEL")
@@ -2057,57 +2070,73 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
     in_game = (not ctx._onion_dyn_was_zero) and (current_day != 0)
 
     def add_pikmin(color: str, stage: str, amount: int) -> bool:
-        """Applique un bonus. Renvoie True seulement si l'ecriture a durablement
-        abouti ; False si on doit reessayer plus tard (item non perdu).
+        """Applique un bonus. Renvoie toujours True : le compteur persistant
+        (STAGE) est la source de verite et doit toujours etre incremente
+        immediatement, que l'oignon de cette couleur soit ou non charge en
+        memoire en ce moment (il ne l'est que si on est physiquement dans la
+        zone qui le contient — jamais sur la carte du monde, par exemple).
 
-        En jeu, l'oignon vivant (DYN) est la source de verite : le jeu recalcule
-        STAGE a partir de lui. Si l'oignon de cette couleur n'est pas encore
-        resolu (pas encore deploye dans le niveau), on NE marque PAS l'item
-        applique et on n'ecrit rien — sinon l'ecriture STAGE serait ecrasee par
-        le jeu et l'item serait perdu. C'etait la cause des Pikmin recus par
-        moments non appliques.
+        Avant ce fix, tant que l'oignon n'etait pas resolu, l'ecriture STAGE
+        elle-meme etait sautee (pas seulement la sync visuelle DYN) : le
+        bonus restait en attente indefiniment, sans jamais apparaitre dans le
+        total tant que le jeu ne le resynchronisait pas lui-meme au
+        changement de journee suivant. Le compteur affiche (HUD bas-droite,
+        ecran de resultats) semblait alors "en retard d'un jour".
+
+        La synchronisation live dans l'oignon vivant (DYN, mHeldPikis) reste
+        tentee en best-effort quand on est en jeu et que l'oignon est
+        resolu, pour un rendu instantane sans attendre le jour suivant, mais
+        son echec ne doit plus jamais empecher ni retarder l'ecriture STAGE.
         """
-        if in_game and stage in DYN_OFFSETS:
-            base = getattr(ctx, DYN_BASE_CACHE.get(color, ""), None)
-            if not base:
-                # Oignon pas encore charge : on retente la resolution.
-                base = find_onion_containers(game).get(color)
-                if base:
-                    setattr(ctx, DYN_BASE_CACHE[color], base)
-            if not base:
-                # Impossible d'appliquer durablement maintenant -> on differe.
-                if ctx.debug_pbonus:
-                    logger.info(
-                        f"[DEBUG] {color}/{stage} +{amount} deferred: onion not resolved"
-                    )
-                return False
-
-            # STAGE persistant (survit aux transitions de journee).
-            s_addr = stage_addrs[color][stage]
-            old_s = read_u32(s_addr)
-            write_u32(s_addr, old_s + amount)
-            # DYN : oignon vivant, visible immediatement.
-            d_addr = base + DYN_OFFSETS[stage]
-            old_d = read_u32(d_addr)
-            write_u32(d_addr, old_d + amount)
-            if ctx.debug_pbonus:
-                logger.info(
-                    f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount})"
-                )
-                logger.info(
-                    f"[DEBUG] DYN   0x{d_addr:08X} {color}/{stage} : {old_d} -> {old_d + amount} (+{amount})"
-                )
-            return True
-
-        # Hors journee (oignon non vivant) : on persiste dans STAGE, lu au
-        # prochain chargement de journee.
         s_addr = stage_addrs[color][stage]
         old_s = read_u32(s_addr)
         write_u32(s_addr, old_s + amount)
         if ctx.debug_pbonus:
             logger.info(
-                f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount}) [not in level]"
+                f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount})"
             )
+
+        # GameStat::containerPikis et GameStat::allPikis (par couleur, tous
+        # stades confondus) : ce sont EUX qui alimentent le total HUD affiche
+        # en temps reel (mTotalPikiNum) et l'ecran de resultats. Sans cette
+        # ecriture, le total visible n'augmente jamais sur le coup : il fallait
+        # attendre que le jeu refasse lui-meme ce calcul, ce qui n'arrive
+        # qu'au chargement du jour suivant.
+        container_addr = ONION_DYN_ADDRS.get(game, {}).get(color)
+        if container_addr is not None:
+            old_c = read_u32(container_addr)
+            write_u32(container_addr, old_c + amount)
+        allpikis_addr = GAMESTAT_ALLPIKIS_ADDRS.get(game, {}).get(color)
+        if allpikis_addr is not None:
+            old_a = read_u32(allpikis_addr)
+            write_u32(allpikis_addr, old_a + amount)
+        if ctx.debug_pbonus:
+            logger.info(
+                f"[DEBUG] LIVE TOTAL {color} : containerPikis +{amount}, allPikis +{amount}"
+            )
+
+        if in_game and stage in DYN_OFFSETS:
+            base = getattr(ctx, DYN_BASE_CACHE.get(color, ""), None)
+            if not base:
+                # Oignon pas encore charge (pas dans cette zone) : on retente
+                # la resolution, mais on ne bloque plus la-dessus.
+                base = find_onion_containers(game).get(color)
+                if base:
+                    setattr(ctx, DYN_BASE_CACHE[color], base)
+            if base:
+                d_addr = base + DYN_OFFSETS[stage]
+                old_d = read_u32(d_addr)
+                write_u32(d_addr, old_d + amount)
+                if ctx.debug_pbonus:
+                    logger.info(
+                        f"[DEBUG] DYN   0x{d_addr:08X} {color}/{stage} : {old_d} -> {old_d + amount} (+{amount})"
+                    )
+            elif ctx.debug_pbonus:
+                logger.info(
+                    f"[DEBUG] {color}/{stage} +{amount} : onion not resolved, "
+                    f"STAGE updated instantly, live DYN sync skipped this tick"
+                )
+
         return True
 
     for item in ctx.items_received:
