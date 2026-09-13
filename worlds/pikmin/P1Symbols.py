@@ -445,6 +445,11 @@ PLAYERSTATE_OFFSETS = {
     "mCurrParts": 0x17C,
     "mRequiredUfoPartCount": 0x180,
     "mContainerFlag": 0x184,
+    # Stage visuel du S.S. Dolphin (0=casse, 1..4=stages intermediaires,
+    # 5=PERFECT/repare). Distinct de mCurrParts : le jeu ne le met a jour QUE
+    # dans PlayerState::registerPart(), jamais recalcule automatiquement a
+    # partir du nombre de pieces -- il faut donc l'ecrire nous-memes.
+    "mShipUpgradeLevel": 0x10,
     # PlayerState.mDemoFlags (_54) est un DemoFlags ; son champ mStoredFlags (_08)
     # est un pointeur vers u8[32] (bitset des cinematiques deja vues, indexe par
     # EDemoFlags). Offset du POINTEUR dans PlayerState : 0x54 + 0x08 = 0x5C.

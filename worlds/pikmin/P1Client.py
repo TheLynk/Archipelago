@@ -2318,6 +2318,39 @@ async def handle_areas(ctx: P1Context, game: Game):
     dme.write_byte(COUNT_REQUIRED_PARTS[game], total_required)
     dme.write_byte(UNLOCKED_AREAS[game], areas)
 
+    # Stage visuel du S.S. Dolphin (issue #8). Le jeu ne recalcule
+    # mShipUpgradeLevel qu'a l'interieur de PlayerState::registerPart(),
+    # jamais automatiquement a partir du nombre de pieces : comme les checks
+    # AP contournent cette fonction (pieces marquees collectees directement
+    # en memoire), le vaisseau ne changeait jamais visuellement de stage.
+    # Memes seuils que le jeu (verifies dans la decomp, et deja utilises
+    # ci-dessus pour debloquer les zones).
+    if ship_parts_count >= 30:
+        ship_upgrade_level = 5   # PERFECT
+    elif ship_parts_count >= 29:
+        ship_upgrade_level = 4
+    elif ship_parts_count >= 12:
+        ship_upgrade_level = 3
+    elif ship_parts_count >= 5:
+        ship_upgrade_level = 2
+    elif ship_parts_count >= 1:
+        ship_upgrade_level = 1
+    else:
+        ship_upgrade_level = 0
+
+    ps_ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ps_ptr is not None:
+        try:
+            ps = struct.unpack(">I", dme.read_bytes(ps_ptr, 4))[0]
+            if _RAM_MIN <= ps < _RAM_MAX:
+                addr = ps + PLAYERSTATE_OFFSETS["mShipUpgradeLevel"]
+                # Jamais decroissant : ne pas retrograder le visuel si, pour
+                # une raison quelconque, ship_parts_count redescend un tick.
+                if dme.read_byte(addr) < ship_upgrade_level:
+                    dme.write_byte(addr, ship_upgrade_level)
+        except Exception as e:
+            logger.debug(f"Error writing mShipUpgradeLevel: {e}")
+
 
 async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
     """Manage the day counter based on the player's day cycle option."""
