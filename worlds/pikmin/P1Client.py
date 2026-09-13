@@ -1,8 +1,10 @@
 import asyncio
+import concurrent.futures
 import json
 import os
 import random
 import struct
+import threading
 import time
 from typing import TYPE_CHECKING, Optional
 
@@ -2756,6 +2758,36 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
                     logger.debug(f"Error writing late hint: {e}")
 
 
+def _run_in_daemon_thread(func, *args) -> "asyncio.Future":
+    """Execute func(*args) in a throwaway daemon thread and return an awaitable.
+
+    Bug fix (#2 - crash/freeze on client close): loop.run_in_executor(None, ...)
+    submits work to asyncio's default ThreadPoolExecutor. If a dolphin_memory_engine
+    call (hook()/read_bytes()) ever blocks (Dolphin unresponsive, OS hiccup, etc.),
+    the worker thread stays stuck running it. concurrent.futures registers an atexit
+    hook that joins EVERY thread it has ever spawned, even ones still blocked inside a
+    call — the asyncio.wait_for() timeout around the call only stops *waiting* for the
+    result, it does not kill the underlying thread. So on process exit (closing the
+    client window), Python can hang forever joining that stuck thread, with no error
+    message: exactly the reported freeze/crash.
+    A plain daemon thread is not tracked by concurrent.futures' shutdown machinery, so
+    the interpreter kills it instead of joining it, letting the client actually close.
+    """
+    fut: concurrent.futures.Future = concurrent.futures.Future()
+
+    def _target():
+        if fut.set_running_or_notify_cancel():
+            try:
+                result = func(*args)
+            except BaseException as e:
+                fut.set_exception(e)
+            else:
+                fut.set_result(result)
+
+    threading.Thread(target=_target, name="PikminDMEWorker", daemon=True).start()
+    return asyncio.wrap_future(fut)
+
+
 async def dolphin_loop(ctx: P1Context):
     game_version = None
 
@@ -2803,10 +2835,9 @@ async def dolphin_loop(ctx: P1Context):
                     }])
 
         try:
-            loop = asyncio.get_event_loop()
-
-            # Run blocking DME calls in an executor with a timeout so that
-            # closing Dolphin while the client is running does not freeze the process.
+            # Run blocking DME calls in a throwaway daemon thread with a timeout so
+            # that closing Dolphin OR closing the client itself never freezes the
+            # process, even if a call stays stuck (see _run_in_daemon_thread).
             def _dme_tick():
                 if not dme.is_hooked():
                     dme.hook()
@@ -2816,7 +2847,7 @@ async def dolphin_loop(ctx: P1Context):
 
             try:
                 game = await asyncio.wait_for(
-                    loop.run_in_executor(None, _dme_tick),
+                    _run_in_daemon_thread(_dme_tick),
                     timeout=3.0
                 )
             except asyncio.TimeoutError:
