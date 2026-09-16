@@ -41,7 +41,7 @@ It will output a patched version of the game to the same directory that the patc
 IF you accidentally select a bad ISO or a bad file you will have to go to your ```host.yaml``` and modify the "iso:" line in "pikmin_options"
 
 #### Step 6 (NTSC)
-Choose your PAL NTSC (which must be obtained legally) and then you will have to wait until you have the archipelago window which indicates that the patch is finished and normally the pikmin client is already opened automatically.
+Choose your NTSC ISO (which must be obtained legally) and then you will have to wait until you have the archipelago window which indicates that the patch is finished and normally the pikmin client is already opened automatically.
 It will output a patched version of the game to the same directory that the patch file is in, called ```AP_<seed>_P<slot>_<name>.iso```.
 
 IF you accidentally select a bad ISO or a bad file you will have to go to your ```host.yaml``` and modify the "iso:" line in "pikmin_options"
