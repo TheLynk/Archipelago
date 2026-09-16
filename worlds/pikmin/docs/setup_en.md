@@ -17,25 +17,42 @@ Once you've installed the apworld, you can generate a yaml using the ```Generate
 
 If the .yaml file is missing in your ```Players/Templates``` folder, then please go through the apworld installation steps again, and double check that everything was done correctly.
 
-**IMPORTANT NOTE: The .yaml file has multiple options under ```Item & Location Options```, these are all untested (except starting_items, which has been confirmed to work) and may not work as intended.**
+**IMPORTANT NOTE: The .yaml file has multiple options under ```Item & Location Options```, these are all untested and may not work as intended.**
 
-### Generating a Multiworld Game
+### Generating a Multiworld Game and Connecting Multiworld Game
 #### Step 1
 Place all of the players' ```.yaml``` files into the ```Players``` folder of your Archipelago installation (NOT the ```Players/Templates``` folder).
 #### Step 2
 Open the Archipelago Launcher (```ArchipelagoLauncher.exe```) and click the "Generate Button". If the generation succeeds, this should create a ```.zip``` archive in the ```output``` directory of your Archipelago installation.
 #### Step 3
-Unzip the archive that was just generated. There should be an ```.appik1``` file inside called ```AP_<seed>_P<slot>_<name>.appik1```. This file will be referred to as the Pikmin 1 setup file for the rest of the guide.
+Unzip the archive that has just been generated Or Download this file to the Archipelago Room that you are going to play. There should be an ```.appik1``` file inside called ```AP_<seed>_P<slot>_<name>.appik1```. This file will be referred to as the Pikmin 1 setup file for the rest of the guide.
 #### Step 4
-Open the Archipelago Launcher (```ArchipelagoLauncher.exe```) and click the "Open Patch". It will prompt you for the Pikmin 1 setup file (the ```.appik1``` file from Step 3) and the Pikmin USA .iso file or Pikmin PAL .iso file. It will output a patched version of the game to the same directory that the patch file is in, called ```AP_<seed>_P<slot>_<name>.iso```.
-#### Step 5
-Wait until you have the archipelago window which indicates that the patch is finished and normally the pikmin client is already opened automatically
-#### Step 6
-Open your dolphin and launch the patch version of pikmin 1 which will be called ```AP_<seed>_P<slot>_<name>.iso``` and connect to the server archipelago
+Open the Archipelago Launcher (```ArchipelagoLauncher.exe```) and click the "Open Patch". It will prompt you for the Pikmin 1 setup file (the ```.appik1``` file from Step 3).
+
+####  Step 5 
+a dialog box will open and ask you which version of Pikmin you are going to use. There are currently 2 choices available which are: "PAL" and "NTSC".
+
+<img width="339" height="123" alt="image" src="https://github.com/user-attachments/assets/2216a2bd-70c7-48b6-8843-b2db3225b69d" />
+
+#### Step 6 (PAL)
+Choose your PAL ISO (which must be obtained legally) and then you will have to wait until you have the archipelago window which indicates that the patch is finished and normally the pikmin client is already opened automatically.
+It will output a patched version of the game to the same directory that the patch file is in, called ```AP_<seed>_P<slot>_<name>.iso```.
+
+IF you accidentally select a bad ISO or a bad file you will have to go to your ```host.yaml``` and modify the "iso:" line in "pikmin_options"
+
+#### Step 6 (NTSC)
+Choose your PAL NTSC (which must be obtained legally) and then you will have to wait until you have the archipelago window which indicates that the patch is finished and normally the pikmin client is already opened automatically.
+It will output a patched version of the game to the same directory that the patch file is in, called ```AP_<seed>_P<slot>_<name>.iso```.
+
+IF you accidentally select a bad ISO or a bad file you will have to go to your ```host.yaml``` and modify the "iso:" line in "pikmin_options"
+
 #### Step 7
+Open your dolphin and launch the patch version of pikmin 1 which will be called ```AP_<seed>_P<slot>_<name>.iso``` and connect to the server archipelago
+
+#### Step 8
 Normally everything will be good and the reception of the objects will be fine as long as you have loaded a party or started a new one.
 
-## IMPORTANT NOTE: Be careful to have only one open dolphin
+## IMPORTANT NOTE: Be careful to have only one open dolphin AND if the pikmin client does not connect to your dolphin or does not detect it, go to the section at the bottom of this page "Troubleshooting"
 
 ## Hosting a Multiworld Game
 You can upload the generated ```.zip``` file [here](https://archipelago.gg/uploads) to launch a server.
