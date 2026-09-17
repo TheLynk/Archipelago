@@ -38,13 +38,13 @@ a dialog box will open and ask you which version of Pikmin you are going to use.
 Choose your PAL ISO (which must be obtained legally) and then you will have to wait until you have the archipelago window which indicates that the patch is finished and normally the pikmin client is already opened automatically.
 It will output a patched version of the game to the same directory that the patch file is in, called ```AP_<seed>_P<slot>_<name>.iso```.
 
-IF you accidentally select a bad ISO or a bad file you will have to go to your ```host.yaml``` and modify the "iso:" line in "pikmin_options"
+IF you accidentally select a bad ISO or a bad file you will have to go to your ```host.yaml``` and modify the "iso_file:" line in "pikmin_options"
 
 #### Step 6 (NTSC)
 Choose your NTSC ISO (which must be obtained legally) and then you will have to wait until you have the archipelago window which indicates that the patch is finished and normally the pikmin client is already opened automatically.
 It will output a patched version of the game to the same directory that the patch file is in, called ```AP_<seed>_P<slot>_<name>.iso```.
 
-IF you accidentally select a bad ISO or a bad file you will have to go to your ```host.yaml``` and modify the "iso:" line in "pikmin_options"
+IF you accidentally select a bad ISO or a bad file you will have to go to your ```host.yaml``` and modify the "iso_file_ntsc:" line in "pikmin_options"
 
 #### Step 7
 Open your dolphin and launch the patch version of pikmin 1 which will be called ```AP_<seed>_P<slot>_<name>.iso``` and connect to the server archipelago
