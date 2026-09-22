@@ -456,6 +456,31 @@ class PikminDeathAmount(Range):
     default = 20
 
 
+# ====================================================================
+# OLIMAR / PIKMIN BOND (#3)
+# ====================================================================
+
+class PikminBond(Toggle):
+    """
+    The bond between Olimar and the Pikmin: every time a Pikmin dies during the
+    day, Olimar loses some health (see Pikmin Bond Damage).
+    If his health reaches 0, Olimar goes down (and a DeathLink is sent if
+    Death Link is 'classic' or 'both').
+    """
+    display_name = "Olimar-Pikmin Bond"
+
+
+class PikminBondDamage(Range):
+    """
+    Health points (out of 100) Olimar loses for each Pikmin that dies.
+    Used when Olimar-Pikmin Bond is enabled.
+    """
+    display_name = "Pikmin Bond Damage"
+    range_start = 1
+    range_end = 100
+    default = 5
+
+
 @dataclass
 class P1Options(PerGameCommonOptions):
 # SHIP PART
@@ -501,6 +526,9 @@ class P1Options(PerGameCommonOptions):
 # DEATH LINK
     death_link: DeathLink
     pikmin_death_amount: PikminDeathAmount
+# OLIMAR / PIKMIN BOND
+    pikmin_bond: PikminBond
+    pikmin_bond_damage: PikminBondDamage
 # QUALITY OF LIFE (QOL)
 # - NORMAL FIRST DAY
     normal_first_day: NormalFirstDay

@@ -1421,6 +1421,10 @@ class P1Context(CommonContext):
         # journee) et repartir le comptage des DeathLink.
         self._dead_pikis_last: Optional[int] = None
         self._dead_pikis_sent: int = 0       # nb de DeathLink deja envoyes cette journee
+        # #3 Lien Olimar/Pikmin : PV perdus par Pikmin mort.
+        self.pikmin_bond: bool = False
+        self.pikmin_bond_damage: float = 5.0
+        self._bond_dead_last: Optional[int] = None  # reference deadPikis (par journee)
         # Reception : un DeathLink recu demande de tuer Olimar au prochain tick en jeu.
         self.pending_kill: bool = False
         # Empeche l'echo : une mort d'Olimar provoquee par un DeathLink recu ne
@@ -1567,6 +1571,13 @@ class P1Context(CommonContext):
             self._dead_pikis_baseline = None
             self._dead_pikis_sent = 0
             self.pending_kill = False
+            # #3 Lien Olimar/Pikmin
+            self.pikmin_bond = bool(self.slot_data.get("pikmin_bond", 0))
+            self.pikmin_bond_damage = float(max(1, int(self.slot_data.get("pikmin_bond_damage", 5))))
+            self._bond_dead_last = None
+            if self.pikmin_bond:
+                logger.info(f"[Pikmin] Lien Olimar/Pikmin actif "
+                            f"(-{self.pikmin_bond_damage:g} PV par Pikmin mort).")
             tags = set(self.tags)
             if self.death_link_mode != 0:
                 tags.add("DeathLink")
@@ -2270,6 +2281,58 @@ async def handle_death_link(ctx: P1Context, game: Game) -> None:
                     ctx._suppress_orima_send = True
                 else:
                     ctx._pending_self_kill = True  # Olimar pas resolvable, on reessaie
+
+
+async def handle_pikmin_bond(ctx: P1Context, game: Game) -> None:
+    """#3 Lien Olimar/Pikmin : chaque Pikmin mort retire des PV a Olimar.
+
+    Source : GameStat::deadPikis (somme des 3 couleurs, remis a zero par
+    journee). Comme pour le DeathLink "pikmin", la 1re lecture de la journee
+    sert de reference (valeur residuelle possible) ; une baisse = remise a
+    zero par le jeu -> nouvelle reference.
+
+    A 0 PV (seuil de mort du jeu : <= 1.0), on passe par kill_olimar() pour
+    declencher la VRAIE sequence de mort (ecrire mHealth seul ne suffit pas).
+    La detection DeathLink classic enverra alors un DeathLink si active.
+    Ne tourne que pendant le gameplay interactif (in_level_handlers).
+    """
+    if not ctx.pikmin_bond:
+        return
+    dead_total = read_dead_pikis_total(game)
+    if dead_total is None:
+        return
+    last = ctx._bond_dead_last
+    ctx._bond_dead_last = dead_total
+    if last is None or dead_total <= last:
+        return  # reference / remise a zero / rien de nouveau
+    if read_orima_dead(game):
+        return  # deja a terre : rien a retirer
+
+    navi = _resolve_olimar(game)
+    if navi is None:
+        # Olimar pas resolvable : on garde l'ancienne reference pour
+        # appliquer ces morts au prochain tick.
+        ctx._bond_dead_last = last
+        return
+    deaths = dead_total - last
+    loss = ctx.pikmin_bond_damage * deaths
+    addr = navi + NAVI_CHAIN["CREATURE_HEALTH"]
+    try:
+        h = struct.unpack(">f", dme.read_bytes(addr, 4))[0]
+    except Exception:
+        ctx._bond_dead_last = last
+        return
+    new = h - loss
+    if ctx.debug_trap:
+        logger.info(f"[DEBUG BOND] {deaths} Pikmin mort(s) : PV {h:.1f} -> {max(new, 0.0):.1f}")
+    if new <= 1.0:
+        # Mort d'Olimar par le lien : sequence de mort reelle du jeu.
+        kill_olimar(game)
+    else:
+        try:
+            dme.write_bytes(addr, struct.pack(">f", new))
+        except Exception as e:
+            logger.debug(f"Error writing bond damage: {e}")
 
 
 # id d'item de trap -> type interne, construit une fois.
@@ -3456,6 +3519,7 @@ async def dolphin_loop(ctx: P1Context):
             ctx._orima_was_dead = read_orima_dead(game_version)
             ctx._dead_pikis_last = None
             ctx._dead_pikis_sent = 0
+            ctx._bond_dead_last = None
             ctx._suppress_orima_send = False
             ctx._deathlink_locked_this_day = False
             ctx._pending_self_kill = False
@@ -3468,7 +3532,8 @@ async def dolphin_loop(ctx: P1Context):
 
         # Handlers qui LISENT de la memoire propre au niveau (collecte de pieces,
         # compteurs de l'escouade, DeathLink) : uniquement dans un niveau.
-        in_level_handlers = (handle_parts, handle_pikmin_locations, handle_death_link, handle_traps)
+        in_level_handlers = (handle_parts, handle_pikmin_locations, handle_pikmin_bond,
+                             handle_death_link, handle_traps)
         # Handlers actifs aussi sur la carte du monde : reception d'objets
         # (persistee via STAGE) et deblocage des zones (visible sur la carte).
         save_active_handlers = (handle_pikmin_items, handle_areas,

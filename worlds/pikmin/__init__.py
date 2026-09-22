@@ -388,6 +388,8 @@ class P1World(World):
             "game_id_suffix":      suffix,
             "death_link":          self.options.death_link.value,
             "pikmin_death_amount": self.options.pikmin_death_amount.value,
+            "pikmin_bond":         self.options.pikmin_bond.value,
+            "pikmin_bond_damage":  self.options.pikmin_bond_damage.value,
             "trap_link":           self.options.trap_link.value,
             "trap_link_conversion": self.options.trap_link_conversion.value,
             "trap_link_conversion_traps": sorted(self.options.trap_link_conversion_traps.value),
