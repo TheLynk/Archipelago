@@ -8,6 +8,9 @@ import threading
 import time
 from typing import TYPE_CHECKING, Optional
 
+import faulthandler
+import logging
+
 import dolphin_memory_engine as dme
 
 import Utils
@@ -1333,6 +1336,55 @@ class P1CommandProcessor(ClientCommandProcessor):
         return True
 
 
+# --- #2 : fermeture du client ------------------------------------------------
+
+# Delai max (s) entre le clic sur la croix (ou /exit) et la fin du processus.
+EXIT_WATCHDOG_SECONDS = 6
+_exit_watchdog_file = None
+
+
+def _arm_exit_watchdog() -> None:
+    """#2 : garantit que le processus se termine apres une demande de fermeture.
+
+    Symptome : clic sur la croix en pleine journee, connecte -> Kivy sort de sa
+    boucle ("Leaving application in progress...") puis plus rien : la fenetre
+    ne repond plus jusqu'a ce que Windows tue le processus.
+
+    faulthandler.dump_traceback_later() arme un minuteur en C, independant du
+    GIL et de la boucle asyncio : s'il n'est pas annule a temps, il ecrit la
+    pile de TOUS les threads dans le log (pour savoir ou ca bloquait) puis
+    termine le processus. Ca marche meme si le thread principal est coince
+    dans un appel C (dolphin_memory_engine, Kivy/SDL, join de thread...).
+    """
+    global _exit_watchdog_file
+    stream = None
+    for h in logging.getLogger().handlers:
+        if isinstance(h, logging.FileHandler) and getattr(h, "stream", None):
+            stream = h.stream
+            break
+    try:
+        if stream is None:
+            _exit_watchdog_file = open(Utils.user_path("logs", "PikminClient_exit_freeze.txt"), "a")
+            stream = _exit_watchdog_file
+        stream.write(f"\n[Pikmin] Fermeture demandee : si le client n'est pas ferme dans "
+                     f"{EXIT_WATCHDOG_SECONDS}s, les piles des threads sont ecrites ci-dessous "
+                     f"et le processus est termine de force.\n")
+        stream.flush()
+        faulthandler.dump_traceback_later(EXIT_WATCHDOG_SECONDS, exit=True, file=stream)
+    except Exception as e:
+        logger.debug(f"Exit watchdog not armed: {e}")
+
+
+class _P1ExitEvent(asyncio.Event):
+    """exit_event qui arme le chien de garde de fermeture (#2) des qu'il est
+    leve : par la croix de la fenetre (kvui.on_stop), /exit, ou autre."""
+
+    def set(self) -> None:
+        if not self.is_set():
+            _arm_exit_watchdog()
+        super().set()
+
+
 class P1Context(CommonContext):
     command_processor = P1CommandProcessor
     game: str = "Pikmin"
@@ -1340,6 +1392,8 @@ class P1Context(CommonContext):
 
     def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
         super().__init__(server_address, password)
+        # #2 : exit_event qui arme le chien de garde de fermeture.
+        self.exit_event = _P1ExitEvent()
         self.dolphin_status_text = "Disconnected"
 
         # Track Pikmin counts for location checking
@@ -3388,6 +3442,11 @@ async def dolphin_loop(ctx: P1Context):
         except asyncio.TimeoutError:
             pass
 
+        # #2 : ne pas enchainer un tick complet (lectures DME, handlers) quand
+        # la fermeture vient d'etre demandee.
+        if ctx.exit_event.is_set():
+            break
+
         ctx.watcher_event.clear()
 
         if ctx.needs_location_scout:
@@ -3561,6 +3620,8 @@ async def dolphin_loop(ctx: P1Context):
         # hints) arretait definitivement la detection des Pikmin, des locations,
         # du cycle de jour et des zones, sans que rien ne le signale en jeu.
         for handler in handlers:
+            if ctx.exit_event.is_set():
+                break  # #2 : fermeture demandee en cours de tick
             try:
                 await handler(ctx, game_version)
             except Exception:
@@ -3612,14 +3673,36 @@ def run_client(*args) -> None:
 
         loop_task = asyncio.create_task(dolphin_loop(ctx), name="game loop")
 
-        await loop_task
         await ctx.exit_event.wait()
-        await ctx.shutdown()
+        # #2 : chaque etape de fermeture est bornee dans le temps ; aucune ne
+        # doit pouvoir bloquer indefiniment la sortie du client.
+        try:
+            await asyncio.wait_for(loop_task, timeout=2.0)
+        except BaseException:
+            loop_task.cancel()
+        ctx.server_address = None
+        try:
+            await asyncio.wait_for(ctx.shutdown(), timeout=3.0)
+        except BaseException as e:
+            logger.debug(f"Shutdown incomplete: {e!r}")
 
     import colorama
     colorama.init()
-    asyncio.run(main())
-    colorama.deinit()
+    try:
+        asyncio.run(main())
+    finally:
+        colorama.deinit()
+        # #2 : la session AP est fermee et la sauvegarde locale (persistent
+        # storage) est ecrite de maniere synchrone a chaque changement. Sortie
+        # immediate : on ne laisse pas la finalisation de l'interpreteur (join
+        # des threads d'executor, fermeture Kivy/SDL, threads DME) bloquer la
+        # fermeture de la fenetre.
+        try:
+            faulthandler.cancel_dump_traceback_later()
+        except Exception:
+            pass
+        logging.shutdown()
+        os._exit(0)
 
 
 def _ask_target_version() -> Optional[bytes]:
