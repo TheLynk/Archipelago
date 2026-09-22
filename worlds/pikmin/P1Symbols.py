@@ -469,3 +469,33 @@ PLAYERSTATE_OFFSETS = {
     "mLivingPikiNum": 0x1A8,
     "mPartsCollectedByDay": 0x18,
 }
+
+# mapWindow -- static de fichier (zen::DrawWorldMap*) de mapSelect.cpp :
+# la carte du monde story mode. Sert a rafraichir EN PLACE les zones
+# debloquees et le compteur de pieces quand une piece arrive alors que le
+# joueur est deja sur la carte (issue #12), sans ressortir ni relancer un jour.
+SYM_MAP_WINDOW_PTR = {
+    b'GPIP01': 0x803ECA34,
+    b'GPIE01': 0x803E7B74,
+}
+# index de zone "jeu" (Impact, Forest, Navel, Spring, Final) -> index "ecran"
+# (table mapNoGame2Scr, .sdata). Verifie : Yakushima=0, Forest=1, Practice=2,
+# Cave=3, Last=4. Identique PAL/NTSC.
+MAP_GAME2SCR = (2, 1, 3, 0, 4)
+# Offsets de rafraichissement de la carte (identiques toutes versions).
+#   DrawWorldMap (include/zen/DrawWorldMap.h)
+#   WorldMapCoursePointMgr / WorldMapCoursePoint (src/plugPikiYamashita/drawWorldMap.cpp)
+WORLDMAP_CHAIN = {
+    "DWM_CURRENTMODE":    0x04,  # int DrawWorldMap.mCurrentMode (2 = Operation)
+    "DWM_COURSEPOINTMGR": 0x38,  # WorldMapCoursePointMgr*
+    "DWM_CURRPARTS":      0x40,  # int DrawWorldMap.mCurrentPartsNum (compteur bas-gauche)
+    "CPM_MODE":           0x00,  # int WorldMapCoursePointMgr.mMode (1 = Appear)
+    "CPM_POINTS":         0x08,  # WorldMapCoursePoint mCoursePoints[5]
+    "CP_STRIDE":          0x3C,  # sizeof(WorldMapCoursePoint)
+    "CP_APPEARSTATE":     0x04,  # int WorldMapCoursePoint.mAppearState
+    "CP_APPEARTIMER":     0x08,  # f32 WorldMapCoursePoint.mAppearTimer
+    "CP_ISVISIBLE":       0x0C,  # bool WorldMapCoursePoint.mIsVisible
+}
+DWM_MODE_OPERATION = 2  # DrawWorldMapMode::Operation (carte idle)
+CPM_MODE_APPEAR    = 1  # CoursePointMode::Appear (joue l'animation de revelation)
+CP_APPEAR_START    = 1  # CourseAppearState::RocketIncoming (demarre l'animation)

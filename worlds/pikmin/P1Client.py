@@ -58,6 +58,12 @@ from .P1Symbols import (
     SYM_ROUTE_MGR_PTR,
     ROUTE_CHAIN,
     WP_FLAG_INWATER,
+    SYM_MAP_WINDOW_PTR,
+    MAP_GAME2SCR,
+    WORLDMAP_CHAIN,
+    DWM_MODE_OPERATION,
+    CPM_MODE_APPEAR,
+    CP_APPEAR_START,
 )
 from .P1Rom import BASE_ID_BY_PATCHED_PREFIX
 
@@ -2614,6 +2620,92 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
         logger.debug(f"Error handling Pikmin locations: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Issue #12 : rafraichissement EN PLACE de la carte du monde (story mode).
+#
+# Adresses/offsets verifies dans la decomp projectPiki/pikmin :
+#   src/plugPikiColin/mapSelect.cpp       -> static zen::DrawWorldMap* mapWindow
+#   include/zen/DrawWorldMap.h            -> offsets DrawWorldMap
+#   src/plugPikiYamashita/drawWorldMap.cpp-> WorldMapCoursePointMgr / CoursePoint
+#
+# La carte fige la visibilite des zones et le compteur de pieces a l'ouverture
+# (constructeur de DrawWorldMap ; WorldMapCoursePointMgr::init lit courseOpen()).
+# Rien ne les reevalue tant qu'on reste dessus -> si une piece/zone arrive
+# pendant qu'on est sur la carte, la zone reste invisible et le compteur fige.
+#
+# On corrige sans patch DOL, via le static mapWindow :
+#   - compteur : mCurrentPartsNum est relu chaque frame par un NumberPicCallBack,
+#     le reecrire met le compteur a jour immediatement ;
+#   - zones : pour une zone debloquee dont le course point n'est pas encore
+#     visible, on met mIsVisible = 1 (selectionnable) et on declenche l'animation
+#     de revelation (mMode=Appear + point.mAppearState=RocketIncoming), exactement
+#     comme le jeu lors d'un vrai deblocage (DrawWorldMap::start -> appear()).
+# Adresses/offsets : cf. SYM_MAP_WINDOW_PTR / MAP_GAME2SCR / WORLDMAP_CHAIN dans
+# P1Symbols.py (generes et maintenus par gen_symbols.py depuis la decomp).
+def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) -> None:
+    """Rafraichit la carte du monde en place quand une piece/zone arrive alors
+    que le joueur y est deja (issue #12). Sans effet hors carte du monde."""
+    ptr_addr = SYM_MAP_WINDOW_PTR.get(game)
+    if ptr_addr is None:
+        return
+    # Uniquement sur la carte du monde : sinon mapWindow (static jamais remis a
+    # zero) peut pointer un objet libere.
+    if _oneplayer_subsection(game) != ONEPLAYER_MAP_SELECT:
+        return
+    try:
+        wm = struct.unpack(">I", dme.read_bytes(ptr_addr, 4))[0]
+    except Exception:
+        return
+    if not (_RAM_MIN <= wm < _RAM_MAX):
+        return  # pas de carte du monde (mode challenge, ou pas encore construite)
+
+    W = WORLDMAP_CHAIN
+    try:
+        # --- compteur de pieces (bas-gauche) : relu chaque frame ---
+        cur_addr = wm + W["DWM_CURRPARTS"]
+        if struct.unpack(">i", dme.read_bytes(cur_addr, 4))[0] != ship_parts_count:
+            dme.write_bytes(cur_addr, struct.pack(">i", ship_parts_count))
+
+        # --- zones : on ne revele que si la carte est en mode Operation (idle),
+        #     pour ne pas perturber un dialogue de confirmation / le journal.
+        if struct.unpack(">i", dme.read_bytes(wm + W["DWM_CURRENTMODE"], 4))[0] != DWM_MODE_OPERATION:
+            return
+        mgr = struct.unpack(">I", dme.read_bytes(wm + W["DWM_COURSEPOINTMGR"], 4))[0]
+        if not (_RAM_MIN <= mgr < _RAM_MAX):
+            return
+
+        # Memes seuils que les bits UNLOCKED_AREAS ci-dessus.
+        unlocked = (
+            True,                    # 0 Impact Site
+            ship_parts_count >= 1,   # 1 Forest of Hope
+            ship_parts_count >= 5,   # 2 Forest Navel
+            ship_parts_count >= 12,  # 3 Distant Spring
+            ship_parts_count >= 29,  # 4 Final Trial
+        )
+        triggered = False
+        for game_area, is_unlocked in enumerate(unlocked):
+            if not is_unlocked:
+                continue
+            point = mgr + W["CPM_POINTS"] + MAP_GAME2SCR[game_area] * W["CP_STRIDE"]
+            try:
+                if dme.read_byte(point + W["CP_ISVISIBLE"]):
+                    continue  # deja visible -> idempotent
+            except Exception:
+                continue
+            # Rendre selectionnable + jouer l'animation de revelation.
+            dme.write_byte(point + W["CP_ISVISIBLE"], 1)
+            dme.write_bytes(point + W["CP_APPEARSTATE"], struct.pack(">i", CP_APPEAR_START))
+            dme.write_bytes(point + W["CP_APPEARTIMER"], struct.pack(">f", 0.0))
+            triggered = True
+            if getattr(ctx, "debug_hint", False):
+                logger.info(f"[DEBUG] Carte : zone {game_area} revelee en place "
+                            f"(scr={MAP_GAME2SCR[game_area]})")
+        if triggered:
+            dme.write_bytes(mgr + W["CPM_MODE"], struct.pack(">i", CPM_MODE_APPEAR))
+    except Exception as e:
+        logger.debug(f"[Pikmin] refresh worldmap: {e}")
+
+
 async def handle_areas(ctx: P1Context, game: Game):
     # Build set of valid ship part IDs for fast lookup
     ship_part_ids = {data.ap_id for data in ALL_PARTS.values()}
@@ -2676,6 +2768,10 @@ async def handle_areas(ctx: P1Context, game: Game):
                     dme.write_byte(addr, ship_upgrade_level)
         except Exception as e:
             logger.debug(f"Error writing mShipUpgradeLevel: {e}")
+
+    # Issue #12 : si on est deja sur la carte du monde, rafraichir les zones
+    # debloquees et le compteur de pieces sans avoir a ressortir/relancer un jour.
+    _refresh_worldmap_screen(ctx, game, ship_parts_count)
 
 
 async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
