@@ -2395,7 +2395,13 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         current_day = dme.read_byte(DAY_NUMBER[game])
     except Exception:
         current_day = 0
-    in_game = (not ctx._onion_dyn_was_zero) and (current_day != 0)
+    # #32 : n'ecrire dans l'oignon VIVANT (objet de tas, DYN) que pendant le
+    # gameplay interactif. Pendant une cinematique EN NIVEAU (intro de journee,
+    # et surtout la sequence de fin declenchee par le goal) l'objet est demonte
+    # / reutilise par le rendu : y ecrire corrompait le flux GPU (Dolphin :
+    # "GFX FIFO opcode inconnu 0xf6"). La persistance passe de toute facon par
+    # STAGE (source de verite), inchangee.
+    in_game = (not ctx._onion_dyn_was_zero) and (current_day != 0) and is_day_active(game)
 
     def add_pikmin(color: str, stage: str, amount: int) -> bool:
         """Applique un bonus. Renvoie toujours True : le compteur persistant
@@ -3437,7 +3443,14 @@ async def dolphin_loop(ctx: P1Context):
         handlers = list(always_handlers)
         if save_active:
             handlers = list(save_active_handlers) + handlers
-        if in_level:
+        # #32 : les handlers "en niveau" LISENT/ECRIVENT des objets de niveau
+        # volatils (pelletMgr et radar via handle_parts -> despawn, escouade,
+        # etc.). Pendant une cinematique en niveau, mIsPauseAllowed passe a FALSE
+        # et ces objets sont demontes/reutilises par le rendu : continuer a les
+        # toucher corrompait le flux GPU (Dolphin : "GFX FIFO opcode inconnu 0xf6"
+        # apres le goal, pendant la sequence de fin). On ne les lance donc que
+        # quand le gameplay est reellement interactif.
+        if in_level and is_day_active(game_version):
             handlers = list(in_level_handlers) + handlers
 
         # Chaque handler est isole : une exception dans l'un d'eux ne doit pas
