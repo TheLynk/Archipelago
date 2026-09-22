@@ -333,6 +333,29 @@ def is_day_active(game: Game) -> bool:
         return False
 
 
+def is_overlay_active(game: Game) -> bool:
+    """#5 : vrai si un ecran couvre le gameplay (traps a suspendre).
+
+    D'apres la decomp (newPikiGame.cpp, GameFlow) :
+      - mIsUIOverlayActive (_338) : menu Pause (Start), carte/commandes (Y),
+        texte de piece de vaisseau, autres fenetres par-dessus le jeu ;
+      - mPauseAll (_33C) : gameplay gele (menu d'oignon, cinematique) ;
+      - mIsTutorialTextActive (_340) : fenetre de texte ouverte.
+    En cas d'echec de lecture on considere l'overlay actif (prudence : mieux
+    vaut retarder un trap que l'appliquer menu ouvert).
+    """
+    gf = SYM_GAMEFLOW.get(game)
+    if not gf:
+        return True
+    try:
+        for key in ("UI_OVERLAY_ACTIVE", "PAUSE_ALL", "TUTORIAL_TEXT_ACTIVE"):
+            if struct.unpack(">i", dme.read_bytes(gf[key], 4))[0] != 0:
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def is_in_level(game: Game) -> bool:
     """Vrai si le joueur controle Olimar dans un niveau (journee en cours).
 
@@ -1425,6 +1448,9 @@ class P1Context(CommonContext):
         # actif avant d'appliquer un trap, pour ne pas en gaspiller un juste apres
         # l'atterrissage (Olimar pas encore vraiment operationnel).
         self._trap_grace_ticks: int = 0
+        # #5 : vrai tant qu'un ecran (pause, carte, texte...) couvre le gameplay ;
+        # sert a rearmer le delai de grace a la fermeture du menu.
+        self._trap_overlay_was_active: bool = False
         # Suivi de transition pour reinitialiser l'etat DeathLink par journee.
         self._save_was_loaded_prev_death: bool = False
 
@@ -2271,6 +2297,18 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
     # commence (leve au front montant de "dans un niveau", cf. dolphin_loop).
     if ctx._traps_suspended_until_next_day:
         return
+
+    # #5 : menu Pause / carte / fenetre de texte / menu d'oignon ouvert -> on
+    # suspend tout (traps AP et TrapLink restent en file). A la fermeture, on
+    # rearme un delai de grace (~3 s) avant d'appliquer le trap en attente.
+    if is_overlay_active(game):
+        ctx._trap_overlay_was_active = True
+        return
+    if ctx._trap_overlay_was_active:
+        ctx._trap_overlay_was_active = False
+        ctx._trap_grace_ticks = max(ctx._trap_grace_ticks, 3)
+        if ctx.debug_trap:
+            logger.info("[DEBUG TRAP] Menu ferme : traps reprennent apres le delai de grace.")
 
     # Delai de grace en tout debut de journee (gameplay actif) : evite de gaspiller
     # un trap juste apres l'atterrissage.
