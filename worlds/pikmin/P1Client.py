@@ -1139,8 +1139,168 @@ class P1CommandProcessor(ClientCommandProcessor):
             self._cmd_debugsave()
             self._cmd_debuglanguage()
             self._cmd_debugtext()
+            self._cmd_debugparts()
 
         log("========== END OF DEBUG DUMP ==========")
+        return True
+
+    def _cmd_debugparts(self) -> bool:
+        """Dump l'etat des pellets de pieces de vaisseau (pelletMgr + radar).
+
+        A lancer EN JEU, pres de l'objet concerne (ex. un monstre/boss qui
+        contient une piece), pour diagnostiquer une piece qui ne disparait pas du
+        radar alors qu'elle est validee cote serveur (issue #11). On garde aussi
+        cette commande pour le futur 'kill enemy sanity'.
+        """
+        if not dme.is_hooked():
+            logger.info("[DEBUG PARTS] Dolphin not connected.")
+            return True
+        try:
+            raw = dme.read_bytes(0x80000000, 6)
+        except Exception as e:
+            logger.info(f"[DEBUG PARTS] Could not read Game ID: {e}")
+            return True
+        game = BASE_ID_BY_PATCHED_PREFIX.get(raw[:3], raw)
+        ctx = self.ctx
+        checked = getattr(ctx, "checked_locations", set()) or set()
+        ap_to_name = {d.ap_id: n for n, d in ALL_PARTS.items()}
+        P = PELLET_CHAIN
+        R = RADAR_CHAIN
+
+        def u32(addr):
+            try:
+                v = int.from_bytes(dme.read_bytes(addr, 4), "big")
+            except Exception:
+                return 0
+            return v if 0x80000000 <= v < 0x81800000 else 0
+
+        def obj_info(obj):
+            """(objType, model_id, ap_id, name, is_alive) d'un objet, ou None."""
+            try:
+                obj_type = int.from_bytes(
+                    dme.read_bytes(obj + ONION_CHAIN["CREATURE_OBJTYPE"], 4), "big", signed=True
+                )
+            except Exception:
+                return None
+            model_id = None
+            ap_id = None
+            if obj_type == OBJTYPE_PELLET:
+                config = u32(obj + P["PELLET_CONFIG"])
+                if config:
+                    try:
+                        model_id = dme.read_bytes(config + P["PELLETCONFIG_MODELID"], 4)
+                    except Exception:
+                        model_id = None
+                ap_id = _MODELID_TO_AP_ID.get(model_id) if model_id else None
+            try:
+                alive = dme.read_byte(obj + P["PELLET_ISALIVE"])
+            except Exception:
+                alive = -1
+            return obj_type, model_id, ap_id, ap_to_name.get(ap_id), alive
+
+        logger.info("========== PIKMIN PARTS DUMP ==========")
+        logger.info(f"[DEBUG PARTS] Game: {game!r} | pieces validees cote serveur: "
+                    f"{sorted(ap_to_name[a] for a in checked if a in ap_to_name)}")
+
+        # --- pelletMgr : TOUS les slots (meme mEntryStatus != 0), pour reperer
+        #     un pellet tenu/avale par une creature.
+        mgr = u32(SYM_PELLET_MGR_PTR.get(game, 0)) if game in SYM_PELLET_MGR_PTR else 0
+        if not mgr:
+            logger.info("[DEBUG PARTS] pelletMgr introuvable.")
+        else:
+            obj_list = u32(mgr + P["MONO_OBJECTLIST"])
+            entry_status = u32(mgr + P["MONO_ENTRYSTATUS"])
+            try:
+                max_elems = int.from_bytes(dme.read_bytes(mgr + P["MONO_MAXELEMENTS"], 4), "big", signed=True)
+            except Exception:
+                max_elems = 0
+            logger.info(f"[DEBUG PARTS] pelletMgr @0x{mgr:08X} maxElems={max_elems}")
+            shown = 0
+            for i in range(max(0, min(max_elems, 4096))):
+                obj = u32(obj_list + i * 4)
+                if not obj:
+                    continue
+                info = obj_info(obj)
+                if not info or info[0] != OBJTYPE_PELLET or info[2] is None:
+                    continue  # seulement les pellets de PIECES (model connu)
+                obj_type, model_id, ap_id, name, alive = info
+                try:
+                    status = int.from_bytes(dme.read_bytes(entry_status + i * 4, 4), "big", signed=True)
+                except Exception:
+                    status = "?"
+                shown += 1
+                logger.info(f"[DEBUG PARTS] pellet slot={i} @0x{obj:08X} status={status} "
+                            f"model={model_id!r} ap={ap_id} ({name}) alive={alive} "
+                            f"checked={'YES' if ap_id in checked else 'no'}")
+            if not shown:
+                logger.info("[DEBUG PARTS] Aucun pellet de piece dans le pelletMgr.")
+
+        # --- radar : liste des icones reellement dessinees sur la carte.
+        radar = u32(SYM_RADAR_INFO_PTR.get(game, 0)) if game in SYM_RADAR_INFO_PTR else 0
+        if not radar:
+            logger.info("[DEBUG PARTS] radarInfo introuvable.")
+        else:
+            node = u32(radar + R["ALIVE_CHILD"])
+            n = 0
+            while node and n < 128:
+                n += 1
+                part = u32(node + R["NODE_PART"])
+                nxt = u32(node + R["NODE_NEXT"])
+                if part:
+                    info = obj_info(part)
+                    if info:
+                        obj_type, model_id, ap_id, name, alive = info
+                        logger.info(f"[DEBUG PARTS] radar node @0x{node:08X} part=0x{part:08X} "
+                                    f"objType={obj_type} model={model_id!r} ap={ap_id} ({name}) "
+                                    f"alive={alive} checked={'YES' if ap_id in checked else 'no'}")
+                        # Le nœud pointe vers une CREATURE (ex. Snake/Snagret) qui
+                        # CONTIENT une piece : on cherche comment elle la reference,
+                        # en scannant son objet pour un fourCC de piece connu OU un
+                        # pointeur vers un Pellet/PelletConfig de piece (issue #11).
+                        if obj_type != OBJTYPE_PELLET:
+                            known = set(_MODELID_TO_AP_ID.keys())
+                            found = []
+                            try:
+                                blob = dme.read_bytes(part, 0x600)
+                            except Exception:
+                                blob = b""
+                            for off in range(0, len(blob) - 3, 4):
+                                w = blob[off:off + 4]
+                                if w in known:
+                                    found.append(f"+0x{off:X}=fourCC {w!r}({_MODELID_TO_AP_ID[w]})")
+                                    continue
+                                p = int.from_bytes(w, "big")
+                                if 0x80000000 <= p < 0x81800000:
+                                    try:
+                                        ot = int.from_bytes(dme.read_bytes(p + ONION_CHAIN["CREATURE_OBJTYPE"], 4), "big", signed=True)
+                                    except Exception:
+                                        ot = None
+                                    if ot == OBJTYPE_PELLET:
+                                        cfg = u32(p + P["PELLET_CONFIG"])
+                                        m = None
+                                        if cfg:
+                                            try:
+                                                m = dme.read_bytes(cfg + P["PELLETCONFIG_MODELID"], 4)
+                                            except Exception:
+                                                m = None
+                                        if m in known:
+                                            found.append(f"+0x{off:X}=Pellet*0x{p:08X}(model {m!r} ap={_MODELID_TO_AP_ID[m]})")
+                                    else:
+                                        try:
+                                            m = dme.read_bytes(p + P["PELLETCONFIG_MODELID"], 4)
+                                        except Exception:
+                                            m = None
+                                        if m in known:
+                                            found.append(f"+0x{off:X}=Config*0x{p:08X}(model {m!r} ap={_MODELID_TO_AP_ID[m]})")
+                            for f in found:
+                                logger.info(f"[DEBUG PARTS]   creature-part ref {f}")
+                            if not found:
+                                logger.info("[DEBUG PARTS]   creature-part ref: aucun fourCC/pellet de piece trouve dans +0..0x600")
+                node = nxt
+            if n == 0:
+                logger.info("[DEBUG PARTS] radar mAlivePartsList vide.")
+
+        logger.info("========== END PARTS DUMP ==========")
         return True
 
 
@@ -1810,6 +1970,168 @@ def despawn_collected_part_pellets(ctx: P1Context, game: Game) -> int:
     return removed
 
 
+# Taille de la zone objet balayee pour retrouver le fourCC de la piece qu'une
+# creature contient. Verifie en jeu via /debugparts : l'UfoPartID n'est PAS au
+# meme offset selon la classe (OBJTYPE_Snake : +0x31C ; OBJTYPE_Teki : +0x5D0),
+# donc on balaye au lieu de coder un offset en dur. Lecture seule (identification).
+_CREATURE_SCAN_LEN = 0x600
+
+
+def _held_ufo_part_ap(obj: int) -> "Optional[int]":
+    """ap_id de la piece CONTENUE par une creature affichee sur le radar, ou None.
+
+    On balaye l'objet a la recherche du fourCC (ex. b'uf06') de la piece. Une
+    creature ne contient qu'une piece : on ne renvoie un ap_id que si UN SEUL
+    identifiant de piece connu est trouve (sinon ambigu -> None, par prudence).
+    """
+    try:
+        blob = dme.read_bytes(obj, _CREATURE_SCAN_LEN)
+    except Exception:
+        return None
+    known = _MODELID_TO_AP_ID
+    found: set = set()
+    for off in range(0, len(blob) - 3, 4):
+        w = blob[off:off + 4]
+        ap = known.get(w)
+        if ap is not None:
+            found.add(ap)
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
+    """Retire du radar les pieces validees cote serveur qui restent affichees
+    parce qu'elles sont tenues A L'INTERIEUR d'un monstre/boss (issue #11).
+
+    despawn_collected_part_pellets() ne traite que les slots ACTIFS du pelletMgr
+    (mEntryStatus == 0). Quand une piece est contenue dans une creature, il n'y a
+    meme PAS de Pellet dans le pelletMgr : le noeud radar pointe vers la CREATURE
+    (mPart = OBJTYPE_Snake, etc.), qui memorise l'UfoPartID de la piece a
+    +0x31C. Son icone restait donc sur le radar malgre la validation serveur.
+
+    On part de la liste radar (mAlivePartsList) et on distingue deux cas :
+      - noeud -> Pellet (piece libre encore listee) : on la tue proprement
+        (mIsAlive = 0 + mEntryStatus = -2 via son slot) puis on delie le noeud ;
+      - noeud -> Creature contenant une piece validee : on delie seulement le
+        noeud radar (l'icone disparait). On NE touche PAS a la creature : si elle
+        est tuee plus tard, elle lache un pellet deja collecte que la boucle
+        classique retirera a son tour. Lecture seule pour l'identification.
+    Renvoie le nombre d'icones retirees.
+    """
+    ptr = SYM_RADAR_INFO_PTR.get(game)
+    if ptr is None:
+        return 0
+    R = RADAR_CHAIN
+    P = PELLET_CHAIN
+
+    def u32(addr: int) -> int:
+        try:
+            v = int.from_bytes(dme.read_bytes(addr, 4), "big")
+        except Exception:
+            return 0
+        return v if 0x80000000 <= v < 0x81800000 else 0
+
+    radar = u32(ptr)
+    if not radar:
+        return 0
+
+    known_models = _MODELID_TO_AP_ID
+
+    # 1) Parcours LECTURE SEULE de la liste radar (sans la modifier ici).
+    pellets_to_kill: list[int] = []   # pellets libres : kill + detach
+    creatures_to_detach: list[int] = []  # creatures contenant une piece : detach seul
+    node = u32(radar + R["ALIVE_CHILD"])
+    for _ in range(128):  # garde-fou anti-boucle
+        if not node:
+            break
+        obj = u32(node + R["NODE_PART"])
+        nxt = u32(node + R["NODE_NEXT"])
+        if obj:
+            try:
+                obj_type = int.from_bytes(
+                    dme.read_bytes(obj + ONION_CHAIN["CREATURE_OBJTYPE"], 4),
+                    "big", signed=True,
+                )
+            except Exception:
+                obj_type = -1
+
+            if obj_type == OBJTYPE_PELLET:
+                config = u32(obj + P["PELLET_CONFIG"])
+                model_id = None
+                if config:
+                    try:
+                        model_id = dme.read_bytes(config + P["PELLETCONFIG_MODELID"], 4)
+                    except Exception:
+                        model_id = None
+                ap_id = known_models.get(model_id) if model_id else None
+                if ap_id is not None and ap_id in ctx.checked_locations and obj not in pellets_to_kill:
+                    pellets_to_kill.append(obj)
+            else:
+                # Creature affichee sur le radar des pieces => elle contient une
+                # piece. Son UfoPartID (fourCC) est memorise a un offset variable
+                # selon la classe : on le retrouve en balayant l'objet.
+                ap_id = _held_ufo_part_ap(obj)
+                if ap_id is not None and ap_id in ctx.checked_locations and obj not in creatures_to_detach:
+                    creatures_to_detach.append(obj)
+        node = nxt
+
+    if not pellets_to_kill and not creatures_to_detach:
+        return 0
+
+    # 2) Pour les pellets libres : localise chaque cible dans le pelletMgr (par
+    #    pointeur) pour le tuer proprement via son slot, comme la boucle classique.
+    slot_of: dict[int, int] = {}
+    entry_status = 0
+    if pellets_to_kill:
+        mgr_ptr = SYM_PELLET_MGR_PTR.get(game)
+        if mgr_ptr is not None:
+            mgr = u32(mgr_ptr)
+            if mgr:
+                obj_list = u32(mgr + P["MONO_OBJECTLIST"])
+                entry_status = u32(mgr + P["MONO_ENTRYSTATUS"])
+                try:
+                    max_elems = int.from_bytes(
+                        dme.read_bytes(mgr + P["MONO_MAXELEMENTS"], 4), "big", signed=True
+                    )
+                except Exception:
+                    max_elems = 0
+                if obj_list and entry_status and 0 < max_elems <= 4096:
+                    targets = set(pellets_to_kill)
+                    for i in range(max_elems):
+                        c = u32(obj_list + i * 4)
+                        if c in targets:
+                            slot_of[c] = i
+
+    removed = 0
+
+    # 3a) Pellets libres : icone radar + kill du pellet.
+    for pellet in pellets_to_kill:
+        try:
+            _detach_part_from_radar(game, pellet)
+            dme.write_byte(pellet + P["PELLET_ISALIVE"], 0)
+            idx = slot_of.get(pellet)
+            if idx is not None and entry_status:
+                dme.write_bytes(entry_status + idx * 4, struct.pack(">i", ENTRYSTATUS_KILL))
+            removed += 1
+            if ctx.debug_hint:
+                logger.info(f"[DEBUG] Pièce (pellet libre) retirée du radar "
+                            f"pellet=0x{pellet:08X}, slot={idx}")
+        except Exception:
+            pass
+
+    # 3b) Pieces contenues dans une creature : on delie seulement le noeud radar.
+    for creature in creatures_to_detach:
+        try:
+            _detach_part_from_radar(game, creature)
+            removed += 1
+            if ctx.debug_hint:
+                logger.info(f"[DEBUG] Icône de pièce retirée du radar (contenue dans "
+                            f"un ennemi) creature=0x{creature:08X}")
+        except Exception:
+            pass
+
+    return removed
+
+
 async def handle_death_link(ctx: P1Context, game: Game) -> None:
     """DeathLink : detection (envoi) et application (reception).
 
@@ -2201,6 +2523,10 @@ async def handle_parts(ctx: P1Context, game: Game):
     # Fait disparaitre physiquement du niveau les pieces validees cote serveur
     # (ex. autre jeu termine) et non ramassees en jeu. Un seul parcours par tick.
     despawn_collected_part_pellets(ctx, game)
+    # Meme chose pour les pieces tenues A L'INTERIEUR d'un monstre/boss, que la
+    # boucle ci-dessus ignore (slot pelletMgr non actif) : on part de la liste
+    # radar pour retirer leur icone et les tuer (issue #11).
+    despawn_collected_parts_on_radar(ctx, game)
     # Met a jour capacites du vaisseau (radar/jets) et etoiles par niveau pour
     # les pieces validees cote serveur (que le jeu n'a pas enregistrees).
     sync_playerstate_parts(ctx, game)
