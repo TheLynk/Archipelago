@@ -3098,8 +3098,105 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
 # #40 : WorldMapCoursePoint.mLinkPoints (_2C), indexe par linkFlag
 # (src/plugPikiYamashita/drawWorldMap.cpp : Up 0, Down 1, Left 2, Right 3).
 CP_LINKPOINTS = 0x2C
-CP_LINK_UP = 0
-CP_LINK_LEFT = 2
+
+
+# #40 : liens du curseur quand TOUTES les zones sont ouvertes (index ecran),
+# repris de WorldMapCoursePointMgr::init (branche courseOpen(Distant Spring)).
+# scr : 0 Distant Spring, 1 Forest of Hope, 2 Impact Site, 3 Forest Navel,
+# 4 Final Trial. Ordre des liens : Up, Down, Left, Right.
+WORLDMAP_FULL_LINKS = (
+    (4, 1, None, 3),       # 0 Distant Spring
+    (0, None, None, 2),    # 1 Forest of Hope
+    (3, None, 1, None),    # 2 Impact Site
+    (4, 2, 0, None),       # 3 Forest Navel
+    (None, 3, 0, None),    # 4 Final Trial
+)
+
+
+# Variante du jeu quand Distant Spring (scr 0) est ferme : Forest of Hope
+# monte vers Forest Navel et Forest Navel va a gauche vers Forest of Hope.
+WORLDMAP_DS_CLOSED_LINKS = (
+    WORLDMAP_FULL_LINKS[0],
+    (3, None, None, 2),
+    WORLDMAP_FULL_LINKS[2],
+    (4, 2, 1, None),
+    WORLDMAP_FULL_LINKS[4],
+)
+def _worldmap_reach_from(links, open_pts: set, start: int) -> set:
+    seen, stack = {start}, [start]
+    while stack:
+        cur = stack.pop()
+        for t in links[cur]:
+            if t is not None and t in open_pts and t not in seen:
+                seen.add(t)
+                stack.append(t)
+    return seen
+
+
+def _worldmap_nearest_open(p: int, t: int, open_pts: set):
+    """Zone ouverte la plus proche au-dela de t (t ferme), en traversant les
+    zones fermees de la carte complete."""
+    seen, queue = {p, t}, [t]
+    while queue:
+        cur = queue.pop(0)
+        for n in WORLDMAP_FULL_LINKS[cur]:
+            if n is None or n in seen:
+                continue
+            if n in open_pts:
+                return n
+            seen.add(n)
+            queue.append(n)
+    return None
+
+
+def compute_worldmap_links(open_pts: set) -> list:
+    """Liens du curseur pour un ensemble quelconque de zones ouvertes.
+
+    1. Base = exactement la table du jeu (variante selon Distant Spring ouvert),
+       donc aucun changement dans les cas d'origine.
+    2. Tant qu'une zone ouverte ne peut pas atteindre une autre zone ouverte
+       (deblocage dans un ordre inhabituel, ex. Impact Site + Distant Spring),
+       une direction qui mene a une zone FERMEE est redirigee vers la zone
+       ouverte la plus proche au-dela. Les liens valides ne sont jamais touches.
+    """
+    base = WORLDMAP_FULL_LINKS if 0 in open_pts else WORLDMAP_DS_CLOSED_LINKS
+    links = [list(row) for row in base]
+    for _ in range(len(links) * 4):
+        changed = False
+        for p in sorted(open_pts):
+            reach = _worldmap_reach_from(links, open_pts, p)
+            if reach >= open_pts:
+                continue
+            for d in range(4):
+                t = links[p][d]
+                if t is None or t in open_pts:
+                    continue
+                n = _worldmap_nearest_open(p, t, open_pts)
+                if n is not None and n not in reach:
+                    links[p][d] = n
+                    changed = True
+                    break
+        if not changed:
+            break
+    return links
+
+
+def _relink_worldmap(wm: int) -> None:
+    """Reecrit mLinkPoints des 5 zones selon les zones visibles (#40)."""
+    W = WORLDMAP_CHAIN
+    mgr = struct.unpack(">I", dme.read_bytes(wm + W["DWM_COURSEPOINTMGR"], 4))[0]
+    if not (_RAM_MIN <= mgr < _RAM_MAX):
+        return
+    pts = mgr + W["CPM_POINTS"]
+    n = len(WORLDMAP_FULL_LINKS)
+    open_pts = {i for i in range(n) if dme.read_byte(pts + i * W["CP_STRIDE"] + W["CP_ISVISIBLE"])}
+    for p, row in enumerate(compute_worldmap_links(open_pts)):
+        if p not in open_pts:
+            continue
+        base = pts + p * W["CP_STRIDE"] + CP_LINKPOINTS
+        want = b"".join(struct.pack(">I", 0 if t is None else pts + t * W["CP_STRIDE"]) for t in row)
+        if dme.read_bytes(base, 16) != want:
+            dme.write_bytes(base, want)
 
 
 def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) -> None:
@@ -3128,25 +3225,13 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
 
         # --- #40 : liens de navigation du curseur ---------------------------
         # WorldMapCoursePointMgr::init() calcule les liens haut/bas/gauche/droite
-        # UNE fois, a l'ouverture de la carte, selon courseOpen(Distant Spring).
-        # Distant Spring ferme : Forest of Hope (scr 1) monte vers Forest Navel
-        # (scr 3) et Forest Navel va a gauche vers Forest of Hope, en SAUTANT
-        # Distant Spring (scr 0). Si la zone est revelee en direct (#12), il faut
-        # refaire ces 2 liens comme le jeu le ferait zone ouverte :
-        #   scr1.mLinkPoints[Up]   = &points[0]
-        #   scr3.mLinkPoints[Left] = &points[0]
-        # (WorldMapCoursePoint.mLinkPoints @ _2C, ordre Up, Down, Left, Right.)
-        if ship_parts_count >= 12:
-            mgr_l = struct.unpack(">I", dme.read_bytes(wm + W["DWM_COURSEPOINTMGR"], 4))[0]
-            if _RAM_MIN <= mgr_l < _RAM_MAX:
-                pts = mgr_l + W["CPM_POINTS"]
-                ds_point = pts + 0 * W["CP_STRIDE"]
-                for scr, link in ((1, CP_LINK_UP), (3, CP_LINK_LEFT)):
-                    la = pts + scr * W["CP_STRIDE"] + CP_LINKPOINTS + link * 4
-                    if struct.unpack(">I", dme.read_bytes(la, 4))[0] != ds_point:
-                        dme.write_bytes(la, struct.pack(">I", ds_point))
-                        if getattr(ctx, "debug_hint", False):
-                            logger.info(f"[DEBUG] Carte : lien scr{scr}/{link} -> Distant Spring")
+        # UNE fois, a l'ouverture de la carte, et ne gere qu'un cas : Distant
+        # Spring ouvert ou non. Une zone revelee en direct (#12) restait donc
+        # inaccessible au curseur, et un futur ordre de deblocage melange (ex.
+        # Impact Site + Distant Spring seulement) ne serait pas navigable du
+        # tout. On recalcule donc les liens a partir des zones REELLEMENT
+        # visibles (mIsVisible), independamment de l'ordre de deblocage.
+        _relink_worldmap(wm)
 
         # --- zones : on ne revele que si la carte est en mode Operation (idle),
         #     pour ne pas perturber un dialogue de confirmation / le journal.
