@@ -55,6 +55,7 @@ from .P1Symbols import (
     SYM_RADAR_INFO_PTR,
     RADAR_CHAIN,
     SYM_DEAD_PIKIS,
+    SYM_BORN_PIKIS,
     SYM_ORIMA_DEAD,
     SYM_NAVI_MGR_PTR,
     NAVI_CHAIN,
@@ -1544,6 +1545,9 @@ class P1Context(CommonContext):
         self._save_prev_sub: Optional[int] = None
         self._save_crc: Optional[int] = None
         self._pending_save_load: Optional[tuple] = None
+        # #33 : bonus Pikmin recus hors journee, a compter comme "germes" au
+        # debut de la prochaine journee (couleur -> nombre).
+        self._pending_born: dict[str, int] = {"red": 0, "yellow": 0, "blue": 0}
         # Day start detection for safety check
         self.last_hour: int = -1
         # Debug mode toggles (via /debughint, /debugdays, /debugpbonus)
@@ -2764,6 +2768,78 @@ def track_game_save(ctx: P1Context, game: Game) -> None:
         ctx.save_applied()
 
 
+# --- #33 : bonus Pikmin comptes comme "germes" --------------------------------
+_BORN_COLOR_INDEX = {"blue": 0, "red": 1, "yellow": 2}  # ColCounter / PikiNum
+
+
+def _add_born_pikis(game: Game, color: str, amount: int) -> bool:
+    """GameStat::bornPikis[color] += amount ("germes aujourd'hui").
+
+    A la fin de la journee, le jeu ajoute lui-meme bornPikis a
+    PlayerState::mSproutedNum ("total germes") et au record global
+    (updateFinalResult) : pas besoin d'ecrire ces cumuls nous-memes.
+    """
+    base = SYM_BORN_PIKIS.get(game)
+    if base is None:
+        return False
+    addr = base + _BORN_COLOR_INDEX[color] * 4
+    try:
+        old = struct.unpack(">i", dme.read_bytes(addr, 4))[0]
+        dme.write_bytes(addr, struct.pack(">i", max(0, old + amount)))
+        return True
+    except Exception:
+        return False
+
+
+def _update_population_graph(game: Game) -> None:
+    """Met a jour le point de l'heure courante du graphique de population
+    (PlayerState::mPerHourGraph) avec GameStat::allPikis, comme le fait
+    PlayerState::update() a chaque changement d'heure. Sans ca, un bonus recu
+    n'apparaissait qu'a l'heure suivante (ou jamais, si la journee se
+    terminait dans la meme heure)."""
+    ps_ptr = SYM_PLAYER_STATE_PTR.get(game)
+    gf = SYM_GAMEFLOW.get(game)
+    allp = GAMESTAT_ALLPIKIS_ADDRS.get(game, {})
+    if ps_ptr is None or not gf or not allp:
+        return
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ps_ptr, 4))[0]
+        if not (_RAM_MIN <= ps < _RAM_MAX):
+            return
+        g = ps + PLAYERSTATE_OFFSETS["mPerHourGraph"]
+        start, end = struct.unpack(">HH", dme.read_bytes(g, 4))
+        entries = struct.unpack(">I", dme.read_bytes(g + 4, 4))[0]
+        if not (_RAM_MIN <= entries < _RAM_MAX) or end < start or end - start > 24:
+            return
+        hour = struct.unpack(">i", dme.read_bytes(gf["TIME_HOURS"], 4))[0]
+        if not (start <= hour <= end):
+            return
+        entry = entries + (hour - start) * 12
+        for color, idx in _BORN_COLOR_INDEX.items():
+            a = allp.get(color)
+            if a is None:
+                continue
+            val = struct.unpack(">i", dme.read_bytes(a, 4))[0]
+            dme.write_bytes(entry + idx * 4, struct.pack(">i", val))
+    except Exception as e:
+        logger.debug(f"population graph update: {e}")
+
+
+def flush_pending_born(ctx: P1Context, game: Game) -> None:
+    """Compte comme germes du jour les bonus recus hors journee (carte du monde,
+    entre deux journees), une fois la nouvelle journee reellement commencee
+    (GameStat est remis a zero au chargement du niveau)."""
+    if not any(ctx._pending_born.values()):
+        return
+    if not (is_in_level(game) and is_day_active(game)):
+        return
+    for color, n in ctx._pending_born.items():
+        if n and _add_born_pikis(game, color, n):
+            ctx._pending_born[color] = 0
+            if ctx.debug_pbonus:
+                logger.info(f"[DEBUG] bornPikis {color} +{n} (bonus recu hors journee)")
+
+
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
     """Apply received Pikmin bonus items.
 
@@ -2779,6 +2855,8 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
     # #4 : fichier juste charge, etat pas encore resolu -> on attend.
     if ctx._pending_save_load is not None:
         return
+    # #33 : bonus recus hors journee -> "germes" de la journee en cours.
+    flush_pending_born(ctx, game)
 
     stage_addrs   = ONION_STAGE_ADDRS_CLIENT[game]
     sentinel_addr = ONION_DYN_SENTINEL.get(game)
@@ -2895,6 +2973,18 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             logger.info(
                 f"[DEBUG] LIVE TOTAL {color} : containerPikis +{amount}, allPikis +{amount}"
             )
+
+        # #33 : le bonus compte comme des Pikmin "germes" (ecran de fin de
+        # journee : germes aujourd'hui + total germes) et apparait tout de suite
+        # dans le graphique de population. Hors journee (carte du monde...),
+        # GameStat sera remis a zero au prochain chargement : on met en attente
+        # et flush_pending_born() l'ajoute au debut de la journee suivante.
+        if in_game and is_in_level(game):
+            if not _add_born_pikis(game, color, amount):
+                ctx._pending_born[color] += amount
+            _update_population_graph(game)
+        else:
+            ctx._pending_born[color] += amount
 
         if in_game and stage in DYN_OFFSETS:
             base = getattr(ctx, DYN_BASE_CACHE.get(color, ""), None)

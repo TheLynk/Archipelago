@@ -121,6 +121,12 @@ SYM_DEAD_PIKIS = {
     b'GPIE01': 0x803D1E58,
 }
 
+# #33 -- bornPikis (ColCounter: 3 int Blue/Red/Yellow), Pikmin germes du jour.
+SYM_BORN_PIKIS = {
+    b'GPIP01': 0x803D6D2C,
+    b'GPIE01': 0x803D1EAC,
+}
+
 # DeathLink -- orimaDead (bool, 1 = Olimar mort). Mis a 1 par NaviDeadState.
 SYM_ORIMA_DEAD = {
     b'GPIP01': 0x803ECCE8,
@@ -459,6 +465,11 @@ RADAR_CHAIN = {
 
 # Offsets dans la struct PlayerState (include/PlayerState.h)
 PLAYERSTATE_OFFSETS = {
+    # #33 : int mSproutedNum (_00) = "total germes" ; TimeGraph mPerHourGraph
+    # (_18C : u16 mStartTime, u16 mEndTime, PikiNum* mEntries @+4, PikiNum =
+    # int[3] Blue/Red/Yellow) = graphique de population de fin de journee.
+    "mSproutedNum": 0x00,
+    "mPerHourGraph": 0x18C,
     "mShipEffectPartFlag": 0x11,
     "mTotalRegisteredParts": 0x170,
     "mTotalParts": 0x174,
