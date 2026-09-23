@@ -22,6 +22,21 @@ from .P1Rom import P1PlayerContainer, patch_iso, verify_iso, InvalidISOError
 logger = logging.getLogger(__name__)
 
 
+def _apworld_version() -> str:
+    """Version de l'apworld (archipelago.json), en dossier comme en .apworld."""
+    import json
+    try:
+        from importlib.resources import files
+        return json.loads((files(__package__) / "archipelago.json").read_text(encoding="utf-8")).get("version", "unknown")
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "archipelago.json"), encoding="utf-8") as f:
+            return json.load(f).get("version", "unknown")
+    except Exception:
+        return "unknown"
+
+
 def run_client(*args) -> None:
     from .P1Client import run_client as _run_client
     # `launch` (et non `launch_subprocess`) : quand le Launcher a deja ete relance
@@ -381,6 +396,8 @@ class P1World(World):
 
         return {
             "normal_first_day":    self.options.normal_first_day.value,
+            # 0 = off, 1 = always, 2 = item ("Trip Immunity" dans le pool) -- utilise
+            # aussi par PopTracker pour n'afficher l'item qu'en mode 2.
             "disable_pikmin_trip": self.options.disable_pikmin_trip.value,
             "skip_events":         sorted(self.options.skip_events.value),
             "always_min_one_leaf":           self.options.always_min_one_leaf.value,
@@ -397,6 +414,15 @@ class P1World(World):
             "pikmin_bond_damage":  self.options.pikmin_bond_damage.value,
             "trap_link":           self.options.trap_link.value,
             "trap_link_conversion": self.options.trap_link_conversion.value,
+            # #14 : options de locations Pikmin et version, pour PopTracker.
+            "apworld_version":     _apworld_version(),
+            "enable_pikmin_locations":         self.options.enable_pikmin_locations.value,
+            "red_pikmin_locations_enabled":    self.options.red_pikmin_locations_enabled.value,
+            "red_pikmin_interval":             self.options.red_pikmin_interval.value,
+            "yellow_pikmin_locations_enabled": self.options.yellow_pikmin_locations_enabled.value,
+            "yellow_pikmin_interval":          self.options.yellow_pikmin_interval.value,
+            "blue_pikmin_locations_enabled":   self.options.blue_pikmin_locations_enabled.value,
+            "blue_pikmin_interval":            self.options.blue_pikmin_interval.value,
             "trap_link_conversion_traps": sorted(
                 t for t in self.options.trap_link_conversion_traps.value
                 # #7 : jamais de Trip Trap par conversion si le trebuchement est retire du jeu.
