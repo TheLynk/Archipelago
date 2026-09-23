@@ -287,7 +287,12 @@ class P1World(World):
                 "Damage Trap":     self.options.weight_damage_trap.value,
                 "Teleport Trap":   self.options.weight_teleport_trap.value,
                 "Disbanding Trap": self.options.weight_disbanding_trap.value,
+                "Trip Trap":       self.options.weight_trip_trap.value,
             }
+            # #7 : Disable Pikmin Trip = always -> le code du trebuchement est
+            # retire de l'ISO, le Trip Trap n'aurait aucun effet : hors du pool.
+            if self.options.disable_pikmin_trip.value == 1:
+                trap_weights.pop("Trip Trap")
             active_traps = {k: v for k, v in trap_weights.items() if v > 0}
             if not active_traps:
                 # Aucun poids de trap defini : repartition egale sur les 3 types.
@@ -392,7 +397,11 @@ class P1World(World):
             "pikmin_bond_damage":  self.options.pikmin_bond_damage.value,
             "trap_link":           self.options.trap_link.value,
             "trap_link_conversion": self.options.trap_link_conversion.value,
-            "trap_link_conversion_traps": sorted(self.options.trap_link_conversion_traps.value),
+            "trap_link_conversion_traps": sorted(
+                t for t in self.options.trap_link_conversion_traps.value
+                # #7 : jamais de Trip Trap par conversion si le trebuchement est retire du jeu.
+                if not (t == "Trip Trap" and self.options.disable_pikmin_trip.value == 1)
+            ),
         }
 
     def post_fill(self) -> None:

@@ -38,6 +38,8 @@ from .P1Symbols import (
     SKIP_EVENT_DEMOFLAGS,
     SYM_TRIP_RAND_CONST,
     TRIP_DISABLED_FLOAT,
+    TRIP_NORMAL_FLOAT,
+    TRIP_FORCED_FLOAT,
     CONTAINER_COLOR_BIT,
     CONTAINER_BOOT_ALL,
     SECTION_ONE_PLAYER,
@@ -756,10 +758,112 @@ TRAP_APPLIERS = {
 }
 
 
-async def apply_trap(game: Game, kind: str) -> bool:
+# --- #7 Trip Trap ----------------------------------------------------------
+#
+# Test de trebuchement (ActCrowd::exec, aiCrowd.cpp) :
+#     if (getRand(1.0f) >= 0.9999f && getRand(1.0f) > 0.7f) -> trebuche
+# Il est evalue pour chaque Pikmin qui suit Olimar en courant (> 110 u/s) tous
+# les 100 unites parcourues. Le Trip Trap remplace la constante 0.9999 (copie
+# propre a ce test en .sdata2, SYM_TRIP_RAND_CONST) par 0.0 pendant
+# TRIP_TRAP_SECONDS : le 1er test est toujours vrai -> ~30 % de chance a chaque
+# test, donc quasiment toute l'escouade en mouvement trebuche (animation normale
+# du jeu, PIKIANIM_Korobu). Ensuite on remet la valeur normale (0.9999, ou 2.0
+# si Trip Immunity est actif). C'est une DONNEE : le JIT de Dolphin la relit.
+# Le temps ne s'ecoule que pendant le gameplay interactif (pas en pause/menu).
+
+TRIP_TRAP_SECONDS = 10.0
+
+
+def _trip_mode(ctx) -> int:
+    """Option Disable Pikmin Trip : 0 off, 1 always (ISO patchee), 2 item."""
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    return int(slot_data.get("disable_pikmin_trip", 1))
+
+
+def _trip_immune(ctx) -> bool:
+    """Vrai si les Pikmin ne peuvent plus trebucher (always, ou item recu)."""
+    mode = _trip_mode(ctx)
+    if mode == 1:
+        return True
+    if mode == 2:
+        return any(it.item == TRIP_IMMUNITY_ITEM_ID for it in ctx.items_received)
+    return False
+
+
+def _trip_normal_value(ctx) -> float:
+    return TRIP_DISABLED_FLOAT if _trip_immune(ctx) else TRIP_NORMAL_FLOAT
+
+
+def apply_trip_trap(ctx, game: Game) -> bool:
+    """Demarre (ou relance) le Trip Trap. Toujours True : consomme le trap."""
+    if ctx is None:
+        return False
+    if _trip_immune(ctx):
+        # Choix de design : immunite (item Trip Immunity / option always) ->
+        # trap consomme sans effet.
+        if ctx.debug_trap:
+            logger.info("[DEBUG TRAP] Trip Trap sans effet : Pikmin immunises.")
+        return True
+    addr = SYM_TRIP_RAND_CONST.get(game)
+    if addr is None:
+        return True
+    try:
+        dme.write_bytes(addr, struct.pack(">f", TRIP_FORCED_FLOAT))
+    except Exception:
+        return False
+    ctx._trip_trap_remaining = TRIP_TRAP_SECONDS
+    ctx._trip_trap_last = time.monotonic()
+    return True
+
+
+def restore_trip_constant(ctx, game: Game) -> None:
+    """Remet la constante de trip a sa valeur normale (fin de trap / fermeture)."""
+    addr = SYM_TRIP_RAND_CONST.get(game)
+    if addr is None:
+        return
+    try:
+        dme.write_bytes(addr, struct.pack(">f", _trip_normal_value(ctx)))
+    except Exception:
+        pass
+
+
+async def handle_trip_trap_timer(ctx, game: Game) -> None:
+    """Decompte du Trip Trap et restauration de la constante."""
+    addr = SYM_TRIP_RAND_CONST.get(game)
+    if addr is None:
+        return
+    if ctx._trip_trap_remaining <= 0:
+        # Securite : constante restee forcee (client ferme pendant un trap,
+        # reconnexion...) -> on la remet d'aplomb.
+        try:
+            if dme.read_bytes(addr, 4) == struct.pack(">f", TRIP_FORCED_FLOAT):
+                restore_trip_constant(ctx, game)
+        except Exception:
+            pass
+        return
+    now = time.monotonic()
+    dt = now - ctx._trip_trap_last
+    ctx._trip_trap_last = now
+    if is_in_level(game) and is_day_active(game) and not is_overlay_active(game):
+        ctx._trip_trap_remaining -= dt
+    if ctx._trip_trap_remaining <= 0 or _trip_immune(ctx):
+        ctx._trip_trap_remaining = 0.0
+        restore_trip_constant(ctx, game)
+        if ctx.debug_trap:
+            logger.info("[DEBUG TRAP] Trip Trap termine.")
+    else:
+        try:
+            dme.write_bytes(addr, struct.pack(">f", TRIP_FORCED_FLOAT))
+        except Exception:
+            pass
+
+
+async def apply_trap(game: Game, kind: str, ctx=None) -> bool:
     """Applique un trap par type interne. Renvoie True si applique."""
     if kind == "disband":
         return await apply_disband_trap(game)
+    if kind == "trip":
+        return apply_trip_trap(ctx, game)
     fn = TRAP_APPLIERS.get(kind)
     return bool(fn and fn(game))
 
@@ -1491,6 +1595,9 @@ class P1Context(CommonContext):
         # QOL Disable Pikmin Trip mode 'item' : le patch RAM du trebuchement
         # n'est applique qu'une fois, une fois l'item 'Trip Immunity' recu.
         self._trip_ram_patched: bool = False
+        # #7 Trip Trap : secondes de gameplay restantes (0 = inactif).
+        self._trip_trap_remaining: float = 0.0
+        self._trip_trap_last: float = 0.0
 
         # --- DeathLink / TrapLink ---
         # Configures depuis slot_data a la connexion.
@@ -1759,7 +1866,7 @@ class P1Context(CommonContext):
                 elif source == mine:
                     if self.debug_trap:
                         logger.info("[TrapLink] Ignored: this is our own broadcast.")
-                elif trap_name not in TRAP_KINDS:
+                elif trap_name not in TRAP_KINDS or (trap_name == "Trip Trap" and _trip_mode(self) == 1):
                     # TrapLink est INTER-JEUX : le nom vient du jeu emetteur. Si on
                     # ne le connait pas (ex. un trap de Hollow Knight), soit on le
                     # convertit en trap Pikmin aleatoire (convention TrapLink), soit
@@ -1770,7 +1877,11 @@ class P1Context(CommonContext):
                                         "(conversion disabled).")
                     else:
                         # Pool restreint par l'option (vide -> tous les traps Pikmin).
-                        pool = self.trap_link_conversion_traps or list(TRAP_KINDS)
+                        pool = self.trap_link_conversion_traps or [
+                            n for n in TRAP_KINDS
+                            # #7 : pas de Trip Trap si le trebuchement est retire du jeu.
+                            if not (n == "Trip Trap" and _trip_mode(self) == 1)
+                        ]
                         converted = random.choice(pool)
                         if self.debug_trap:
                             logger.info(f"[TrapLink] Unknown name -> random Pikmin trap: "
@@ -2497,7 +2608,7 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
         already = ctx.traps_applied.get(item_id, 0)
         if total <= already:
             continue
-        if await apply_trap(game, kind):
+        if await apply_trap(game, kind, ctx):
             ctx.traps_applied[item_id] = already + 1  # un a la fois
             ctx.save_applied()
             name = _TRAP_KIND_TO_NAME.get(kind, kind)
@@ -2520,7 +2631,7 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
         if kind is None:
             ctx.pending_trap_links.pop(0)
             return
-        if await apply_trap(game, kind):
+        if await apply_trap(game, kind, ctx):
             ctx.pending_trap_links.pop(0)
             if ctx.debug_trap:
                 logger.info(f"[DEBUG TRAP] TrapLink trap applied: {name}")
@@ -3786,7 +3897,7 @@ async def dolphin_loop(ctx: P1Context):
                                 handle_qol_skip_cutscenes,
                                 handle_qol_min_leaf)
         # Handlers cosmetiques/mecaniques : tournent toujours (gardes internes).
-        always_handlers = (handle_qol_first_day, handle_qol_trip_item,
+        always_handlers = (handle_qol_first_day, handle_qol_trip_item, handle_trip_trap_timer,
                            handle_day_cycle, handle_ship_part_hints)
 
         handlers = list(always_handlers)

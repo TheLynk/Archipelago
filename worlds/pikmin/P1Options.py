@@ -205,6 +205,7 @@ TRAP_LINK_TRAP_NAMES = (
     "Damage Trap",
     "Teleport Trap",
     "Disbanding Trap",
+    "Trip Trap",
 )
 
 
@@ -229,7 +230,8 @@ class TrapLinkConversionTraps(OptionSet):
     not affect traps that already match a Pikmin trap name.
 
     Valid entries: Time Trap, End Day Trap, Damage Trap, Teleport Trap,
-    Disbanding Trap.
+    Disbanding Trap, Trip Trap.
+    Trip Trap is never picked when Disable Pikmin Trip is 'always'.
     """
     display_name = "Trap Link Conversion Allowed Traps"
     valid_keys = set(TRAP_LINK_TRAP_NAMES)
@@ -272,6 +274,19 @@ class WeightTeleportTrap(Range):
 class WeightDisbandingTrap(Range):
     """Weight for Disbanding Trap items (scatters your whole squad)."""
     display_name = "Disbanding Trap Weight"
+    range_start = 0
+    range_end = 100
+    default = 50
+
+
+class WeightTripTrap(Range):
+    """
+    Weight for Trip Trap items: for 10 seconds, the Pikmin running behind Olimar
+    stumble and fall. Removed from the pool when Disable Pikmin Trip is 'always'
+    (tripping is patched out of the game), and has no effect once you own the
+    'Trip Immunity' item.
+    """
+    display_name = "Trip Trap Weight"
     range_start = 0
     range_end = 100
     default = 50
@@ -523,6 +538,7 @@ class P1Options(PerGameCommonOptions):
     weight_damage_trap: WeightDamageTrap
     weight_teleport_trap: WeightTeleportTrap
     weight_disbanding_trap: WeightDisbandingTrap
+    weight_trip_trap: WeightTripTrap
 # DEATH LINK
     death_link: DeathLink
     pikmin_death_amount: PikminDeathAmount

@@ -300,11 +300,17 @@ DEMOFLAG_FIRST_NOON = 31  # DEMOFLAG_FirstNoon
 # execution, contrairement a une reecriture de code a chaud qui reste sans effet.
 # Cette copie de 0.9999 n'est utilisee QUE par le test de trip (les autres tests
 # 0.9999 du jeu utilisent d'autres copies .sdata2). PAL verifie a l'ISO ; NTSC
-# absent (adresse a deriver d'une ISO NTSC) -> mode item non applique en NTSC.
+# derivee de la decomp (voir ci-dessous).
 SYM_TRIP_RAND_CONST = {
     b"GPIP01": 0x803EE264,
+    # NTSC : meme constante @2356 d'aiCrowd.cpp. La .sdata2 d'aiCrowd a une
+    # disposition identique dans les deux versions (decomp config/*/symbols.txt :
+    # PAL 0x803EE230 + 0x34, NTSC 0x803E9310 + 0x34).
+    b"GPIE01": 0x803E9344,
 }
 TRIP_DISABLED_FLOAT = 2.0  # ecrit a la place de 0.9999 pour annuler le trip
+TRIP_NORMAL_FLOAT = 0.9999  # valeur d'origine du jeu
+TRIP_FORCED_FLOAT = 0.0     # #7 Trip Trap : 1er test toujours vrai -> ~30 % par test
 
 # ---------------------------------------------------------------------------
 # OptionSet "skip_events" : cle lisible -> indices EDemoFlags a pre-marquer.

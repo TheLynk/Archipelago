@@ -154,6 +154,7 @@ TRAP_ITEMS: dict[str, int] = {
     "Damage Trap":    71820,   # blesse Olimar (sante reduite)
     "Teleport Trap":  71821,   # teleporte Olimar a un endroit aleatoire proche
     "Disbanding Trap": 71822,  # disperse l'escouade (siffle le disband)
+    "Trip Trap":      71824,   # #7 : les Pikmin qui courent trebuchent pendant 10 s
 }
 
 # ====================================================================
@@ -212,6 +213,7 @@ TRAP_KINDS: dict[str, str] = {
     "Damage Trap":     "damage",
     "Teleport Trap":   "teleport",
     "Disbanding Trap": "disband",
+    "Trip Trap":       "trip",
 }
 
 
