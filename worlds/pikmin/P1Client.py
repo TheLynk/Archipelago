@@ -1304,6 +1304,55 @@ class P1CommandProcessor(ClientCommandProcessor):
         log("========== END OF DEBUG DUMP ==========")
         return True
 
+    def _cmd_debugonion(self) -> bool:
+        """Dump l'etat des oignons (rayon de lumiere, issue #34). A lancer EN JEU."""
+        if not dme.is_hooked():
+            logger.info("[DEBUG ONION] Dolphin not connected.")
+            return True
+        try:
+            raw = dme.read_bytes(0x80000000, 6)
+        except Exception as e:
+            logger.info(f"[DEBUG ONION] Could not read Game ID: {e}")
+            return True
+        game = BASE_ID_BY_PATCHED_PREFIX.get(raw[:3], raw)
+        ctx = self.ctx
+
+        def f32(a):
+            return struct.unpack(">f", dme.read_bytes(a, 4))[0]
+
+        def u32(a):
+            return struct.unpack(">I", dme.read_bytes(a, 4))[0]
+
+        try:
+            ps = u32(SYM_PLAYER_STATE_PTR[game])
+            cf = dme.read_byte(ps + PLAYERSTATE_OFFSETS["mContainerFlag"])
+            df = dme.read_byte(ps + PLAYERSTATE_OFFSETS["mDisplayPikiFlag"])
+            logger.info(f"[DEBUG ONION] mContainerFlag=0x{cf:02X} mDisplayPikiFlag=0x{df:02X} "
+                        f"in_level={is_in_level(game)} day_active={is_day_active(game)} "
+                        f"cone_ok={sorted(getattr(ctx, '_cone_ok', set()))} "
+                        f"skip_events={sorted((getattr(ctx, 'slot_data', {}) or {}).get('skip_events', []))}")
+            onions = find_onion_containers(game)
+            if not onions:
+                logger.info("[DEBUG ONION] Aucun oignon trouve dans cette zone.")
+            for color, g in onions.items():
+                eff = u32(g + GOAL_SPOT_MODEL_EFF)
+                line = (f"[DEBUG ONION] {color} @0x{g:08X} closing={dme.read_byte(g + GOAL_IS_CLOSING)} "
+                        f"coneEmit={dme.read_byte(g + GOAL_IS_CONE_EMIT)} timer={f32(g + GOAL_CONE_TIMER):.2f} "
+                        f"full=({f32(g + GOAL_CONE_FULL_SCALE):.2f},{f32(g + GOAL_CONE_FULL_SCALE + 4):.2f},"
+                        f"{f32(g + GOAL_CONE_FULL_SCALE + 8):.2f}) spotEff=0x{eff:08X}")
+                if _RAM_MIN <= eff < _RAM_MAX:
+                    sc = struct.unpack(">fff", dme.read_bytes(eff + EFFSHPINST_SCALE, 12))
+                    tr = struct.unpack(">fff", dme.read_bytes(eff + EFFSHPINST_SCALE + 24, 12))
+                    line += (f" scale=({sc[0]:.2f},{sc[1]:.2f},{sc[2]:.2f}) "
+                             f"pos=({tr[0]:.0f},{tr[1]:.0f},{tr[2]:.0f}) "
+                             f"visible={dme.read_byte(eff + 0x42)}")
+                gpos = struct.unpack(">fff", dme.read_bytes(g + 0x41C, 12))
+                line += f" onionPos=({gpos[0]:.0f},{gpos[1]:.0f},{gpos[2]:.0f})"
+                logger.info(line)
+        except Exception as e:
+            logger.info(f"[DEBUG ONION] Erreur : {e!r}")
+        return True
+
     def _cmd_debugparts(self) -> bool:
         """Dump l'etat des pellets de pieces de vaisseau (pelletMgr + radar).
 
@@ -1548,6 +1597,9 @@ class P1Context(CommonContext):
         # #33 : bonus Pikmin recus hors journee, a compter comme "germes" au
         # debut de la prochaine journee (couleur -> nombre).
         self._pending_born: dict[str, int] = {"red": 0, "yellow": 0, "blue": 0}
+        # #34 : oignons abandonnes / nb de corrections du cone, par journee.
+        self._cone_ok: set = set()
+        self._cone_tries: dict = {}
         # Day start detection for safety check
         self.last_hour: int = -1
         # Debug mode toggles (via /debughint, /debugdays, /debugpbonus)
@@ -2666,7 +2718,6 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
 #   - sauvegarde (checksum qui change en jeu) -> on enregistre l'etat courant.
 # Copier un fichier vers un autre slot donne le meme checksum : l'etat suit.
 
-SAVE_STATUS_FRESH = 1
 _ONEPLAYER_CARD_SELECT = 1
 _ONEPLAYER_INTRO_GAME = 5
 _SAVE_TRACK_SUBSECTIONS = (_ONEPLAYER_INTRO_GAME, ONEPLAYER_MAP_SELECT, ONEPLAYER_NEW_PIKI_GAME)
@@ -3594,6 +3645,95 @@ async def handle_qol_skip_cutscenes(ctx: P1Context, game: Game) -> None:
         pass
 
 
+# --- #34 : rayon de lumiere (cone) sous l'oignon ------------------------------
+# GoalItem (include/GoalItem.h) :
+#   _3F6 bool mIsClosing         _3F8 f32 mConeSizeTimer
+#   _3FC Vector3f echelle pleine du cone
+#   _408 bool mIsConeEmit        _40C EffShpInst* mSpotModelEff (mSRT.s @ +0x14)
+# Un oignon pas encore decouvert est charge avec un cone (et une echelle de
+# reference) a 0 ; seule la cinematique de decouverte le fait apparaitre. Avec
+# "Onion Discovery" sautee, le rayon manquait donc jusqu'au lendemain.
+GOAL_IS_CLOSING = 0x3F6
+GOAL_CONE_TIMER = 0x3F8
+GOAL_CONE_FULL_SCALE = 0x3FC
+GOAL_IS_CONE_EMIT = 0x408
+GOAL_SPOT_MODEL_EFF = 0x40C
+EFFSHPINST_SCALE = 0x14
+_BOOT_BIT = {"blue": 0x08, "red": 0x10, "yellow": 0x20}  # hasBootContainer (y)
+CONE_DEFAULT_SCALE = 0.1   # echelle pleine du cone observee sur tous les oignons
+CONE_MAX_TRIES = 5         # corrections max par oignon et par journee
+
+
+async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
+    """#34 : avec "Onion Discovery" sautee, force le rayon de tous les oignons
+    presents des le debut de la journee.
+
+    Un cone a 0 recoit l'echelle d'un oignon normal (sinon 0.1), ecrite
+    directement dans son modele (pas de startConeEmit : il forcerait l'IA d'un
+    oignon non decouvert en GOAL_Wait). Le jeu pouvant re-reduire le cone juste
+    apres le chargement, on reverifie a chaque tick, au plus CONE_MAX_TRIES fois.
+    """
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    if "Onion Discovery" not in slot_data.get("skip_events", []):
+        return
+    ps_ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ps_ptr is None:
+        return
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ps_ptr, 4))[0]
+        if not (_RAM_MIN <= ps < _RAM_MAX):
+            return
+        cf = dme.read_byte(ps + PLAYERSTATE_OFFSETS["mContainerFlag"])
+    except Exception:
+        return
+    todo = [c for c, bit in _BOOT_BIT.items() if cf & bit and c not in ctx._cone_ok]
+    if not todo:
+        return
+    onions = find_onion_containers(game)
+
+    def f32(addr: int) -> float:
+        return struct.unpack(">f", dme.read_bytes(addr, 4))[0]
+
+    # Echelle de reference : celle d'un oignon dont le cone est normal.
+    ref = CONE_DEFAULT_SCALE
+    for g in onions.values():
+        try:
+            if f32(g + GOAL_CONE_FULL_SCALE) > 0.0:
+                ref = f32(g + GOAL_CONE_FULL_SCALE)
+                break
+        except Exception:
+            pass
+    full = struct.pack(">fff", ref, ref, ref)
+
+    for color in todo:
+        goal = onions.get(color)
+        if not goal:
+            continue  # oignon absent de cette zone
+        try:
+            if dme.read_byte(goal + GOAL_IS_CONE_EMIT) or dme.read_byte(goal + GOAL_IS_CLOSING):
+                continue  # animation du jeu en cours
+            eff = struct.unpack(">I", dme.read_bytes(goal + GOAL_SPOT_MODEL_EFF, 4))[0]
+            if not (_RAM_MIN <= eff < _RAM_MAX):
+                continue
+            if f32(eff + EFFSHPINST_SCALE) > 0.0:
+                continue  # visible pour l'instant : on reverifiera
+            tries = ctx._cone_tries.get(color, 0)
+            if tries >= CONE_MAX_TRIES:
+                ctx._cone_ok.add(color)
+                if ctx.debug_pbonus:
+                    logger.info(f"[DEBUG] Cone de l'oignon {color} : {CONE_MAX_TRIES} essais, abandon.")
+                continue
+            ctx._cone_tries[color] = tries + 1
+            if f32(goal + GOAL_CONE_FULL_SCALE) <= 0.0:
+                dme.write_bytes(goal + GOAL_CONE_FULL_SCALE, full)
+            dme.write_bytes(eff + EFFSHPINST_SCALE, full)
+            if ctx.debug_pbonus:
+                logger.info(f"[DEBUG] Cone de l'oignon {color} relance (echelle {ref:.2f}).")
+        except Exception as e:
+            if ctx.debug_pbonus:
+                logger.info(f"[DEBUG] Cone de l'oignon {color} : erreur {e!r}")
+
+
 async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
     """QOL 'Always Keep One Leaf Pikmin' : garde >=1 Pikmin Leaf, UNIQUEMENT pour
     les couleurs reellement possedees (hasContainer). Forcer une couleur non
@@ -4081,6 +4221,8 @@ async def dolphin_loop(ctx: P1Context):
             ctx._dead_pikis_last = None
             ctx._dead_pikis_sent = 0
             ctx._bond_dead_last = None
+            ctx._cone_ok = set()
+            ctx._cone_tries = {}
             ctx._suppress_orima_send = False
             ctx._deathlink_locked_this_day = False
             ctx._pending_self_kill = False
@@ -4093,7 +4235,7 @@ async def dolphin_loop(ctx: P1Context):
 
         # Handlers qui LISENT de la memoire propre au niveau (collecte de pieces,
         # compteurs de l'escouade, DeathLink) : uniquement dans un niveau.
-        in_level_handlers = (handle_parts, handle_pikmin_locations, handle_pikmin_bond,
+        in_level_handlers = (handle_parts, handle_pikmin_locations, handle_pikmin_bond, handle_onion_cone,
                              handle_death_link, handle_traps)
         # Handlers actifs aussi sur la carte du monde : reception d'objets
         # (persistee via STAGE) et deblocage des zones (visible sur la carte).
