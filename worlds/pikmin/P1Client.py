@@ -107,6 +107,29 @@ LANG_MSG_DETECTED = {
 }
 
 # Synchronisation AP active (une partie vient d'etre chargee), par langue du jeu.
+# Options actives annoncees a la connexion, par langue du jeu.
+BOND_ACTIVE_MSG = {
+    "en": "Olimar-Pikmin Bond active (-{dmg} HP per Pikmin death).",
+    "fr": "Lien Olimar/Pikmin actif (-{dmg} PV par Pikmin mort).",
+    "de": "Olimar-Pikmin-Band aktiv (-{dmg} LP pro gestorbenem Pikmin).",
+    "it": "Legame Olimar-Pikmin attivo (-{dmg} PV per ogni Pikmin morto).",
+    "es": "Vínculo Olimar-Pikmin activo (-{dmg} PS por cada Pikmin muerto).",
+}
+DEATHLINK_ACTIVE_MSG = {
+    "en": "DeathLink active (mode {mode}).",
+    "fr": "DeathLink actif (mode {mode}).",
+    "de": "DeathLink aktiv (Modus {mode}).",
+    "it": "DeathLink attivo (modalità {mode}).",
+    "es": "DeathLink activo (modo {mode}).",
+}
+TRAPLINK_ACTIVE_MSG = {
+    "en": "TrapLink active.",
+    "fr": "TrapLink actif.",
+    "de": "TrapLink aktiv.",
+    "it": "TrapLink attivo.",
+    "es": "TrapLink activo.",
+}
+
 SYNC_ACTIVE_MSG = {
     "en": "Save loaded — AP sync active.",
     "fr": "Sauvegarde chargée — synchronisation AP active.",
@@ -1343,6 +1366,9 @@ EXIT_WATCHDOG_SECONDS = 6
 _exit_watchdog_file = None
 
 
+_exit_watchdog_armed = False
+
+
 def _arm_exit_watchdog() -> None:
     """#2 : garantit que le processus se termine apres une demande de fermeture.
 
@@ -1356,7 +1382,10 @@ def _arm_exit_watchdog() -> None:
     termine le processus. Ca marche meme si le thread principal est coince
     dans un appel C (dolphin_memory_engine, Kivy/SDL, join de thread...).
     """
-    global _exit_watchdog_file
+    global _exit_watchdog_file, _exit_watchdog_armed
+    if _exit_watchdog_armed:
+        return
+    _exit_watchdog_armed = True
     stream = None
     for h in logging.getLogger().handlers:
         if isinstance(h, logging.FileHandler) and getattr(h, "stream", None):
@@ -1405,6 +1434,12 @@ class P1Context(CommonContext):
 
         # Track how many Pikmin bonus items have already been applied
         self.pikmin_items_applied: dict[int, int] = {}
+        # #4 Custom Save : bonus Pikmin appliques, par sauvegarde du jeu
+        # (cle = checksum du fichier, hex). Voir track_game_save().
+        self.game_saves: dict[str, dict] = {}
+        self._save_prev_sub: Optional[int] = None
+        self._save_crc: Optional[int] = None
+        self._pending_save_load: Optional[tuple] = None
         # Day start detection for safety check
         self.last_hour: int = -1
         # Debug mode toggles (via /debughint, /debugdays, /debugpbonus)
@@ -1531,6 +1566,12 @@ class P1Context(CommonContext):
                 logger.info(f"[DEBUG] Loaded {len(self.pikmin_items_applied)} applied Pikmin items")
         except Exception as e:
             logger.debug(f"Could not load applied items: {e}")
+        # #4 : etat "deja applique" de chaque sauvegarde du jeu.
+        try:
+            self.game_saves = dict(Utils.persistent_load().get("pikmin_saves", {}).get(key, {}) or {})
+        except Exception as e:
+            self.game_saves = {}
+            logger.debug(f"Could not load game saves: {e}")
         # Traps deja appliques (pour ne pas rejouer un trap au redemarrage).
         try:
             tdata = Utils.persistent_load().get("pikmin_traps", {}).get(self._save_key(), {})
@@ -1553,6 +1594,17 @@ class P1Context(CommonContext):
                                    {str(k): v for k, v in self.traps_applied.items()})
         except Exception as e:
             logger.debug(f"Could not save applied traps: {e}")
+
+    def store_game_saves(self) -> None:
+        """#4 : persiste l'etat par sauvegarde du jeu (borne a MAX_TRACKED_SAVES)."""
+        if not self.auth:
+            return
+        while len(self.game_saves) > MAX_TRACKED_SAVES:
+            self.game_saves.pop(next(iter(self.game_saves)))
+        try:
+            Utils.persistent_store("pikmin_saves", self._save_key(), dict(self.game_saves))
+        except Exception as e:
+            logger.debug(f"Could not store game saves: {e}")
 
     def reset_server_state(self) -> None:
         """Repart d'un etat propre a chaque deconnexion.
@@ -1629,9 +1681,10 @@ class P1Context(CommonContext):
             self.pikmin_bond = bool(self.slot_data.get("pikmin_bond", 0))
             self.pikmin_bond_damage = float(max(1, int(self.slot_data.get("pikmin_bond_damage", 5))))
             self._bond_dead_last = None
+            _lang = getattr(self, "detected_language", "en")
             if self.pikmin_bond:
-                logger.info(f"[Pikmin] Lien Olimar/Pikmin actif "
-                            f"(-{self.pikmin_bond_damage:g} PV par Pikmin mort).")
+                _m = BOND_ACTIVE_MSG.get(_lang, BOND_ACTIVE_MSG["en"])
+                logger.info("[Pikmin] " + _m.format(dmg=f"{self.pikmin_bond_damage:g}"))
             tags = set(self.tags)
             if self.death_link_mode != 0:
                 tags.add("DeathLink")
@@ -1642,9 +1695,10 @@ class P1Context(CommonContext):
                 async_start(self.send_msgs([{"cmd": "ConnectUpdate", "tags": list(self.tags)}]))
             if self.death_link_mode != 0:
                 _dl = {1: "classic", 2: "pikmin", 3: "both"}.get(self.death_link_mode, "?")
-                logger.info(f"[Pikmin] DeathLink actif (mode {_dl}).")
+                _m = DEATHLINK_ACTIVE_MSG.get(_lang, DEATHLINK_ACTIVE_MSG["en"])
+                logger.info("[Pikmin] " + _m.format(mode=_dl))
             if self.trap_link_enabled:
-                logger.info("[Pikmin] TrapLink actif.")
+                logger.info("[Pikmin] " + TRAPLINK_ACTIVE_MSG.get(_lang, TRAPLINK_ACTIVE_MSG["en"]))
         elif cmd == "LocationInfo":
             count = len(args.get("locations", []))
             if self.debug_hint:
@@ -2475,6 +2529,130 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
         # sinon : pas applicable maintenant, on retentera au prochain tick.
 
 
+# --- #4 Custom Save -----------------------------------------------------------
+#
+# Probleme : l'etat "bonus Pikmin deja appliques" etait stocke uniquement cote
+# client (_persistent_storage.yaml, par slot AP). Nouvelle partie, autre slot de
+# sauvegarde du jeu (A/B/C) ou rechargement d'une sauvegarde anterieure : les
+# bonus n'etaient jamais reappliques (ou l'etat ne correspondait plus au jeu).
+#
+# La sauvegarde du jeu n'a pas de place libre exploitable (seul PlayerState::_186
+# est sauvegarde sans etre utilise, et c'est un bool normalise a 0/1 au
+# chargement). On identifie donc chaque sauvegarde par son checksum
+# (gameflow.mSaveGameCrc) : il est lu depuis la carte au choix du fichier et
+# recalcule a chaque sauvegarde. Le client memorise, pour chaque checksum,
+# les bonus appliques AU MOMENT de cette sauvegarde :
+#   - chargement d'un fichier (CardSelect -> jeu) :
+#       * nouvelle partie (mSavedDay == 1)   -> rien d'applique : tout est reapplique ;
+#       * checksum connu                    -> etat de cette sauvegarde (les bonus
+#                                               appliques puis non sauvegardes seront
+#                                               reappliques) ;
+#       * checksum inconnu (save anterieure a cette version) -> etat actuel conserve.
+#   - sauvegarde (checksum qui change en jeu) -> on enregistre l'etat courant.
+# Copier un fichier vers un autre slot donne le meme checksum : l'etat suit.
+
+SAVE_STATUS_FRESH = 1
+_ONEPLAYER_CARD_SELECT = 1
+_ONEPLAYER_INTRO_GAME = 5
+_SAVE_TRACK_SUBSECTIONS = (_ONEPLAYER_INTRO_GAME, ONEPLAYER_MAP_SELECT, ONEPLAYER_NEW_PIKI_GAME)
+MAX_TRACKED_SAVES = 60
+
+# Messages par langue du jeu detectee (comme SYNC_ACTIVE_MSG).
+SAVE_LOADED_MSG = {
+    "new": {
+        "en": "New game (file {slot}): every Pikmin bonus received will be applied.",
+        "fr": "Nouvelle partie (fichier {slot}) : tous les bonus Pikmin reçus seront appliqués.",
+        "de": "Neues Spiel (Datei {slot}): alle erhaltenen Pikmin-Boni werden angewendet.",
+        "it": "Nuova partita (file {slot}): tutti i bonus Pikmin ricevuti verranno applicati.",
+        "es": "Nueva partida (archivo {slot}): se aplicarán todos los bonus de Pikmin recibidos.",
+    },
+    "known": {
+        "en": "Save recognized (file {slot}): Pikmin bonuses not yet saved will be re-applied.",
+        "fr": "Sauvegarde reconnue (fichier {slot}) : les bonus Pikmin non sauvegardés seront réappliqués.",
+        "de": "Spielstand erkannt (Datei {slot}): noch nicht gespeicherte Pikmin-Boni werden erneut angewendet.",
+        "it": "Salvataggio riconosciuto (file {slot}): i bonus Pikmin non ancora salvati verranno riapplicati.",
+        "es": "Partida reconocida (archivo {slot}): se volverán a aplicar los bonus de Pikmin no guardados.",
+    },
+    "unknown": {
+        "en": "Untracked save (file {slot}, created before this version): current state kept.",
+        "fr": "Sauvegarde non suivie (fichier {slot}, créée avant cette version) : état actuel conservé.",
+        "de": "Nicht verfolgter Spielstand (Datei {slot}, vor dieser Version erstellt): aktueller Stand bleibt erhalten.",
+        "it": "Salvataggio non tracciato (file {slot}, creato prima di questa versione): stato attuale mantenuto.",
+        "es": "Partida no registrada (archivo {slot}, creada antes de esta versión): se mantiene el estado actual.",
+    },
+}
+
+
+def _read_u32_opt(addr: int) -> Optional[int]:
+    try:
+        return struct.unpack(">I", dme.read_bytes(addr, 4))[0]
+    except Exception:
+        return None
+
+
+def track_game_save(ctx: P1Context, game: Game) -> None:
+    """#4 : suit chargements et sauvegardes du jeu (voir bloc ci-dessus)."""
+    gf = SYM_GAMEFLOW.get(game)
+    if not gf:
+        return
+    sub = _oneplayer_subsection(game)
+    prev = ctx._save_prev_sub
+    ctx._save_prev_sub = sub
+    connected = bool(ctx.auth) and bool(getattr(ctx, "slot_data", None))
+
+    if sub in _SAVE_TRACK_SUBSECTIONS:
+        crc = _read_u32_opt(gf["SAVE_GAME_CRC"])
+        if crc is not None:
+            if prev == _ONEPLAYER_CARD_SELECT:
+                # Un fichier vient d'etre choisi (nouvelle partie ou chargement).
+                # Nouvelle partie = PlayState.mSavedDay == 1 : un fichier vierge
+                # garde le jour 1 de PlayState::Initialise, alors que toute
+                # sauvegarde a lieu apres le passage au jour suivant (>= 2).
+                # (mSaveStatus n'est PAS fiable : CardSelect le passe a
+                # ReadyToSave des qu'un fichier vierge est choisi.)
+                try:
+                    saved_day = dme.read_byte(gf["PLAYSTATE_SAVED_DAY"])
+                except Exception:
+                    saved_day = None
+                slot = _read_u32_opt(gf["FILE_SLOT"])
+                if ctx.debug_pbonus:
+                    logger.info(f"[DEBUG] Fichier choisi : crc={crc:08X} savedDay={saved_day} slot={slot}")
+                ctx._pending_save_load = (crc, saved_day == 1,
+                                          (slot + 1) if slot is not None and slot < 3 else "?")
+                ctx._save_crc = crc
+            elif ctx._save_crc is None:
+                # Client demarre (ou reconnecte) en cours de partie : continuation.
+                ctx._save_crc = crc
+            elif crc != ctx._save_crc:
+                # Le jeu vient de sauvegarder : on fige l'etat pour ce checksum.
+                ctx._save_crc = crc
+                if connected and ctx._pending_save_load is None:
+                    key = f"{crc:08X}"
+                    ctx.game_saves.pop(key, None)  # re-insere en fin (plus recent)
+                    ctx.game_saves[key] = {str(k): v for k, v in ctx.pikmin_items_applied.items()}
+                    ctx.store_game_saves()
+                    if ctx.debug_pbonus:
+                        logger.info(f"[DEBUG] Sauvegarde du jeu {key} : etat des bonus enregistre.")
+
+    # Resolution du chargement (attend la connexion au serveur si besoin).
+    if ctx._pending_save_load is not None and connected:
+        crc, fresh, slot = ctx._pending_save_load
+        ctx._pending_save_load = None
+        key = f"{crc:08X}"
+        if fresh:
+            ctx.pikmin_items_applied = {}
+            kind = "new"
+        elif key in ctx.game_saves:
+            ctx.pikmin_items_applied = {int(k): v for k, v in ctx.game_saves[key].items()}
+            kind = "known"
+        else:
+            kind = "unknown"
+        _lang = getattr(ctx, "detected_language", "en")
+        _msgs = SAVE_LOADED_MSG[kind]
+        logger.info("[Pikmin] " + _msgs.get(_lang, _msgs["en"]).format(slot=slot))
+        ctx.save_applied()
+
+
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
     """Apply received Pikmin bonus items.
 
@@ -2486,6 +2664,9 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
        Yellow/Blue dynamic TBD — only Red enabled for now.
     """
     if game not in ONION_STAGE_ADDRS_CLIENT:
+        return
+    # #4 : fichier juste charge, etat pas encore resolu -> on attend.
+    if ctx._pending_save_load is not None:
         return
 
     stage_addrs   = ONION_STAGE_ADDRS_CLIENT[game]
@@ -3550,6 +3731,12 @@ async def dolphin_loop(ctx: P1Context):
         in_level = is_in_level(game_version)
         save_active = is_save_active(game_version)
 
+        # #4 Custom Save : chargements / sauvegardes du jeu.
+        try:
+            track_game_save(ctx, game_version)
+        except Exception:
+            logger.exception("[Pikmin] Erreur dans track_game_save — la boucle continue.")
+
         # Message de synchronisation base sur save_active : passer par la carte
         # du monde entre deux niveaux ne doit pas afficher "en pause".
         if save_active != ctx._save_was_loaded:
@@ -3673,7 +3860,17 @@ def run_client(*args) -> None:
 
         loop_task = asyncio.create_task(dolphin_loop(ctx), name="game loop")
 
-        await ctx.exit_event.wait()
+        # #2 : la fenetre fermee doit TOUJOURS mener a la sortie, meme si
+        # kvui.on_stop (qui leve exit_event) n'est jamais appele.
+        exit_wait = asyncio.create_task(ctx.exit_event.wait(), name="exit wait")
+        waiters = {exit_wait}
+        if ctx.ui_task:
+            waiters.add(ctx.ui_task)
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        if not ctx.exit_event.is_set():
+            logger.info("[Pikmin] UI closed without exit event — forcing client exit.")
+            ctx.exit_event.set()
+        exit_wait.cancel()
         # #2 : chaque etape de fermeture est bornee dans le temps ; aucune ne
         # doit pouvoir bloquer indefiniment la sortie du client.
         try:

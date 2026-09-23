@@ -12,6 +12,12 @@ class P1UI(GameManager):
 
     def build(self) -> Layout:
         super().build()
+        # #2 : armer le chien de garde de fermeture DES le clic sur la croix.
+        # Dans les logs du bug, Kivy sort de sa boucle ("Leaving application in
+        # progress...") mais on_stop (qui leve exit_event) n'est jamais atteint :
+        # le blocage a lieu pendant la fermeture Kivy/SDL elle-meme.
+        from kivy.core.window import Window
+        Window.bind(on_request_close=self._p1_on_request_close)
         for c in self.grid.children:
             print(type(c))
 
@@ -19,6 +25,11 @@ class P1UI(GameManager):
                                      font_size=sp(15))
         self.grid.add_widget(self.dolphin_status_bar, index=3)
         return self.container
+
+    def _p1_on_request_close(self, *args, **kwargs):
+        from .P1Client import _arm_exit_watchdog
+        _arm_exit_watchdog()
+        return False  # ne pas bloquer la fermeture
 
     def update_texts(self, dt):
         super().update_texts(dt)
