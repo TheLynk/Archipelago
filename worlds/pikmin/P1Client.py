@@ -3095,6 +3095,13 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
 #     comme le jeu lors d'un vrai deblocage (DrawWorldMap::start -> appear()).
 # Adresses/offsets : cf. SYM_MAP_WINDOW_PTR / MAP_GAME2SCR / WORLDMAP_CHAIN dans
 # P1Symbols.py (generes et maintenus par gen_symbols.py depuis la decomp).
+# #40 : WorldMapCoursePoint.mLinkPoints (_2C), indexe par linkFlag
+# (src/plugPikiYamashita/drawWorldMap.cpp : Up 0, Down 1, Left 2, Right 3).
+CP_LINKPOINTS = 0x2C
+CP_LINK_UP = 0
+CP_LINK_LEFT = 2
+
+
 def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) -> None:
     """Rafraichit la carte du monde en place quand une piece/zone arrive alors
     que le joueur y est deja (issue #12). Sans effet hors carte du monde."""
@@ -3118,6 +3125,28 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
         cur_addr = wm + W["DWM_CURRPARTS"]
         if struct.unpack(">i", dme.read_bytes(cur_addr, 4))[0] != ship_parts_count:
             dme.write_bytes(cur_addr, struct.pack(">i", ship_parts_count))
+
+        # --- #40 : liens de navigation du curseur ---------------------------
+        # WorldMapCoursePointMgr::init() calcule les liens haut/bas/gauche/droite
+        # UNE fois, a l'ouverture de la carte, selon courseOpen(Distant Spring).
+        # Distant Spring ferme : Forest of Hope (scr 1) monte vers Forest Navel
+        # (scr 3) et Forest Navel va a gauche vers Forest of Hope, en SAUTANT
+        # Distant Spring (scr 0). Si la zone est revelee en direct (#12), il faut
+        # refaire ces 2 liens comme le jeu le ferait zone ouverte :
+        #   scr1.mLinkPoints[Up]   = &points[0]
+        #   scr3.mLinkPoints[Left] = &points[0]
+        # (WorldMapCoursePoint.mLinkPoints @ _2C, ordre Up, Down, Left, Right.)
+        if ship_parts_count >= 12:
+            mgr_l = struct.unpack(">I", dme.read_bytes(wm + W["DWM_COURSEPOINTMGR"], 4))[0]
+            if _RAM_MIN <= mgr_l < _RAM_MAX:
+                pts = mgr_l + W["CPM_POINTS"]
+                ds_point = pts + 0 * W["CP_STRIDE"]
+                for scr, link in ((1, CP_LINK_UP), (3, CP_LINK_LEFT)):
+                    la = pts + scr * W["CP_STRIDE"] + CP_LINKPOINTS + link * 4
+                    if struct.unpack(">I", dme.read_bytes(la, 4))[0] != ds_point:
+                        dme.write_bytes(la, struct.pack(">I", ds_point))
+                        if getattr(ctx, "debug_hint", False):
+                            logger.info(f"[DEBUG] Carte : lien scr{scr}/{link} -> Distant Spring")
 
         # --- zones : on ne revele que si la carte est en mode Operation (idle),
         #     pour ne pas perturber un dialogue de confirmation / le journal.
