@@ -544,7 +544,7 @@ def kill_olimar(game: Game) -> bool:
 
 # Reglages des effets de trap.
 TIME_TRAP_HOURS = 2      # heures de jeu ajoutees a l'horloge
-DAMAGE_TRAP_LOSS = 40.0  # points de vie retires a Olimar (sante max = 100)
+DAMAGE_TRAP_LOSS = 20.0  # % de sante retire par defaut (#43 : option damage_trap_amount)
 DAMAGE_TRAP_FLOOR = 2.0  # plancher pour ne pas tuer Olimar (mort a <= 1.0)
 TELEPORT_TRAP_RANGE = 600.0  # rayon horizontal du deplacement (unites monde)
 TELEPORT_TRAP_LIFT = 60.0    # hauteur ajoutee pour retomber sur le terrain
@@ -686,17 +686,34 @@ def apply_end_day_trap(game: Game) -> bool:
         return False
 
 
-def apply_damage_trap(game: Game) -> bool:
-    """Blesse Olimar : reduit sa sante sans le tuer (plancher au-dessus de la mort)."""
+DAMAGE_TRAP_MAX_HEALTH = 100.0  # sante max d'Olimar
+
+
+def apply_damage_trap(game: Game, ctx=None) -> bool:
+    """Blesse Olimar de `damage_trap_amount` % de sa sante max (#43).
+
+    Option `damage_trap_can_kill` : si la sante tombe au seuil de mort du jeu
+    (<= 1.0), Olimar meurt (vraie sequence de mort via kill_olimar, qui declenche
+    aussi le DeathLink classic) ; sinon on laisse DAMAGE_TRAP_FLOOR PV.
+    """
     navi = _resolve_olimar(game)
     if navi is None:
         return False
+    slot_data = (getattr(ctx, "slot_data", None) or {}) if ctx is not None else {}
+    amount = float(slot_data.get("damage_trap_amount", DAMAGE_TRAP_LOSS))
+    can_kill = bool(slot_data.get("damage_trap_can_kill", 0))
+    loss = DAMAGE_TRAP_MAX_HEALTH * amount / 100.0
     addr = navi + NAVI_CHAIN["CREATURE_HEALTH"]
     try:
         h = struct.unpack(">f", dme.read_bytes(addr, 4))[0]
-        new = max(DAMAGE_TRAP_FLOOR, h - DAMAGE_TRAP_LOSS)
-        # Ne jamais soigner : si Olimar est deja plus bas que le plancher, on
-        # laisse tel quel.
+        new = h - loss
+        if new <= 1.0:
+            if can_kill:
+                if kill_olimar(game) and ctx is not None:
+                    ctx._client_kill_reason = "Damage Trap"
+                return True
+            new = DAMAGE_TRAP_FLOOR
+        # Ne jamais soigner : si Olimar est deja plus bas, on laisse tel quel.
         if new < h:
             dme.write_bytes(addr, struct.pack(">f", new))
         return True
@@ -960,12 +977,44 @@ async def handle_trip_trap_timer(ctx, game: Game) -> None:
             pass
 
 
+async def report_client_kill(ctx) -> None:
+    """#43 : envoie le DeathLink d'une mort d'Olimar provoquee par le client
+    (Damage Trap, lien Olimar/Pikmin).
+
+    La detection "classic" (front montant de orimaDead dans handle_death_link)
+    ne tourne que pendant le gameplay interactif ; or la mort coupe aussitot
+    le gameplay (debut de la sequence de fin de journee) : le front n'etait
+    jamais vu et aucun DeathLink ne partait. On l'envoie donc directement, et
+    on neutralise la detection pour ne pas l'envoyer une 2e fois.
+    """
+    reason = getattr(ctx, "_client_kill_reason", None) or "the client"
+    ctx._client_kill_reason = None
+    # Joueur a l'origine (Damage Trap : slot qui a envoye le trap / source TrapLink).
+    source = getattr(ctx, "_trap_source", None) if reason == "Damage Trap" else None
+    ctx._suppress_orima_send = True
+    if getattr(ctx, "death_link_mode", 0) not in (1, 3):  # classic / both
+        return
+    if getattr(ctx, "_deathlink_locked_this_day", False):
+        return
+    name = ctx.player_names.get(ctx.slot, "Olimar")
+    if source:
+        await ctx.send_death(f"{name} was taken down by a {reason} from {source}.")
+    else:
+        await ctx.send_death(f"{name} was taken down by the {reason}.")
+    ctx._deathlink_locked_this_day = True
+
+
 async def apply_trap(game: Game, kind: str, ctx=None) -> bool:
     """Applique un trap par type interne. Renvoie True si applique."""
     if kind == "disband":
         return await apply_disband_trap(game)
     if kind == "trip":
         return apply_trip_trap(ctx, game)
+    if kind == "damage":
+        ok = apply_damage_trap(game, ctx)
+        if ok and ctx is not None and getattr(ctx, "_client_kill_reason", None):
+            await report_client_kill(ctx)
+        return ok
     fn = TRAP_APPLIERS.get(kind)
     return bool(fn and fn(game))
 
@@ -1705,6 +1754,7 @@ class P1Context(SuperContext):
         self._cone_ok: set = set()
         self._cone_tries: dict = {}
         self._cone_free_since: Optional[float] = None  # #46
+        self._client_kill_reason: Optional[str] = None  # #43
         # Day start detection for safety check
         self.last_hour: int = -1
         # Debug mode toggles (via /debughint, /debugdays, /debugpbonus)
@@ -1799,6 +1849,8 @@ class P1Context(SuperContext):
         self._pending_self_kill: bool = False
         # Traps recus via TrapLink (transitoires), en attente d'application en jeu.
         self.pending_trap_links: list = []
+        self.pending_trap_link_sources: list = []  # #43 : parallele a pending_trap_links
+        self._trap_source: Optional[str] = None     # #43 : joueur a l'origine du trap en cours
         # Traps recus en tant qu'items AP, deja appliques : {item_id: nb}.
         self.traps_applied: dict[int, int] = {}
         # Apres un End Day Trap : on suspend TOUTE application de trap jusqu'au
@@ -2070,12 +2122,12 @@ class P1Context(SuperContext):
                         if self.debug_trap:
                             logger.info(f"[TrapLink] Unknown name -> random Pikmin trap: "
                                         f"'{converted}' (pool={pool}).")
-                        self.queue_trap_link(converted)
+                        self.queue_trap_link(converted, source)
                         if self.debug_trap:
                             logger.info(f"[TrapLink] Trap '{converted}' queued for application.")
                 else:
                     # Nom deja connu (trap Pikmin) : applique tel quel, pas de conversion.
-                    self.queue_trap_link(trap_name)
+                    self.queue_trap_link(trap_name, source)
                     if self.debug_trap:
                         logger.info(f"[TrapLink] Trap '{trap_name}' queued for application.")
 
@@ -2090,6 +2142,10 @@ class P1Context(SuperContext):
         """
         await super().send_death(death_text)
         self._sent_death_times.add(self.last_death_link)
+        # Le message generique d'Archipelago ("Sending death to your friends...")
+        # n'affiche pas la cause envoyee aux autres joueurs : on l'affiche aussi.
+        if death_text and self.server and self.server.socket:
+            logger.info(f"DeathLink: {death_text}")
         # Borne la memoire (les vieux timestamps ne reviendront plus).
         if len(self._sent_death_times) > 64:
             self._sent_death_times = set(sorted(self._sent_death_times)[-32:])
@@ -2103,9 +2159,10 @@ class P1Context(SuperContext):
         super().on_deathlink(data)
         self.pending_kill = True
 
-    def queue_trap_link(self, trap_name: str) -> None:
+    def queue_trap_link(self, trap_name: str, source: Optional[str] = None) -> None:
         """Place un trap recu via TrapLink dans la file d'application (surchargeable)."""
         self.pending_trap_links.append(trap_name)
+        self.pending_trap_link_sources.append(source)  # #43 : joueur source
 
     async def send_trap_link(self, trap_name: str) -> None:
         """Diffuse aux autres joueurs TrapLink le trap qu'on vient de subir."""
@@ -2730,7 +2787,9 @@ async def handle_pikmin_bond(ctx: P1Context, game: Game) -> None:
         logger.info(f"[DEBUG BOND] {deaths} Pikmin mort(s) : PV {h:.1f} -> {max(new, 0.0):.1f}")
     if new <= 1.0:
         # Mort d'Olimar par le lien : sequence de mort reelle du jeu.
-        kill_olimar(game)
+        if kill_olimar(game):
+            ctx._client_kill_reason = "Pikmin Bond"
+            await report_client_kill(ctx)
     else:
         try:
             dme.write_bytes(addr, struct.pack(">f", new))
@@ -2792,6 +2851,10 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
         already = ctx.traps_applied.get(item_id, 0)
         if total <= already:
             continue
+        # #43 : joueur qui a envoye CE trap (la (already+1)-ieme occurrence).
+        occ = [i for i in ctx.items_received if i.item == item_id][already]
+        ctx._trap_source = (ctx.player_names.get(occ.player)
+                            if getattr(occ, "player", ctx.slot) != ctx.slot else None)
         if await apply_trap(game, kind, ctx):
             ctx.traps_applied[item_id] = already + 1  # un a la fois
             ctx.save_applied()
@@ -2814,9 +2877,14 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
         kind = TRAP_KINDS.get(name)
         if kind is None:
             ctx.pending_trap_links.pop(0)
+            if ctx.pending_trap_link_sources:
+                ctx.pending_trap_link_sources.pop(0)
             return
+        ctx._trap_source = ctx.pending_trap_link_sources[0] if ctx.pending_trap_link_sources else None
         if await apply_trap(game, kind, ctx):
             ctx.pending_trap_links.pop(0)
+            if ctx.pending_trap_link_sources:
+                ctx.pending_trap_link_sources.pop(0)
             if ctx.debug_trap:
                 logger.info(f"[DEBUG TRAP] TrapLink trap applied: {name}")
             if kind == "end_day":

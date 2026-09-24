@@ -263,6 +263,23 @@ class WeightDamageTrap(Range):
     default = 50
 
 
+class DamageTrapCanKill(Toggle):
+    """
+    If enabled, a Damage Trap can take Olimar down when his health is too low
+    (a DeathLink is then sent if Death Link is 'classic' or 'both').
+    If disabled, a Damage Trap always leaves Olimar with a little health.
+    """
+    display_name = "Damage Trap Can Kill"
+
+
+class DamageTrapAmount(Range):
+    """Health (in % of Olimar's max health) removed by a Damage Trap."""
+    display_name = "Damage Trap Amount"
+    range_start = 1
+    range_end = 100
+    default = 20
+
+
 class WeightTeleportTrap(Range):
     """Weight for Teleport Trap items (teleports Olimar to a random nearby spot)."""
     display_name = "Teleport Trap Weight"
@@ -537,6 +554,8 @@ class P1Options(PerGameCommonOptions):
     weight_time_trap: WeightTimeTrap
     weight_end_day_trap: WeightEndDayTrap
     weight_damage_trap: WeightDamageTrap
+    damage_trap_can_kill: DamageTrapCanKill
+    damage_trap_amount: DamageTrapAmount
     weight_teleport_trap: WeightTeleportTrap
     weight_disbanding_trap: WeightDisbandingTrap
     weight_trip_trap: WeightTripTrap
