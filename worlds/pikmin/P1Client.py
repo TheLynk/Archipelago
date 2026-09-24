@@ -563,10 +563,86 @@ def apply_time_trap(game: Game) -> bool:
     addr = gf["TIME_HOURS"]
     try:
         h = struct.unpack(">i", dme.read_bytes(addr, 4))[0]
-        dme.write_bytes(addr, struct.pack(">i", h + TIME_TRAP_HOURS))
+        # #42 : plafond a l'heure de fin de journee (19h). Au-dela, le jeu
+        # enregistrerait le point du graphique hors de son tableau
+        # (TimeGraph::set sans verification -> ecriture memoire hors limites).
+        graph = _read_population_graph(game)
+        end = graph[2] if graph else 19
+        new = min(h + TIME_TRAP_HOURS, end)
+        if new > h:
+            dme.write_bytes(addr, struct.pack(">i", new))
+        _fill_population_graph_gaps(game)
         return True
     except Exception:
         return False
+
+
+# --- #42 : graphique de population et Time Trap --------------------------------
+# PlayerState::mPerHourGraph (TimeGraph @ PlayerState+0x18C) : u16 mStartTime,
+# u16 mEndTime, PikiNum* mEntries (int[3] Blue/Red/Yellow par heure, -1 = vide).
+# Le jeu n'enregistre un point qu'au CHANGEMENT d'heure ; un Time Trap saute
+# des heures, qui restent a -1, et le dessin s'arrete au premier -1 (ogGraph) :
+# plusieurs traps tot dans la journee = graphique vide. On comble les heures
+# sautees avec la valeur de l'heure precedente (courbe plate).
+
+def _read_population_graph(game: Game) -> Optional[tuple]:
+    """(adresse des entrees, heure de debut, heure de fin) ou None."""
+    ps_ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ps_ptr is None:
+        return None
+    ps = struct.unpack(">I", dme.read_bytes(ps_ptr, 4))[0]
+    if not (_RAM_MIN <= ps < _RAM_MAX):
+        return None
+    g = ps + PLAYERSTATE_OFFSETS["mPerHourGraph"]
+    start, end = struct.unpack(">HH", dme.read_bytes(g, 4))
+    entries = struct.unpack(">I", dme.read_bytes(g + 4, 4))[0]
+    if not (_RAM_MIN <= entries < _RAM_MAX) or not (0 <= start <= end <= 24):
+        return None
+    return entries, start, end
+
+
+def _fill_population_graph_gaps(game: Game) -> None:
+    """Remplit les heures sautees (-1) jusqu'a l'heure courante."""
+    gf = SYM_GAMEFLOW.get(game)
+    if not gf:
+        return
+    try:
+        graph = _read_population_graph(game)
+        if not graph:
+            return
+        entries, start, end = graph
+        hour = struct.unpack(">i", dme.read_bytes(gf["TIME_HOURS"], 4))[0]
+        upto = min(hour, end)
+        if upto < start:
+            return
+        n = upto - start + 1
+        vals = list(struct.unpack(f">{n * 3}i", dme.read_bytes(entries, n * 12)))
+        allp = GAMESTAT_ALLPIKIS_ADDRS.get(game, {})
+        current = {idx: struct.unpack(">i", dme.read_bytes(allp[c], 4))[0]
+                   for c, idx in _BORN_COLOR_INDEX.items() if c in allp}
+        changed = False
+        for idx in range(3):
+            last = None
+            for i in range(n):
+                k = i * 3 + idx
+                if vals[k] >= 0:
+                    last = vals[k]
+                    continue
+                fill = last if last is not None else current.get(idx)
+                if fill is None or fill < 0:
+                    continue
+                vals[k] = fill
+                last = fill
+                changed = True
+        if changed:
+            dme.write_bytes(entries, struct.pack(f">{n * 3}i", *vals))
+    except Exception as e:
+        logger.debug(f"population graph fill: {e}")
+
+
+async def handle_population_graph(ctx: "P1Context", game: Game) -> None:
+    """#42 : comble les trous du graphique (Time Trap, TrapLink...) a chaque tick."""
+    _fill_population_graph_gaps(game)
 
 
 def apply_end_day_trap(game: Game) -> bool:
@@ -4323,6 +4399,7 @@ async def dolphin_loop(ctx: P1Context):
         # Handlers qui LISENT de la memoire propre au niveau (collecte de pieces,
         # compteurs de l'escouade, DeathLink) : uniquement dans un niveau.
         in_level_handlers = (handle_parts, handle_pikmin_locations, handle_pikmin_bond, handle_onion_cone,
+                             handle_population_graph,
                              handle_death_link, handle_traps)
         # Handlers actifs aussi sur la carte du monde : reception d'objets
         # (persistee via STAGE) et deblocage des zones (visible sur la carte).
