@@ -1704,6 +1704,7 @@ class P1Context(SuperContext):
         # #34 : oignons abandonnes / nb de corrections du cone, par journee.
         self._cone_ok: set = set()
         self._cone_tries: dict = {}
+        self._cone_free_since: Optional[float] = None  # #46
         # Day start detection for safety check
         self.last_hour: int = -1
         # Debug mode toggles (via /debughint, /debugdays, /debugpbonus)
@@ -3806,6 +3807,22 @@ EFFSHPINST_SCALE = 0x14
 _BOOT_BIT = {"blue": 0x08, "red": 0x10, "yellow": 0x20}  # hasBootContainer (y)
 CONE_DEFAULT_SCALE = 0.1   # echelle pleine du cone observee sur tous les oignons
 CONE_MAX_TRIES = 5         # corrections max par oignon et par journee
+CONE_START_DELAY = 2.0     # #46 : secondes de jeu libre avant de toucher aux cones
+MOVIE_IS_ACTIVE = 0x124    # MoviePlayer.mIsActive (bool)
+
+
+def is_movie_playing(game: Game) -> bool:
+    """#46 : vrai si une cinematique (MoviePlayer) est en cours."""
+    gf = SYM_GAMEFLOW.get(game)
+    if not gf or "MOVIE_PLAYER_PTR" not in gf:
+        return False
+    try:
+        mp = struct.unpack(">I", dme.read_bytes(gf["MOVIE_PLAYER_PTR"], 4))[0]
+        if not (_RAM_MIN <= mp < _RAM_MAX):
+            return False
+        return dme.read_byte(mp + MOVIE_IS_ACTIVE) != 0
+    except Exception:
+        return False
 
 
 async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
@@ -3819,6 +3836,18 @@ async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
     """
     slot_data = getattr(ctx, "slot_data", None) or {}
     if "Onion Discovery" not in slot_data.get("skip_events", []):
+        return
+    # #46 : pas pendant la cinematique de debut de journee (atterrissage des
+    # oignons, qui ouvre elle-meme les cones) ni sous un menu ; puis on attend
+    # CONE_START_DELAY secondes de jeu libre, sinon le rayon apparaissait avant
+    # la fin de la cinematique.
+    if is_movie_playing(game) or is_overlay_active(game):
+        ctx._cone_free_since = None
+        return
+    now = time.monotonic()
+    if ctx._cone_free_since is None:
+        ctx._cone_free_since = now
+    if now - ctx._cone_free_since < CONE_START_DELAY:
         return
     ps_ptr = SYM_PLAYER_STATE_PTR.get(game)
     if ps_ptr is None:
@@ -4403,6 +4432,7 @@ async def dolphin_loop(ctx: P1Context):
             ctx._bond_dead_last = None
             ctx._cone_ok = set()
             ctx._cone_tries = {}
+            ctx._cone_free_since = None
             ctx._suppress_orima_send = False
             ctx._deathlink_locked_this_day = False
             ctx._pending_self_kill = False
