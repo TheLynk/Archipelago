@@ -4111,8 +4111,11 @@ async def dolphin_loop(ctx: P1Context):
             if elapsed >= SCOUT_RETRY_INTERVAL:
                 ctx.scout_sent_time = time.monotonic()
                 server_locs = list(set(ctx.checked_locations) | set(ctx.missing_locations))
-                logger.info(f"[DEBUG] Retrying LocationScouts (no response after {elapsed:.0f}s, "
-                            f"scouted={len(ctx.scouted_locations)})")
+                # #41 : message de debug, visible uniquement avec /debughint
+                # (les LocationScouts alimentent les hints de pieces).
+                if ctx.debug_hint:
+                    logger.info(f"[DEBUG] Retrying LocationScouts (no response after {elapsed:.0f}s, "
+                                f"scouted={len(ctx.scouted_locations)})")
                 if server_locs:
                     await ctx.send_msgs([{
                         "cmd": "LocationScouts",
