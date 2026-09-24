@@ -2966,6 +2966,8 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
 _ONEPLAYER_CARD_SELECT = 1
 _ONEPLAYER_INTRO_GAME = 5
 _SAVE_TRACK_SUBSECTIONS = (_ONEPLAYER_INTRO_GAME, ONEPLAYER_MAP_SELECT, ONEPLAYER_NEW_PIKI_GAME)
+# #32 : sous-sections ou les handlers "always" peuvent ecrire en RAM.
+_STORY_SUBSECTIONS = (_ONEPLAYER_CARD_SELECT, _ONEPLAYER_INTRO_GAME, ONEPLAYER_MAP_SELECT, ONEPLAYER_NEW_PIKI_GAME)
 MAX_TRACKED_SAVES = 60
 
 # Messages par langue du jeu detectee (comme SYNC_ACTIVE_MSG).
@@ -3676,6 +3678,44 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
         logger.debug(f"[Pikmin] refresh worldmap: {e}")
 
 
+def _write_playerstate_part_counts(game: Game, total: int, required: int) -> None:
+    """#32 : ecrit l'octet de poids faible de PlayerState.mCurrParts (_17C) et
+    mRequiredUfoPartCount (_180). Les anciennes adresses fixes (PAL 0x812427FF /
+    0x81242803, NTSC 0x81249DE7 / 0x81249DEB) etaient ces memes champs, mais
+    supposaient playerState toujours a la meme adresse de tas."""
+    ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ptr is None:
+        return
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
+        if not (_RAM_MIN <= ps < _RAM_MAX):
+            return
+        for off, val in ((PLAYERSTATE_OFFSETS["mCurrParts"] + 3, total),
+                         (PLAYERSTATE_OFFSETS["mRequiredUfoPartCount"] + 3, required)):
+            if dme.read_byte(ps + off) != val:
+                dme.write_byte(ps + off, val)
+    except Exception as e:
+        logger.debug(f"Error writing part counts: {e}")
+
+
+def is_final_ending(game: Game) -> bool:
+    """#32 : vrai pendant la sequence de fin (fin de la derniere journee avec
+    30 pieces : decollage, oignons, Olimar dans l'espace). Le jeu y reinitialise
+    les tas Teki/Movie pour les cinematiques ; le client ne doit plus rien ecrire."""
+    if _oneplayer_subsection(game) != ONEPLAYER_NEW_PIKI_GAME or is_day_active(game):
+        return False
+    ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ptr is None:
+        return False
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
+        if not (_RAM_MIN <= ps < _RAM_MAX):
+            return False
+        return struct.unpack(">i", dme.read_bytes(ps + PLAYERSTATE_OFFSETS["mCurrParts"], 4))[0] >= 30
+    except Exception:
+        return False
+
+
 async def handle_areas(ctx: P1Context, game: Game):
     # Build set of valid ship part IDs for fast lookup
     ship_part_ids = {data.ap_id for data in ALL_PARTS.values()}
@@ -3702,9 +3742,12 @@ async def handle_areas(ctx: P1Context, game: Game):
     if ship_parts_count >= 29:
         areas += 0b10000
 
-    dme.write_byte(COUNT_TOTAL_PARTS[game], ship_parts_count)
-    dme.write_byte(COUNT_REQUIRED_PARTS[game], total_required)
-    dme.write_byte(UNLOCKED_AREAS[game], areas)
+    # #32 : mCurrParts / mRequiredUfoPartCount ecrits via le pointeur
+    # playerState (et non plus a une adresse de tas codee en dur), et seulement
+    # si la valeur change.
+    _write_playerstate_part_counts(game, ship_parts_count, total_required)
+    if dme.read_byte(UNLOCKED_AREAS[game]) != areas:
+        dme.write_byte(UNLOCKED_AREAS[game], areas)
 
     # Stage visuel du S.S. Dolphin (issue #8). Le jeu ne recalcule
     # mShipUpgradeLevel qu'a l'interieur de PlayerState::registerPart(),
@@ -4576,8 +4619,22 @@ async def dolphin_loop(ctx: P1Context):
         always_handlers = (handle_qol_first_day, handle_qol_trip_item, handle_trip_trap_timer,
                            handle_day_cycle, handle_ship_part_hints)
 
-        handlers = list(always_handlers)
-        if save_active:
+        # #32 (reouvert) : apres le goal, GameExit fait un softReset puis passe en
+        # SECTION_MovSample (generique h4m). Le tas est alors reutilise par le
+        # decodeur video / la FIFO GX, mais les pointeurs statiques (playerState,
+        # tutorialWindow...) gardent leur ancienne valeur. Les handlers "always"
+        # (Normal First Day, hints de pieces...) ecrivaient via ces pointeurs
+        # perimes -> "GFX FIFO : Opcode inconnu". On ne touche donc plus a la RAM
+        # hors du mode histoire (menus de sauvegarde, intro, carte, niveau).
+        story_active = _oneplayer_subsection(game_version) in _STORY_SUBSECTIONS
+        # #32 : pendant la sequence de fin (decollage -> espace), le jeu reinitialise
+        # ses tas pour les cinematiques : aucune ecriture, seul le goal est envoye.
+        ending = story_active and is_final_ending(game_version)
+        if ending and not ctx.finished_game:
+            await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+            ctx.finished_game = True
+        handlers = list(always_handlers) if story_active and not ending else []
+        if save_active and not ending:
             handlers = list(save_active_handlers) + handlers
         # #32 : les handlers "en niveau" LISENT/ECRIVENT des objets de niveau
         # volatils (pelletMgr et radar via handle_parts -> despawn, escouade,
