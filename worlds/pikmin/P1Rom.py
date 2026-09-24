@@ -544,9 +544,33 @@ def _write_disc_title(f, title: str) -> None:
     f.write(raw + b"\x00" * (DISC_NAME_SIZE - len(raw)))
 
 
+# --- #38 : nom du slot dans l'ISO ------------------------------------------------
+# Le client lit le nom du slot dans la RAM du jeu pour se connecter sans le
+# demander. L'en-tete disque n'est pas charge en RAM : on ecrit un petit bloc
+# dans une zone libre (octets nuls) du .text du DOL, qui, lui, est charge.
+# Format : SLOT_NAME_MAGIC + 1 octet longueur + nom UTF-8 (<= SLOT_NAME_MAX).
+SLOT_NAME_MAGIC = b"APPIKSLOT\x00"
+SLOT_NAME_MAX = 64                     # 16 caracteres AP, jusqu'a 4 octets chacun
+SLOT_NAME_BLOCK = len(SLOT_NAME_MAGIC) + 1 + SLOT_NAME_MAX
+
+
+def _write_slot_name(f, slot_name: str) -> bool:
+    """Ecrit le bloc du nom de slot dans une zone libre du DOL. True si ecrit."""
+    raw = slot_name.encode("utf-8")[:SLOT_NAME_MAX]
+    if not raw:
+        return False
+    try:
+        _ram, off = find_code_cave(f, SLOT_NAME_BLOCK + 8)
+    except InvalidISOError:
+        return False
+    f.seek(off + 4)  # garde un mot nul de marge apres le code qui precede
+    f.write(SLOT_NAME_MAGIC + bytes([len(raw)]) + raw.ljust(SLOT_NAME_MAX, b"\x00"))
+    return True
+
+
 def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
               skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
-              suffix: str = "", title: str = "") -> dict:
+              suffix: str = "", title: str = "", slot_name: str = "") -> dict:
     """Patche l'ISO. Aiguille vers le NTSC si besoin, sinon chemin PAL d'origine.
 
     `disable_trip` : patch QOL anti-trebuchement (best-effort).
@@ -561,9 +585,12 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
         status = _patch_iso_ntsc(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade, suffix)
     else:
         status = _patch_iso_pal(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade, suffix)
-    if title:
-        with open(iso_path, "r+b") as f:
+    with open(iso_path, "r+b") as f:
+        if title:
             _write_disc_title(f, title)
+        # #38 : APRES les autres patchs (le stub NTSC occupe deja sa zone libre).
+        if slot_name:
+            status["slot_name_written"] = _write_slot_name(f, slot_name)
     return status
 
 

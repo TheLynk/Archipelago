@@ -142,6 +142,22 @@ TRAPLINK_ACTIVE_MSG = {
     "es": "TrapLink activo.",
 }
 
+# #38 : connexion differee jusqu'a la detection du jeu.
+WAIT_GAME_MSG = {
+    "en": "Waiting for Pikmin (patched ISO) to be running in Dolphin before connecting...",
+    "fr": "En attente de Pikmin (ISO patchée) dans Dolphin avant la connexion...",
+    "de": "Warte darauf, dass Pikmin (gepatchte ISO) in Dolphin läuft, bevor verbunden wird...",
+    "it": "In attesa che Pikmin (ISO patchata) sia avviato in Dolphin prima della connessione...",
+    "es": "Esperando a que Pikmin (ISO parcheada) se ejecute en Dolphin antes de conectar...",
+}
+SLOT_FROM_ISO_MSG = {
+    "en": "Slot name read from the patched ISO: {name}",
+    "fr": "Nom du slot lu dans l'ISO patchée : {name}",
+    "de": "Slot-Name aus der gepatchten ISO gelesen: {name}",
+    "it": "Nome dello slot letto dall'ISO patchata: {name}",
+    "es": "Nombre del slot leído de la ISO parcheada: {name}",
+}
+
 SYNC_ACTIVE_MSG = {
     "en": "Save loaded — AP sync active.",
     "fr": "Sauvegarde chargée — synchronisation AP active.",
@@ -1582,6 +1598,11 @@ class P1Context(SuperContext):
     def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
         super().__init__(server_address, password)
         self.items_handling = 0b111  # UT le redefinit dans son __init__
+        # #38 : jeu detecte dans Dolphin / connexion en attente / slot lu dans l'ISO.
+        self.game_detected: bool = False
+        self._pending_connect: Optional[str] = None
+        self.iso_slot_name: str = ""
+        self._detected_game_id: Optional[bytes] = None
         # #2 : exit_event qui arme le chien de garde de fermeture.
         self.exit_event = _P1ExitEvent()
         self.dolphin_status_text = "Disconnected"
@@ -1803,6 +1824,18 @@ class P1Context(SuperContext):
         from .P1UI import build_p1_ui
         return build_p1_ui(super().make_gui())
 
+    # --- #38 : connexion seulement une fois le jeu detecte ---------------------
+    async def connect(self, address: Optional[str] = None) -> None:
+        """Ne lance la connexion qu'une fois Pikmin (ISO patchee) detecte dans
+        Dolphin ; sinon l'adresse est mise en attente et dolphin_loop relance la
+        connexion des la detection."""
+        if not self.game_detected:
+            self._pending_connect = address if address is not None else (self.server_address or "")
+            lang = getattr(self, "detected_language", "en")
+            logger.info("[Pikmin] " + WAIT_GAME_MSG.get(lang, WAIT_GAME_MSG["en"]))
+            return
+        await super().connect(address)
+
     async def server_auth(self, password_requested: bool = False) -> None:
         # Pattern standard des clients Archipelago : on ne delegue au parent que
         # pour la saisie du mot de passe, sinon il n'y a rien a faire.
@@ -1810,6 +1843,12 @@ class P1Context(SuperContext):
             # CommonContext directement : la version de UT enchaine elle-meme
             # get_username/send_connect, ce qui connecterait deux fois.
             await CommonContext.server_auth(self, password_requested)
+        # #38 : nom du slot lu dans l'ISO patchee (sinon saisie manuelle).
+        if not self.auth and not self.username and self.iso_slot_name:
+            self.username = self.iso_slot_name
+            lang = getattr(self, "detected_language", "en")
+            msg = SLOT_FROM_ISO_MSG.get(lang, SLOT_FROM_ISO_MSG["en"])
+            logger.info("[Pikmin] " + msg.format(name=self.iso_slot_name))
         await self.get_username()
         await self.send_connect()
 
@@ -4051,6 +4090,28 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
                     logger.debug(f"Error writing late hint: {e}")
 
 
+def read_iso_slot_name() -> str:
+    """#38 : cherche le bloc du nom de slot ecrit par le patcher (P1Rom) dans la
+    RAM du jeu (.text du DOL) et renvoie le nom, ou "" (ancienne ISO)."""
+    from .P1Rom import SLOT_NAME_MAGIC, SLOT_NAME_MAX
+    start, end, chunk = 0x80003000, 0x80400000, 0x40000
+    overlap = len(SLOT_NAME_MAGIC) + 1 + SLOT_NAME_MAX
+    addr = start
+    try:
+        while addr < end:
+            data = dme.read_bytes(addr, min(chunk + overlap, end - addr))
+            i = data.find(SLOT_NAME_MAGIC)
+            if i >= 0:
+                j = i + len(SLOT_NAME_MAGIC)
+                length = data[j] if j < len(data) else 0
+                raw = data[j + 1:j + 1 + min(length, SLOT_NAME_MAX)]
+                return raw.decode("utf-8", "replace").strip("\x00")
+            addr += chunk
+    except Exception as e:
+        logger.debug(f"read_iso_slot_name: {e}")
+    return ""
+
+
 def _run_in_daemon_thread(func, *args) -> "asyncio.Future":
     """Execute func(*args) in a throwaway daemon thread and return an awaitable.
 
@@ -4177,6 +4238,17 @@ async def dolphin_loop(ctx: P1Context):
             if base_version is None:
                 ctx.dolphin_status_text = "Connected - Wrong Game (patch your ISO first)"
                 continue
+
+            # #38 : ISO patchee detectee -> nom du slot + connexion en attente.
+            # Relu si une autre ISO patchee est lancee (Game ID different).
+            if game != ctx._detected_game_id:
+                ctx._detected_game_id = game
+                ctx.iso_slot_name = read_iso_slot_name()
+            if not ctx.game_detected:
+                ctx.game_detected = True
+                if ctx._pending_connect is not None:
+                    address, ctx._pending_connect = ctx._pending_connect, None
+                    async_start(ctx.connect(address or None), name="connect")
 
             if suffix:
                 expected_patched_id = game[:3] + suffix.encode("ascii")
@@ -4324,7 +4396,12 @@ def run_client(*args) -> None:
 
     async def main() -> None:
         ctx = P1Context(parsed.connect, parsed.password)
-        ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
+        # #38 : la connexion (adresse passee en argument / via le .appik1) est
+        # differee jusqu'a la detection de Pikmin dans Dolphin.
+        if parsed.connect:
+            ctx._pending_connect = parsed.connect
+        else:
+            logger.info("Please connect to an Archipelago server.")
 
         if tracker_loaded:
             ctx.run_generator()  # #37 : prepare Universal Tracker
@@ -4532,7 +4609,8 @@ def _handle_patch(appik1_path: str) -> None:
                            skip_part_collect=skip_part_collect,
                            skip_ship_upgrade=skip_ship_upgrade,
                            suffix=suffix,
-                           title=make_disc_title(seed, slot_name) if seed else "") or {}
+                           title=make_disc_title(seed, slot_name) if seed else "",
+                           slot_name=slot_name) or {}
         logger.info(f"[Pikmin] ISO patched successfully: {output_iso}")
         trip_line = ""
         if disable_trip:
@@ -4551,9 +4629,13 @@ def _handle_patch(appik1_path: str) -> None:
             if not status.get("ship_upgrade_patched"):
                 su_line = ("\n\nSkip Ship Upgrade Cutscene: could NOT be applied "
                            "(code not located in this ISO revision).")
+        sn_line = ""
+        if slot_name and not status.get("slot_name_written"):
+            sn_line = ("\n\nSlot name could NOT be stored in the ISO "
+                       "(the client will ask for it when connecting).")
         Utils.messagebox(
             "Pikmin 1 Patched",
-            f"Patched ISO created successfully!\n{output_iso}{trip_line}{pc_line}{su_line}"
+            f"Patched ISO created successfully!\n{output_iso}{trip_line}{pc_line}{su_line}{sn_line}"
         )
     except InvalidISOError as e:
         logger.error(f"[Pikmin] ISO verification failed: {e}")
