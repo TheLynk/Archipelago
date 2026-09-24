@@ -353,6 +353,7 @@ class SkipEvents(OptionSet):
       First Noon     : info message shown at noon on the first day.
       Onion Followed : message where Olimar notes the red Onion followed him (first landing).
       Nectar         : message explaining nectar the first time a Pikmin drinks some.
+      Sunset Warning : message after the first "Hurry Up!" warning that sunset is approaching.
 
     Most entries are applied live by the client; "Part Collection" and
     "Ship Upgrade" are baked into the ISO at patch time (re-patch to change them).

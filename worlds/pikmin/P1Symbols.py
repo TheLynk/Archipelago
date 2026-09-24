@@ -297,6 +297,10 @@ DEMOFLAG_PIKMIN_LIMIT = (21, 22, 23, 24, 25)
 # EDemoFlags du texte d'info affiche au 1er midi (TUT_InfoDisplay = 31),
 # declenche dans GameCoreSection::update gardé par !isFlag(DEMOFLAG_FirstNoon).
 DEMOFLAG_FIRST_NOON = 31  # DEMOFLAG_FirstNoon
+# #39 : DEMOFLAG_FirstHurryUp -- texte TUT_DayEnd (19) "l'horloge indique
+# l'approche du coucher du soleil", affiche une fois apres le 1er "Hurry Up!"
+# (zen::DrawHurryUp, drawHurryUp.cpp).
+DEMOFLAG_FIRST_HURRY_UP = 19
 
 # Adresse de la constante flottante 0.9999f du test de trebuchement
 # (ActCrowd::exec : `getRand(1.0f) >= 0.9999f`), en .sdata2, par version.
@@ -344,6 +348,7 @@ SKIP_EVENT_DEMOFLAGS = {
     "First Noon":            (DEMOFLAG_FIRST_NOON,),
     "Onion Followed":        (DEMOFLAG_ONYON_MENU_INFO,),
     "Nectar":                (DEMOFLAG_FIRST_NECTAR,),
+    "Sunset Warning":        (DEMOFLAG_FIRST_HURRY_UP,),
 }
 # Toutes les cles valides de l'OptionSet (DemoFlags + "Ship Upgrade" DOL-only).
 SKIP_EVENT_ALL_KEYS = tuple(SKIP_EVENT_DEMOFLAGS.keys()) + ("Ship Upgrade",)
