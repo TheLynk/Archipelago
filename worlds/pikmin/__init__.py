@@ -447,6 +447,9 @@ class P1World(World):
             "pikmin_death_amount": self.options.pikmin_death_amount.value,
             "pikmin_bond":         self.options.pikmin_bond.value,
             "pikmin_bond_damage":  self.options.pikmin_bond_damage.value,
+            # #44 : Olimar Bond (chaque Pikmin ne soigne Olimar).
+            "olimar_bond":         self.options.olimar_bond.value,
+            "olimar_bond_heal":    self.options.olimar_bond_heal.value,
             # #43 : reglages du Damage Trap.
             "damage_trap_can_kill": self.options.damage_trap_can_kill.value,
             "damage_trap_amount":   self.options.damage_trap_amount.value,

@@ -1755,6 +1755,7 @@ class P1Context(SuperContext):
         self._cone_tries: dict = {}
         self._cone_free_since: Optional[float] = None  # #46
         self._client_kill_reason: Optional[str] = None  # #43
+        self._olimar_bond_last: Optional[int] = None     # #44 : reference bornPikis
         # Day start detection for safety check
         self.last_hour: int = -1
         # Debug mode toggles (via /debughint, /debugdays, /debugpbonus)
@@ -2795,6 +2796,54 @@ async def handle_pikmin_bond(ctx: P1Context, game: Game) -> None:
             dme.write_bytes(addr, struct.pack(">f", new))
         except Exception as e:
             logger.debug(f"Error writing bond damage: {e}")
+
+
+OLIMAR_MAX_HEALTH = 100.0
+
+
+async def handle_olimar_bond(ctx: P1Context, game: Game) -> None:
+    """#44 Olimar Bond : chaque Pikmin ne soigne Olimar (olimar_bond_heal % de
+    sa sante max, plafonnee a 100).
+
+    Source : GameStat::bornPikis ("germes aujourd'hui"), qui compte les graines
+    sorties des oignons ET, depuis #33, les bonus Pikmin recus (en journee, ou
+    au debut de la journee suivante s'ils arrivent sur la carte). Comme pour le
+    lien Olimar/Pikmin : 1re lecture de la journee = reference, une baisse =
+    remise a zero par le jeu.
+    """
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    if not slot_data.get("olimar_bond", 0):
+        return
+    base = SYM_BORN_PIKIS.get(game)
+    if base is None:
+        return
+    try:
+        born = sum(struct.unpack(">iii", dme.read_bytes(base, 12)))
+    except Exception:
+        return
+    last = ctx._olimar_bond_last
+    ctx._olimar_bond_last = born
+    if last is None or born <= last:
+        return
+    if read_orima_dead(game):
+        return
+    navi = _resolve_olimar(game)
+    if navi is None:
+        ctx._olimar_bond_last = last  # on reessaie au prochain tick
+        return
+    heal = OLIMAR_MAX_HEALTH * float(slot_data.get("olimar_bond_heal", 1)) / 100.0 * (born - last)
+    addr = navi + NAVI_CHAIN["CREATURE_HEALTH"]
+    try:
+        h = struct.unpack(">f", dme.read_bytes(addr, 4))[0]
+        if h <= 1.0:
+            return  # deja a terre : pas de resurrection
+        new = min(OLIMAR_MAX_HEALTH, h + heal)
+        if new > h:
+            dme.write_bytes(addr, struct.pack(">f", new))
+            if ctx.debug_trap:
+                logger.info(f"[DEBUG BOND] {born - last} Pikmin ne(s) : PV {h:.1f} -> {new:.1f}")
+    except Exception as e:
+        logger.debug(f"olimar bond: {e}")
 
 
 # id d'item de trap -> type interne, construit une fois.
@@ -4498,6 +4547,7 @@ async def dolphin_loop(ctx: P1Context):
             ctx._dead_pikis_last = None
             ctx._dead_pikis_sent = 0
             ctx._bond_dead_last = None
+            ctx._olimar_bond_last = None
             ctx._cone_ok = set()
             ctx._cone_tries = {}
             ctx._cone_free_since = None
@@ -4513,7 +4563,8 @@ async def dolphin_loop(ctx: P1Context):
 
         # Handlers qui LISENT de la memoire propre au niveau (collecte de pieces,
         # compteurs de l'escouade, DeathLink) : uniquement dans un niveau.
-        in_level_handlers = (handle_parts, handle_pikmin_locations, handle_pikmin_bond, handle_onion_cone,
+        in_level_handlers = (handle_parts, handle_pikmin_locations, handle_pikmin_bond, handle_olimar_bond,
+                             handle_onion_cone,
                              handle_population_graph,
                              handle_death_link, handle_traps)
         # Handlers actifs aussi sur la carte du monde : reception d'objets

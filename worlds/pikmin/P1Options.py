@@ -514,6 +514,23 @@ class PikminBondDamage(Range):
     default = 5
 
 
+class OlimarBond(Toggle):
+    """
+    The reverse of the Olimar-Pikmin Bond: every Pikmin born during the day
+    (seeds from an Onion, and Pikmin bonus items you receive) heals Olimar
+    (see Olimar Bond Heal).
+    """
+    display_name = "Olimar Bond"
+
+
+class OlimarBondHeal(Range):
+    """Health (in % of Olimar's max health) restored for each Pikmin born."""
+    display_name = "Olimar Bond Heal"
+    range_start = 1
+    range_end = 100
+    default = 1
+
+
 @dataclass
 class P1Options(PerGameCommonOptions):
 # SHIP PART
@@ -565,6 +582,8 @@ class P1Options(PerGameCommonOptions):
 # OLIMAR / PIKMIN BOND
     pikmin_bond: PikminBond
     pikmin_bond_damage: PikminBondDamage
+    olimar_bond: OlimarBond
+    olimar_bond_heal: OlimarBondHeal
 # QUALITY OF LIFE (QOL)
 # - NORMAL FIRST DAY
     normal_first_day: NormalFirstDay
