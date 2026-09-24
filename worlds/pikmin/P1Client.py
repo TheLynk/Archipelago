@@ -17,7 +17,16 @@ import Utils
 from Utils import async_start
 from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, logger, server_loop
 from NetUtils import ClientStatus
-from .P1UI import P1UI
+
+# #37 : Universal Tracker integre au client (onglet "Tracker") s'il est installe.
+tracker_loaded = False
+try:
+    from worlds.tracker.TrackerClient import TrackerGameContext as SuperContext
+    from worlds.tracker.TrackerClient import TrackerCommandProcessor as SuperCommandProcessor
+    tracker_loaded = True
+except ImportError:
+    SuperContext = CommonContext
+    SuperCommandProcessor = ClientCommandProcessor
 from .P1Data import *
 from .P1Symbols import (
     SYM_GAMEFLOW,
@@ -1038,7 +1047,7 @@ ONION_DYN_SENTINEL = _gf("SENTINEL")
 ONION_STAGE_ADDRS_CLIENT = SYM_ONION_STAGE_ADDRS
 
 
-class P1CommandProcessor(ClientCommandProcessor):
+class P1CommandProcessor(SuperCommandProcessor):
     def __init__(self, ctx: CommonContext):
         super().__init__(ctx)
 
@@ -1568,13 +1577,17 @@ class _P1ExitEvent(asyncio.Event):
         super().set()
 
 
-class P1Context(CommonContext):
+class P1Context(SuperContext):
     command_processor = P1CommandProcessor
     game: str = "Pikmin"
     items_handling: int = 0b111
+    # #37 : UT ajoute le tag "Tracker" (connexion en simple tracker) ; ici on
+    # joue vraiment, donc on garde les tags d'un client de jeu normal.
+    tags = {"AP"}
 
     def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
         super().__init__(server_address, password)
+        self.items_handling = 0b111  # UT le redefinit dans son __init__
         # #2 : exit_event qui arme le chien de garde de fermeture.
         self.exit_event = _P1ExitEvent()
         self.dolphin_status_text = "Disconnected"
@@ -1791,13 +1804,18 @@ class P1Context(CommonContext):
         self.last_hint_bytes = b""
 
     def make_gui(self) -> "type[kvui.GameManager]":
-        return P1UI
+        # #37 : on construit l'UI Pikmin au-dessus de celle du parent (UI de
+        # Universal Tracker avec son onglet si installe, sinon l'UI standard).
+        from .P1UI import build_p1_ui
+        return build_p1_ui(super().make_gui())
 
     async def server_auth(self, password_requested: bool = False) -> None:
         # Pattern standard des clients Archipelago : on ne delegue au parent que
         # pour la saisie du mot de passe, sinon il n'y a rien a faire.
         if password_requested and not self.password:
-            await super().server_auth(password_requested)
+            # CommonContext directement : la version de UT enchaine elle-meme
+            # get_username/send_connect, ce qui connecterait deux fois.
+            await CommonContext.server_auth(self, password_requested)
         await self.get_username()
         await self.send_connect()
 
@@ -4314,6 +4332,8 @@ def run_client(*args) -> None:
         ctx = P1Context(parsed.connect, parsed.password)
         ctx.server_task = asyncio.create_task(server_loop(ctx), name="server loop")
 
+        if tracker_loaded:
+            ctx.run_generator()  # #37 : prepare Universal Tracker
         if gui_enabled:
             ctx.run_gui()
         ctx.run_cli()

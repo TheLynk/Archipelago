@@ -159,6 +159,35 @@ class P1World(World):
         self.pikmin_locations: dict[str, PikminLocationData] = {}
         self.hints: dict = {}
 
+    # --- #37 : Universal Tracker ---------------------------------------------
+    # UT peut regenerer le monde sans YAML, a partir du slot_data du serveur.
+    ut_can_gen_without_yaml: ClassVar[bool] = True
+
+    # Options qui changent les locations / la logique : UT doit les reprendre
+    # du slot_data pour recreer exactement les memes locations et regles.
+    _UT_OPTIONS: ClassVar[tuple[str, ...]] = (
+        "enable_pikmin_locations",
+        "red_pikmin_locations_enabled", "red_pikmin_interval",
+        "yellow_pikmin_locations_enabled", "yellow_pikmin_interval",
+        "blue_pikmin_locations_enabled", "blue_pikmin_interval",
+        "disable_pikmin_trip",
+    )
+
+    @staticmethod
+    def interpret_slot_data(slot_data: dict) -> dict:
+        """Appele par UT a la connexion : renvoie ce qui sera passe a
+        generate_early via multiworld.re_gen_passthrough."""
+        return slot_data
+
+    def generate_early(self) -> None:
+        passthrough = getattr(self.multiworld, "re_gen_passthrough", None) or {}
+        slot_data = passthrough.get(self.game)
+        if not slot_data:
+            return  # generation normale
+        for name in self._UT_OPTIONS:
+            if name in slot_data:
+                getattr(self.options, name).value = slot_data[name]
+
     def create_item(self, name: str) -> "P1Item":
         if name in TRAP_ITEMS:
             return P1Item(name, ItemClassification.trap, TRAP_ITEMS[name], self.player)
