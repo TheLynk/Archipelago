@@ -17,7 +17,8 @@ from .P1Options import P1Options
 from .P1Web import P1Web
 from .P1PikminLocations import PikminLocationGenerator, PikminLocationData
 from .Hints import get_hints_by_option
-from .P1Rom import P1PlayerContainer, patch_iso, verify_iso, InvalidISOError
+from .P1Rom import (P1PlayerContainer, patch_iso, verify_iso, InvalidISOError, expected_iso_help,
+                    make_game_id_suffix)
 
 logger = logging.getLogger(__name__)
 
@@ -76,18 +77,20 @@ def _validate_iso(path: str, expected: bytes, label: str) -> None:
         game_id = f.read(6)
     if game_id[:3] in (b"P1P", b"P1E"):
         raise ValueError(
-            "Cette ISO est deja patchee. Fournissez une ISO Pikmin 1 propre."
+            "This ISO is already patched. Please provide a clean Pikmin 1 ISO."
+            + expected_iso_help(path)
         )
     if game_id != expected:
         raise ValueError(
-            f"Game ID invalide : {game_id!r}. Attendu {expected.decode()} ({label})."
+            f"Invalid Game ID: {game_id!r}. Expected {expected.decode()} ({label})."
+            + expected_iso_help(path)
         )
 
 
 class PikminSettings(settings.Group):
     class ISOFile(settings.UserFilePath):
-        """Chemin vers votre ISO Pikmin 1 PAL (GPIP01) d'origine, non patchee."""
-        description = "ISO Pikmin 1 PAL (non patchee)"
+        """Path to your original, unpatched Pikmin 1 PAL ISO (GPIP01)."""
+        description = "Pikmin 1 PAL ISO (unpatched)"
         # On ne copie pas l'ISO dans le dossier Archipelago : on garde un lien
         # vers le fichier de l'utilisateur.
         copy_to = None
@@ -97,8 +100,8 @@ class PikminSettings(settings.Group):
             _validate_iso(path, PAL_GAME_ID, "PAL")
 
     class ISOFileNTSC(settings.UserFilePath):
-        """Chemin vers votre ISO Pikmin 1 NTSC-U (GPIE01) d'origine, non patchee."""
-        description = "ISO Pikmin 1 NTSC-U (non patchee)"
+        """Path to your original, unpatched Pikmin 1 NTSC-U ISO (GPIE01)."""
+        description = "Pikmin 1 NTSC-U ISO (unpatched)"
         copy_to = None
 
         @classmethod
@@ -389,6 +392,8 @@ class P1World(World):
             "Seed":    seed_name,
             "Slot":    self.player,
             "Name":    self.player_name,
+            # #35 : suffixe du Game ID propre a la seed + au slot (3 caracteres).
+            "GameIdSuffix": make_game_id_suffix(seed_name, self.player),
             "Options": {},
             "Hints":   self.hints,
         }
@@ -421,7 +426,8 @@ class P1World(World):
         seed_name = self.multiworld.seed_name
         if seed_name.startswith("W"):
             seed_name = seed_name[1:]
-        suffix = seed_name[-3:] if len(seed_name) >= 3 else seed_name.ljust(3, "0")
+        # #35 : meme suffixe que celui ecrit dans l'ISO (voir generate_output).
+        suffix = make_game_id_suffix(seed_name, self.player)
 
         return {
             "normal_first_day":    self.options.normal_first_day.value,

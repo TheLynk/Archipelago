@@ -1314,7 +1314,7 @@ class P1CommandProcessor(SuperCommandProcessor):
         return True
 
     def _cmd_debugonion(self) -> bool:
-        """Dump l'etat des oignons (rayon de lumiere, issue #34). A lancer EN JEU."""
+        """Show the state of the onions and their light beam (use in-game)."""
         if not dme.is_hooked():
             logger.info("[DEBUG ONION] Dolphin not connected.")
             return True
@@ -1342,7 +1342,7 @@ class P1CommandProcessor(SuperCommandProcessor):
                         f"skip_events={sorted((getattr(ctx, 'slot_data', {}) or {}).get('skip_events', []))}")
             onions = find_onion_containers(game)
             if not onions:
-                logger.info("[DEBUG ONION] Aucun oignon trouve dans cette zone.")
+                logger.info("[DEBUG ONION] No onion found in this area.")
             for color, g in onions.items():
                 eff = u32(g + GOAL_SPOT_MODEL_EFF)
                 line = (f"[DEBUG ONION] {color} @0x{g:08X} closing={dme.read_byte(g + GOAL_IS_CLOSING)} "
@@ -1359,17 +1359,11 @@ class P1CommandProcessor(SuperCommandProcessor):
                 line += f" onionPos=({gpos[0]:.0f},{gpos[1]:.0f},{gpos[2]:.0f})"
                 logger.info(line)
         except Exception as e:
-            logger.info(f"[DEBUG ONION] Erreur : {e!r}")
+            logger.info(f"[DEBUG ONION] Error: {e!r}")
         return True
 
     def _cmd_debugparts(self) -> bool:
-        """Dump l'etat des pellets de pieces de vaisseau (pelletMgr + radar).
-
-        A lancer EN JEU, pres de l'objet concerne (ex. un monstre/boss qui
-        contient une piece), pour diagnostiquer une piece qui ne disparait pas du
-        radar alors qu'elle est validee cote serveur (issue #11). On garde aussi
-        cette commande pour le futur 'kill enemy sanity'.
-        """
+        """Show the state of ship part pellets and radar icons (use in-game)."""
         if not dme.is_hooked():
             logger.info("[DEBUG PARTS] Dolphin not connected.")
             return True
@@ -1417,14 +1411,14 @@ class P1CommandProcessor(SuperCommandProcessor):
             return obj_type, model_id, ap_id, ap_to_name.get(ap_id), alive
 
         logger.info("========== PIKMIN PARTS DUMP ==========")
-        logger.info(f"[DEBUG PARTS] Game: {game!r} | pieces validees cote serveur: "
+        logger.info(f"[DEBUG PARTS] Game: {game!r} | parts checked on server: "
                     f"{sorted(ap_to_name[a] for a in checked if a in ap_to_name)}")
 
         # --- pelletMgr : TOUS les slots (meme mEntryStatus != 0), pour reperer
         #     un pellet tenu/avale par une creature.
         mgr = u32(SYM_PELLET_MGR_PTR.get(game, 0)) if game in SYM_PELLET_MGR_PTR else 0
         if not mgr:
-            logger.info("[DEBUG PARTS] pelletMgr introuvable.")
+            logger.info("[DEBUG PARTS] pelletMgr not found.")
         else:
             obj_list = u32(mgr + P["MONO_OBJECTLIST"])
             entry_status = u32(mgr + P["MONO_ENTRYSTATUS"])
@@ -1451,12 +1445,12 @@ class P1CommandProcessor(SuperCommandProcessor):
                             f"model={model_id!r} ap={ap_id} ({name}) alive={alive} "
                             f"checked={'YES' if ap_id in checked else 'no'}")
             if not shown:
-                logger.info("[DEBUG PARTS] Aucun pellet de piece dans le pelletMgr.")
+                logger.info("[DEBUG PARTS] No ship part pellet in pelletMgr.")
 
         # --- radar : liste des icones reellement dessinees sur la carte.
         radar = u32(SYM_RADAR_INFO_PTR.get(game, 0)) if game in SYM_RADAR_INFO_PTR else 0
         if not radar:
-            logger.info("[DEBUG PARTS] radarInfo introuvable.")
+            logger.info("[DEBUG PARTS] radarInfo not found.")
         else:
             node = u32(radar + R["ALIVE_CHILD"])
             n = 0
@@ -1513,10 +1507,10 @@ class P1CommandProcessor(SuperCommandProcessor):
                             for f in found:
                                 logger.info(f"[DEBUG PARTS]   creature-part ref {f}")
                             if not found:
-                                logger.info("[DEBUG PARTS]   creature-part ref: aucun fourCC/pellet de piece trouve dans +0..0x600")
+                                logger.info("[DEBUG PARTS]   creature-part ref: no part fourCC/pellet found in +0..0x600")
                 node = nxt
             if n == 0:
-                logger.info("[DEBUG PARTS] radar mAlivePartsList vide.")
+                logger.info("[DEBUG PARTS] radar mAlivePartsList empty.")
 
         logger.info("========== END PARTS DUMP ==========")
         return True
@@ -4393,7 +4387,7 @@ def _ask_target_version() -> Optional[bytes]:
     try:
         import tkinter as tk
     except Exception as e:
-        logger.warning(f"[Pikmin] tkinter indisponible ({e}) — PAL par defaut.")
+        logger.warning(f"[Pikmin] tkinter unavailable ({e}) — defaulting to PAL.")
         return PAL_GAME_ID
 
     choice: dict[str, bytes] = {}
@@ -4441,7 +4435,7 @@ def _handle_patch(appik1_path: str) -> None:
     fichier natif et enregistre le choix de l'utilisateur dans host.yaml.
     Appele de maniere synchrone depuis le thread principal, avant la GUI.
     """
-    from .P1Rom import verify_iso, patch_iso, InvalidISOError
+    from .P1Rom import verify_iso, patch_iso, InvalidISOError, expected_iso_help, make_disc_title
     from . import get_base_rom_path
     from settings import get_settings
     import shutil
@@ -4450,9 +4444,9 @@ def _handle_patch(appik1_path: str) -> None:
 
     target = _ask_target_version()
     if target is None:
-        logger.info("[Pikmin] Patch annulé par l'utilisateur.")
+        logger.info("[Pikmin] Patch cancelled by the user.")
         return
-    logger.info(f"[Pikmin] Version choisie : {VERSION_LABELS.get(target, target)}")
+    logger.info(f"[Pikmin] Selected version: {VERSION_LABELS.get(target, target)}")
 
     setting_name = "iso_file_ntsc" if target == NTSC_GAME_ID else "iso_file"
 
@@ -4461,11 +4455,11 @@ def _handle_patch(appik1_path: str) -> None:
     except Exception as e:
         # L'utilisateur a annule le selecteur, ou le fichier choisi est invalide.
         msg = (
-            f"Aucune ISO Pikmin 1 {VERSION_LABELS.get(target, '')} valide n'a ete fournie.\n\n"
-            f"Detail : {e}\n\n"
-            "Vous pouvez aussi renseigner le chemin manuellement dans host.yaml :\n"
+            f"No valid Pikmin 1 {VERSION_LABELS.get(target, '')} ISO was provided.\n\n"
+            f"Details: {e}\n\n"
+            "You can also set the path manually in host.yaml:\n"
             "  pikmin_options:\n"
-            f"    {setting_name}: C:/chemin/vers/Pikmin1.iso"
+            f"    {setting_name}: C:/path/to/Pikmin1.iso"
         )
         logger.error(f"[Pikmin] {msg}")
         Utils.messagebox("Cannot Patch Pikmin 1", msg, error=True)
@@ -4473,10 +4467,11 @@ def _handle_patch(appik1_path: str) -> None:
 
     if not iso_path or not os.path.isfile(iso_path):
         msg = (
-            "Aucune ISO Pikmin 1 valide trouvee.\n\n"
-            "Renseignez le chemin de l'ISO dans host.yaml :\n"
+            "No valid Pikmin 1 ISO found.\n\n"
+            "Set the ISO path in host.yaml:\n"
             "  pikmin_options:\n"
-            f"    {setting_name}: C:/chemin/vers/Pikmin1.iso"
+            f"    {setting_name}: C:/path/to/Pikmin1.iso"
+            + expected_iso_help()
         )
         logger.error(f"[Pikmin] {msg}")
         Utils.messagebox("Cannot Patch Pikmin 1", msg, error=True)
@@ -4505,6 +4500,8 @@ def _handle_patch(appik1_path: str) -> None:
 
     # Read seed + options from .appik1
     seed = ""
+    suffix = ""
+    slot_name = ""
     disable_trip = True
     skip_part_collect = True
     skip_ship_upgrade = True
@@ -4514,6 +4511,8 @@ def _handle_patch(appik1_path: str) -> None:
             with zf.open("patch.appik1") as f:
                 data = json.load(f)
                 seed = str(data.get("Seed", ""))
+                suffix = str(data.get("GameIdSuffix", ""))  # vide = ancien .appik1
+                slot_name = str(data.get("Name", ""))
                 opts = data.get("Options", {})
                 # Disable Pikmin Trip : 0=off, 1=patch (DOL), 2=item (runtime).
                 # On ne grave le patch DOL QUE pour le mode "patch".
@@ -4531,7 +4530,9 @@ def _handle_patch(appik1_path: str) -> None:
         verify_iso(output_iso)
         status = patch_iso(output_iso, seed=seed, disable_trip=disable_trip,
                            skip_part_collect=skip_part_collect,
-                           skip_ship_upgrade=skip_ship_upgrade) or {}
+                           skip_ship_upgrade=skip_ship_upgrade,
+                           suffix=suffix,
+                           title=make_disc_title(seed, slot_name) if seed else "") or {}
         logger.info(f"[Pikmin] ISO patched successfully: {output_iso}")
         trip_line = ""
         if disable_trip:
@@ -4541,16 +4542,15 @@ def _handle_patch(appik1_path: str) -> None:
                               "(trip code not located in this ISO revision).")
         pc_line = ""
         if skip_part_collect:
-            pc_line = ("\n\nSkip Part Collection Cutscene: applied."
-                       if status.get("part_collect_patched")
-                       else "\n\nSkip Part Collection Cutscene: could NOT be applied "
-                            "(code not located in this ISO revision).")
+            # Succes non affiche (demande utilisateur) ; seul l'echec est signale.
+            if not status.get("part_collect_patched"):
+                pc_line = ("\n\nSkip Part Collection Cutscene: could NOT be applied "
+                           "(code not located in this ISO revision).")
         su_line = ""
         if skip_ship_upgrade:
-            su_line = ("\n\nSkip Ship Upgrade Cutscene: applied."
-                       if status.get("ship_upgrade_patched")
-                       else "\n\nSkip Ship Upgrade Cutscene: could NOT be applied "
-                            "(code not located in this ISO revision).")
+            if not status.get("ship_upgrade_patched"):
+                su_line = ("\n\nSkip Ship Upgrade Cutscene: could NOT be applied "
+                           "(code not located in this ISO revision).")
         Utils.messagebox(
             "Pikmin 1 Patched",
             f"Patched ISO created successfully!\n{output_iso}{trip_line}{pc_line}{su_line}"
@@ -4561,7 +4561,8 @@ def _handle_patch(appik1_path: str) -> None:
             os.remove(output_iso)
         except Exception:
             pass
-        Utils.messagebox("Cannot Patch Pikmin 1", str(e), error=True)
+        # #35 : ISO attendues + SHA-1 du fichier fourni, pour aider le joueur.
+        Utils.messagebox("Cannot Patch Pikmin 1", str(e) + "\n" + expected_iso_help(iso_path), error=True)
     except Exception as e:
         logger.error(f"[Pikmin] Unexpected error during patching: {e}")
         try:

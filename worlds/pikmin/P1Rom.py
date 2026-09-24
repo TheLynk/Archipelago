@@ -54,6 +54,39 @@ VERSION_LABELS = {
     NTSC_GAME_ID: "NTSC-U (USA)",
 }
 
+# #35 : dumps de reference (Redump.info, statut "Verified"), affiches dans les
+# messages d'erreur pour aider le joueur a trouver la bonne ISO. Information
+# seulement : la validation se fait par Game ID + octets du patch.
+EXPECTED_ISOS = {
+    PAL_GAME_ID:  ("Pikmin 1 GameCube (PAL) .iso file",
+                   "40c46bd6921e55558e9838930a9ffd2179802b4f"),
+    NTSC_GAME_ID: ("Pikmin 1 GameCube (USA) (Rev 1) .iso file",
+                   "23a153cb225fef488f57073e76df0de26789c218"),
+}
+
+
+def iso_sha1(path: str) -> str:
+    """SHA-1 d'un fichier (lecture par blocs, ~quelques secondes pour 1,4 Go)."""
+    import hashlib
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def expected_iso_help(path: str = "") -> str:
+    """Texte d'aide ajoute aux erreurs d'ISO : ISO attendues + SHA-1 du fichier."""
+    lines = ["", "Supported ISOs (Redump.info status: Verified):"]
+    for gid, (label, sha1) in EXPECTED_ISOS.items():
+        lines.append(f"  {label} | ID: {gid.decode()} | SHA-1: {sha1}")
+    if path:
+        try:
+            lines.append(f"Your file SHA-1: {iso_sha1(path)}")
+        except Exception as e:
+            lines.append(f"Your file SHA-1: could not be computed ({e})")
+    return "\n".join(lines)
+
 DOL_ISO_OFFSET        = 0x0001DA00
 DOL_TEXT1_FILE_OFFSET = 0x00002520
 DOL_TEXT1_RAM_ADDR    = 0x800055C0
@@ -143,7 +176,7 @@ def ram_to_iso_offset(f, ram_addr: int) -> int:
         if sec_ram <= ram_addr < sec_ram + size:
             return file_off + (ram_addr - sec_ram)
     raise InvalidISOError(
-        f"Adresse RAM 0x{ram_addr:08X} introuvable dans les sections .text du DOL."
+        f"RAM address 0x{ram_addr:08X} not found in the DOL .text sections."
     )
 
 
@@ -167,8 +200,8 @@ def find_code_cave(f, min_size: int = CAVE_MIN_SIZE) -> tuple[int, int]:
             else:
                 run_start = None
     raise InvalidISOError(
-        f"Aucune zone libre de {min_size} octets trouvee dans le DOL. "
-        "Cette ISO est peut-etre deja modifiee."
+        f"No free {min_size}-byte area found in the DOL. "
+        "This ISO may already be modified."
     )
 
 def _pack(v: int) -> bytes:
@@ -424,16 +457,16 @@ class InvalidISOError(Exception):
 def verify_iso(iso_path: str) -> None:
     """Verifie l'ISO. Aiguille vers le NTSC si besoin, sinon chemin PAL d'origine."""
     game_id = read_game_id(iso_path)
-    if game_id.startswith(PATCHED_GAME_ID_PREFIX):
+    if game_id[:3] in BASE_ID_BY_PATCHED_PREFIX:
         raise InvalidISOError(
-            "Cette ISO est deja patchee. Fournissez une ISO Pikmin 1 propre."
+            "This ISO is already patched. Please provide a clean Pikmin 1 ISO."
         )
     if game_id == NTSC_GAME_ID:
         return _verify_iso_ntsc(iso_path)
     if game_id != PAL_GAME_ID:
         raise InvalidISOError(
-            f"Game ID invalide : {game_id!r}.\n"
-            f"Attendu {PAL_GAME_ID.decode()} (PAL) ou {NTSC_GAME_ID.decode()} (NTSC-U)."
+            f"Invalid Game ID: {game_id!r}.\n"
+            f"Expected {PAL_GAME_ID.decode()} (PAL) or {NTSC_GAME_ID.decode()} (NTSC-U)."
         )
     return _verify_iso_pal(iso_path)
 
@@ -469,40 +502,84 @@ def _verify_iso_ntsc(iso_path: str) -> None:
         hook_bytes = f.read(4)
         if hook_bytes != HOOK_EXPECTED:
             raise InvalidISOError(
-                f"Octets inattendus au site de hook NTSC 0x{NTSC_HOOK_RAM_ADDR:08X} "
-                f"(offset ISO 0x{hook_off:08x}) : {hook_bytes.hex()}\n"
-                f"Attendu {HOOK_EXPECTED.hex()}. Cette ISO NTSC-U n'est pas celle prevue "
-                "(revision differente ?)."
+                f"Unexpected bytes at NTSC hook location 0x{NTSC_HOOK_RAM_ADDR:08X} "
+                f"(ISO offset 0x{hook_off:08x}): {hook_bytes.hex()}\n"
+                f"Expected {HOOK_EXPECTED.hex()}. This NTSC-U ISO is not the expected one "
+                "(different revision?)."
             )
         # Verifie qu'une zone libre existe avant de commencer a ecrire.
         find_code_cave(f)
 
 
+# --- Identite de l'ISO patchee (#35) -------------------------------------------
+# Le Game ID GameCube fait EXACTEMENT 6 octets (en-tete disque 0x00-0x05) : on
+# ne peut pas y mettre l'ID complet de la run. On garde le prefixe de version
+# (P1P / P1E, lu par le client) + un suffixe de 3 caracteres [0-9A-Z] derive de
+# TOUTE la seed et du slot (46 656 valeurs, au lieu des 1000 de seed[-3:]).
+# L'ID complet de la run va dans le nom du jeu de l'en-tete (0x20, 0x3E0 octets).
+_ID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+DISC_NAME_OFF = 0x20
+DISC_NAME_SIZE = 0x3E0
+
+
+def make_game_id_suffix(seed: str, player: int) -> str:
+    """Suffixe de Game ID (3 caracteres) propre a la seed ET au slot."""
+    import hashlib
+    n = int.from_bytes(hashlib.sha1(f"{seed}:{player}".encode("utf-8")).digest()[:8], "big")
+    out = ""
+    for _ in range(3):
+        n, r = divmod(n, len(_ID_CHARS))
+        out += _ID_CHARS[r]
+    return out
+
+
+def make_disc_title(seed: str, slot_name: str) -> str:
+    """Nom du jeu ecrit dans l'en-tete de l'ISO (visible dans Dolphin)."""
+    return f"Pikmin AP - Seed {seed} - {slot_name}"
+
+
+def _write_disc_title(f, title: str) -> None:
+    raw = title.encode("ascii", "replace")[:DISC_NAME_SIZE - 1]
+    f.seek(DISC_NAME_OFF)
+    f.write(raw + b"\x00" * (DISC_NAME_SIZE - len(raw)))
+
+
 def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
-              skip_part_collect: bool = True, skip_ship_upgrade: bool = True) -> dict:
+              skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
+              suffix: str = "", title: str = "") -> dict:
     """Patche l'ISO. Aiguille vers le NTSC si besoin, sinon chemin PAL d'origine.
 
     `disable_trip` : patch QOL anti-trebuchement (best-effort).
     `skip_part_collect` : patch QOL skip cinematique de collecte de piece.
     `skip_ship_upgrade` : patch QOL skip cinematique d'amelioration du vaisseau.
+    `suffix` : suffixe du Game ID (make_game_id_suffix) ; vide = ancien calcul
+    seed[-3:] (fichiers .appik1 generes avant ce changement).
+    `title` : nom du jeu ecrit dans l'en-tete (ID complet de la run).
     Renvoie un dict de statut (trip_patched / part_collect_patched / ship_upgrade_patched).
     """
     if read_game_id(iso_path) == NTSC_GAME_ID:
-        return _patch_iso_ntsc(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade)
-    return _patch_iso_pal(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade)
+        status = _patch_iso_ntsc(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade, suffix)
+    else:
+        status = _patch_iso_pal(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade, suffix)
+    if title:
+        with open(iso_path, "r+b") as f:
+            _write_disc_title(f, title)
+    return status
 
 
-def _new_game_id(seed: str, prefix: bytes = PATCHED_GAME_ID_PREFIX) -> bytes:
-    suffix = (seed[-3:] if len(seed) >= 3 else seed.ljust(3, "0")).encode("ascii")
-    return prefix + suffix
+def _new_game_id(seed: str, prefix: bytes = PATCHED_GAME_ID_PREFIX, suffix: str = "") -> bytes:
+    if not suffix:  # ancien format (compatibilite)
+        suffix = seed[-3:] if len(seed) >= 3 else seed.ljust(3, "0")
+    return prefix + suffix.encode("ascii")
 
 
 def _patch_iso_pal(iso_path: str, seed: str = "", disable_trip: bool = True,
-                   skip_part_collect: bool = True, skip_ship_upgrade: bool = True) -> dict:
+                   skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
+                   suffix: str = "") -> dict:
     stub   = build_stub()
     branch = ppc_b(HOOK_RAM_ADDR, CAVE_RAM_ADDR)
 
-    new_game_id = _new_game_id(seed, PATCHED_PREFIX_BY_VERSION[PAL_GAME_ID])
+    new_game_id = _new_game_id(seed, PATCHED_PREFIX_BY_VERSION[PAL_GAME_ID], suffix)
 
     status = {"trip_patched": False, "part_collect_patched": False, "ship_upgrade_patched": False}
     with open(iso_path, "r+b") as f:
@@ -523,8 +600,9 @@ def _patch_iso_pal(iso_path: str, seed: str = "", disable_trip: bool = True,
 
 
 def _patch_iso_ntsc(iso_path: str, seed: str = "", disable_trip: bool = True,
-                    skip_part_collect: bool = True, skip_ship_upgrade: bool = True) -> dict:
-    new_game_id = _new_game_id(seed, PATCHED_PREFIX_BY_VERSION[NTSC_GAME_ID])
+                    skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
+                    suffix: str = "") -> dict:
+    new_game_id = _new_game_id(seed, PATCHED_PREFIX_BY_VERSION[NTSC_GAME_ID], suffix)
 
     status = {"trip_patched": False, "part_collect_patched": False, "ship_upgrade_patched": False}
     with open(iso_path, "r+b") as f:
