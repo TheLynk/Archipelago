@@ -546,7 +546,6 @@ def kill_olimar(game: Game) -> bool:
 TIME_TRAP_HOURS = 2      # heures de jeu ajoutees a l'horloge
 DAMAGE_TRAP_LOSS = 20.0  # % de sante retire par defaut (#43 : option damage_trap_amount)
 DAMAGE_TRAP_FLOOR = 2.0  # plancher pour ne pas tuer Olimar (mort a <= 1.0)
-TELEPORT_TRAP_RANGE = 600.0  # rayon horizontal du deplacement (unites monde)
 TELEPORT_TRAP_LIFT = 60.0    # hauteur ajoutee pour retomber sur le terrain
 
 
@@ -721,12 +720,15 @@ def apply_damage_trap(game: Game, ctx=None) -> bool:
         return False
 
 
-def _random_waypoint_position(game: Game) -> Optional[tuple]:
-    """Position (x,y,z) d'un waypoint valide du graphe de navigation, ou None.
+WP_FLAG_PEBBLE = 0x02         # WayPointFlags::Pebble (obstacle)
+WP_LINKS_OFF = 0x14           # int mLinkIndices[8]
+WP_LINKCOUNT_OFF = 0x34       # int mLinkCount
 
-    On choisit un waypoint ouvert (traversable) et hors de l'eau : c'est un point
-    du reseau que les Pikmin empruntent, donc garanti sur le terrain -- jamais
-    dans le vide. Evite les teleportations qui faisaient tomber Olimar.
+
+def _read_waypoint_graph(game: Game) -> Optional[list]:
+    """#48 : lit tout le reseau de waypoints (groupe 0) en une lecture.
+
+    Renvoie une liste de dicts {pos, open, flags, links} ou None.
     """
     mgr_ptr = SYM_ROUTE_MGR_PTR.get(game)
     if mgr_ptr is None:
@@ -753,50 +755,100 @@ def _random_waypoint_position(game: Game) -> Optional[tuple]:
         count = struct.unpack(">i", dme.read_bytes(group + R["GROUP_NUMPOINTS"], 4))[0]
     except Exception:
         return None
-    if not (0 < count <= 20000):
+    if not (0 < count <= 4000):
+        return None
+    size = R["WAYPOINT_SIZE"]
+    try:
+        raw = dme.read_bytes(waypoints, count * size)
+    except Exception:
+        return None
+    graph = []
+    for i in range(count):
+        o = i * size
+        x, y, z = struct.unpack_from(">fff", raw, o + R["WP_POSITION"])
+        n = struct.unpack_from(">i", raw, o + WP_LINKCOUNT_OFF)[0]
+        links = [l for l in struct.unpack_from(">8i", raw, o + WP_LINKS_OFF)[:max(0, min(n, 8))]
+                 if 0 <= l < count]
+        graph.append({"pos": (x, y, z), "open": raw[o + R["WP_ISOPEN"]] != 0,
+                      "flags": raw[o + R["WP_FLAGS"]], "links": links})
+    return graph
+
+
+def _safe_teleport_position(game: Game, origin: tuple) -> Optional[tuple]:
+    """#48 : Teleport Trap intelligent.
+
+    Part du waypoint ouvert le plus proche d'Olimar et ne garde que les waypoints
+    atteignables A PIED dans les deux sens (aller ET retour) en ne traversant que
+    des waypoints ouverts : portes fermees, ponts non construits et obstacles
+    (waypoints fermes par le jeu) coupent le chemin. Exclut l'eau et les
+    waypoints marques "Pebble". Aucun soft lock : Olimar peut toujours revenir.
+    """
+    graph = _read_waypoint_graph(game)
+    if not graph:
+        return None
+    ox, oy, oz = origin
+
+    def usable(i: int) -> bool:
+        return graph[i]["open"] and not (graph[i]["flags"] & WP_FLAG_INWATER)
+
+    # Point de depart : waypoint utilisable le plus proche (hauteur penalisee
+    # pour ne pas choisir un point au-dessus/en dessous d'une falaise).
+    start, best = None, None
+    for i, wp in enumerate(graph):
+        if not usable(i):
+            continue
+        x, y, z = wp["pos"]
+        d = (x - ox) ** 2 + (z - oz) ** 2 + 4.0 * (y - oy) ** 2
+        if best is None or d < best:
+            start, best = i, d
+    if start is None:
         return None
 
-    import random as _random
-    # Quelques essais pour tomber sur un waypoint ouvert et hors de l'eau.
-    for _ in range(12):
-        idx = _random.randrange(count)
-        wp = waypoints + idx * R["WAYPOINT_SIZE"]
-        try:
-            is_open = dme.read_byte(wp + R["WP_ISOPEN"])
-            flags = dme.read_byte(wp + R["WP_FLAGS"])
-            if not is_open or (flags & WP_FLAG_INWATER):
-                continue
-            x, y, z = struct.unpack(">fff", dme.read_bytes(wp + R["WP_POSITION"], 12))
-        except Exception:
+    fwd_adj = [[] for _ in graph]
+    rev_adj = [[] for _ in graph]
+    for i, wp in enumerate(graph):
+        if not usable(i):
             continue
-        return (x, y, z)
-    return None
+        for j in wp["links"]:
+            if usable(j):
+                fwd_adj[i].append(j)
+                rev_adj[j].append(i)
+
+    def bfs(adj) -> set:
+        seen, todo = {start}, [start]
+        while todo:
+            cur = todo.pop()
+            for nxt in adj[cur]:
+                if nxt not in seen:
+                    seen.add(nxt)
+                    todo.append(nxt)
+        return seen
+
+    both = bfs(fwd_adj) & bfs(rev_adj)
+    candidates = [i for i in both if i != start and not (graph[i]["flags"] & WP_FLAG_PEBBLE)]
+    if not candidates:
+        return None
+    import random as _random
+    return graph[_random.choice(candidates)]["pos"]
 
 
 def apply_teleport_trap(game: Game) -> bool:
-    """Teleporte Olimar sur un waypoint aleatoire du graphe de navigation.
+    """#48 : teleporte Olimar sur un waypoint sur (aller-retour a pied possible).
 
-    Cible un point du reseau de pathfinding des Pikmin : toujours sur le terrain,
-    jamais dans le vide. On ajoute une petite hauteur pour qu'il se pose au sol.
-    Repli : si le graphe n'est pas lisible, decalage horizontal borne autour de
-    la position courante.
+    Si aucun point sur n'est trouve, renvoie False : le trap reste en attente et
+    sera retente au tick suivant (plus de decalage aleatoire, source de soft lock).
     """
     navi = _resolve_olimar(game)
     if navi is None:
         return False
     addr = navi + NAVI_CHAIN["CREATURE_POSITION"]
     try:
-        dest = _random_waypoint_position(game)
-        if dest is not None:
-            x, y, z = dest
-            dme.write_bytes(addr, struct.pack(">fff", x, y + TELEPORT_TRAP_LIFT, z))
-            return True
-        # Repli : decalage horizontal autour de la position actuelle.
-        import random as _random
-        cx, cy, cz = struct.unpack(">fff", dme.read_bytes(addr, 12))
-        nx = cx + _random.uniform(-TELEPORT_TRAP_RANGE, TELEPORT_TRAP_RANGE)
-        nz = cz + _random.uniform(-TELEPORT_TRAP_RANGE, TELEPORT_TRAP_RANGE)
-        dme.write_bytes(addr, struct.pack(">fff", nx, cy + TELEPORT_TRAP_LIFT, nz))
+        origin = struct.unpack(">fff", dme.read_bytes(addr, 12))
+        dest = _safe_teleport_position(game, origin)
+        if dest is None:
+            return False
+        x, y, z = dest
+        dme.write_bytes(addr, struct.pack(">fff", x, y + TELEPORT_TRAP_LIFT, z))
         return True
     except Exception:
         return False
@@ -1862,6 +1914,7 @@ class P1Context(SuperContext):
         # actif avant d'appliquer un trap, pour ne pas en gaspiller un juste apres
         # l'atterrissage (Olimar pas encore vraiment operationnel).
         self._trap_grace_ticks: int = 0
+        self._trap_free_since: Optional[float] = None  # #48
         # #5 : vrai tant qu'un ecran (pause, carte, texte...) couvre le gameplay ;
         # sert a rearmer le delai de grace a la fermeture du menu.
         self._trap_overlay_was_active: bool = False
@@ -2877,6 +2930,18 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
     # rearme un delai de grace (~3 s) avant d'appliquer le trap en attente.
     if is_overlay_active(game):
         ctx._trap_overlay_was_active = True
+        ctx._trap_free_since = None
+        return
+    # #48 : comme les cones (#46), aucun trap pendant une cinematique, puis
+    # CONE_START_DELAY secondes de jeu libre (fin de la cinematique de debut de
+    # journee comprise) avant d'appliquer le premier trap.
+    if is_movie_playing(game):
+        ctx._trap_free_since = None
+        return
+    _now = time.monotonic()
+    if ctx._trap_free_since is None:
+        ctx._trap_free_since = _now
+    if _now - ctx._trap_free_since < CONE_START_DELAY:
         return
     if ctx._trap_overlay_was_active:
         ctx._trap_overlay_was_active = False
@@ -4600,7 +4665,8 @@ async def dolphin_loop(ctx: P1Context):
             # Nouvelle journee : on leve le verrou pose par un End Day Trap et on
             # arme un court delai de grace avant de reappliquer des traps.
             ctx._traps_suspended_until_next_day = False
-            ctx._trap_grace_ticks = 3
+            ctx._trap_grace_ticks = 0
+            ctx._trap_free_since = None  # #48 : delai commun avec les cones
         ctx._in_level_prev = in_level
         ctx._save_was_loaded_prev_death = save_active
 
