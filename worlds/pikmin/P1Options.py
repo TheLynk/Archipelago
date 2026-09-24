@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from Options import DefaultOnToggle, Toggle, Range, Choice, OptionSet, PerGameCommonOptions
+from Options import DefaultOnToggle, Toggle, Range, Choice, OptionSet, PerGameCommonOptions, OptionGroup
 from .P1Symbols import SKIP_EVENT_ALL_KEYS
 
 
@@ -599,3 +599,44 @@ class P1Options(PerGameCommonOptions):
     day_cycle_fixed: DayCycleFixed
 # - SHIP PART HINTS
     ship_part_hint_mode: ShipPartHintMode
+
+
+# ====================================================================
+# OPTION GROUPS (#47) - web Options Creator / generated YAML template
+# ====================================================================
+P1_OPTION_GROUPS = [
+    OptionGroup("Ship Parts", [
+        FirstPartIsLocal, LastPartIsLocal,
+    ]),
+    OptionGroup("Pikmin Locations", [
+        EnablePikminLocations,
+        RedPikminLocationsEnabled, RedPikminInterval,
+        YellowPikminLocationsEnabled, YellowPikminInterval,
+        BluePikminLocationsEnabled, BluePikminInterval,
+    ]),
+    OptionGroup("Filler Weights", [
+        Weight1RedLeaf, Weight5RedLeaf, Weight1RedBud, Weight5RedBud,
+        Weight1RedFlower, Weight5RedFlower,
+        Weight1YellowLeaf, Weight5YellowLeaf, Weight1YellowBud, Weight5YellowBud,
+        Weight1YellowFlower, Weight5YellowFlower,
+        Weight1BlueLeaf, Weight5BlueLeaf, Weight1BlueBud, Weight5BlueBud,
+        Weight1BlueFlower, Weight5BlueFlower,
+    ], start_collapsed=True),
+    OptionGroup("Traps & TrapLink", [
+        TrapPercentage, TrapLink, TrapLinkConversion, TrapLinkConversionTraps,
+        WeightTimeTrap, WeightEndDayTrap, WeightDamageTrap,
+        DamageTrapCanKill, DamageTrapAmount,
+        WeightTeleportTrap, WeightDisbandingTrap, WeightTripTrap,
+    ]),
+    OptionGroup("DeathLink", [
+        DeathLink, PikminDeathAmount,
+    ]),
+    OptionGroup("Olimar & Pikmin Bond", [
+        PikminBond, PikminBondDamage, OlimarBond, OlimarBondHeal,
+    ]),
+    OptionGroup("Quality of Life", [
+        NormalFirstDay, DisablePikminTrip, SkipEvents, AlwaysMinOneLeaf,
+        DayCycleMode, DayCycleMin, DayCycleMax, DayCycleFixed,
+        ShipPartHintMode,
+    ]),
+]

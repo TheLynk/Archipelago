@@ -1,5 +1,6 @@
 from BaseClasses import Tutorial
 from worlds.AutoWorld import WebWorld
+from .P1Options import P1_OPTION_GROUPS
 
 
 class P1Web(WebWorld):
@@ -15,5 +16,5 @@ class P1Web(WebWorld):
     ]
     theme = "jungle"
     # options_presets = ...
-    # option_groups = ...
+    option_groups = P1_OPTION_GROUPS
     rich_text_options_doc = True
