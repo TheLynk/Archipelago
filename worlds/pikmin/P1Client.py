@@ -3366,6 +3366,8 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
 # #40 : WorldMapCoursePoint.mLinkPoints (_2C), indexe par linkFlag
 # (src/plugPikiYamashita/drawWorldMap.cpp : Up 0, Down 1, Left 2, Right 3).
 CP_LINKPOINTS = 0x2C
+# #45 : DrawWorldMap.mTotalPikiCounts[3] (Blue, Red, Yellow).
+DWM_PIKI_COUNTS = 0x44
 
 
 # #40 : liens du curseur quand TOUTES les zones sont ouvertes (index ecran),
@@ -3490,6 +3492,21 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
         cur_addr = wm + W["DWM_CURRPARTS"]
         if struct.unpack(">i", dme.read_bytes(cur_addr, 4))[0] != ship_parts_count:
             dme.write_bytes(cur_addr, struct.pack(">i", ship_parts_count))
+
+        # --- #45 : compteurs de Pikmin par couleur (haut de la carte) ----------
+        # DrawWorldMap.mTotalPikiCounts[Blue/Red/Yellow] (_44) : rempli une seule
+        # fois a l'ouverture de la carte (PlayerState::getTotalPikiCount =
+        # pikiInfMgr, total des stades) mais relu a chaque frame par l'affichage.
+        # On le recalcule depuis les compteurs STAGE (ou arrivent les bonus).
+        stage_addrs = ONION_STAGE_ADDRS_CLIENT.get(game, {})
+        for color, idx in (("blue", 0), ("red", 1), ("yellow", 2)):
+            stages = stage_addrs.get(color)
+            if not stages:
+                continue
+            total = sum(struct.unpack(">i", dme.read_bytes(a, 4))[0] for a in stages.values())
+            cnt_addr = wm + DWM_PIKI_COUNTS + idx * 4
+            if struct.unpack(">i", dme.read_bytes(cnt_addr, 4))[0] != total:
+                dme.write_bytes(cnt_addr, struct.pack(">i", total))
 
         # --- #40 : liens de navigation du curseur ---------------------------
         # WorldMapCoursePointMgr::init() calcule les liens haut/bas/gauche/droite
