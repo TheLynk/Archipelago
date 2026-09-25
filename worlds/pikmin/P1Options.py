@@ -27,21 +27,30 @@ class LastPartIsLocal(DefaultOnToggle):
 # PIKMIN LOCATION
 # ====================================================================
 class EnablePikminLocations(Toggle):
-    """Enable generation of locations based on Pikmin collection thresholds
+    """Enable locations based on the number of Pikmin following Captain Olimar.
+
+    A Pikmin location is checked when the number of Pikmin of that color
+    currently in Olimar's squad (the Pikmin following him) reaches a threshold.
+    Pikmin left in the Onion, working, idle or scattered do not count.
+    Example: with a Red interval of 5, "Red Pikmin: 10" is checked as soon as
+    10 Red Pikmin follow Olimar at the same time.
+    The squad is limited to 100 Pikmin (all colors combined).
     Total Max Locations : 300"""
     display_name = "Enable Pikmin Collection Locations"
     default = False
 
 
 class RedPikminLocationsEnabled(Toggle):
-    """Enable Red Pikmin collection locations (no ship part requirements)
+    """Enable Red Pikmin locations: checked by the number of Red Pikmin
+    following Captain Olimar (no ship part requirement).
     Total Max Locations : 100"""
     display_name = "Red Pikmin Locations"
     default = True
 
 
 class RedPikminInterval(Range):
-    """Pikmin count interval for Red locations (e.g., 12 = 12, 24, 36... locations)"""
+    """Step between Red Pikmin thresholds (number of Red Pikmin following Olimar).
+    Example: 12 creates "Red Pikmin: 12", "Red Pikmin: 24", "Red Pikmin: 36"..."""
     display_name = "Red Pikmin Interval"
     range_start = 1
     range_end = 100
@@ -49,14 +58,16 @@ class RedPikminInterval(Range):
 
 
 class YellowPikminLocationsEnabled(Toggle):
-    """Enable Yellow Pikmin collection locations (requires 1 ship part)
+    """Enable Yellow Pikmin locations: checked by the number of Yellow Pikmin
+    following Captain Olimar (requires 1 ship part).
     Total Max Locations : 100"""
     display_name = "Yellow Pikmin Locations"
     default = True
 
 
 class YellowPikminInterval(Range):
-    """Pikmin count interval for Yellow locations"""
+    """Step between Yellow Pikmin thresholds (number of Yellow Pikmin following Olimar).
+    Example: 5 creates "Yellow Pikmin: 5", "Yellow Pikmin: 10", "Yellow Pikmin: 15"..."""
     display_name = "Yellow Pikmin Interval"
     range_start = 1
     range_end = 100
@@ -64,14 +75,16 @@ class YellowPikminInterval(Range):
 
 
 class BluePikminLocationsEnabled(Toggle):
-    """Enable Blue Pikmin collection locations (requires 5 ship parts)
+    """Enable Blue Pikmin locations: checked by the number of Blue Pikmin
+    following Captain Olimar (requires 5 ship parts).
     Total Max Locations : 100"""
     display_name = "Blue Pikmin Locations"
     default = True
 
 
 class BluePikminInterval(Range):
-    """Pikmin count interval for Blue locations"""
+    """Step between Blue Pikmin thresholds (number of Blue Pikmin following Olimar).
+    Example: 5 creates "Blue Pikmin: 5", "Blue Pikmin: 10", "Blue Pikmin: 15"..."""
     display_name = "Blue Pikmin Interval"
     range_start = 1
     range_end = 100

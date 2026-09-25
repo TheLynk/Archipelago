@@ -24,6 +24,19 @@ There is no in-game display of a specific 3D model of an object from another arc
 
 If the player is not during the day in one of the 5 zones of the game or is not on the zone selection map the synchronization is suspended and otherwise the object received try to apply as soon as possible and if impossible for X reason it remains on hold until it becomes possible
 
+## How are Pikmin locations detected?
+
+When the Pikmin locations option is enabled, each location is named after a color and a threshold
+(for example "Red Pikmin: 10"). It is checked as soon as the number of Pikmin of that color
+**following Captain Olimar** (his current squad) reaches the threshold.
+
+- Only Pikmin in Olimar's squad count: Pikmin left in the Onion, working (carrying, building,
+  fighting), idle or scattered are not counted.
+- Example: with a Red interval of 5, "Red Pikmin: 10" is checked the moment 10 Red Pikmin follow
+  Olimar at the same time.
+- The squad is limited to 100 Pikmin, all colors combined.
+- Yellow Pikmin locations require 1 ship part and Blue Pikmin locations require 5 ship parts in logic.
+
 ## Commands
 
 - /debughint - Toggle debug logging for hint-related messages.
