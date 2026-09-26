@@ -4999,6 +4999,10 @@ def _handle_patch(appik1_path: str) -> None:
         if slot_name and not status.get("slot_name_written"):
             sn_line = ("\n\nSlot name could NOT be stored in the ISO "
                        "(the client will ask for it when connecting).")
+        # #51 : NTSC uniquement (cle absente en PAL).
+        if status.get("card_filename_patched") is False:
+            sn_line += ("\n\nSave file name could NOT be patched: saving may not work "
+                        "on this NTSC ISO.")
         Utils.messagebox(
             "Pikmin 1 Patched",
             f"Patched ISO created successfully!\n{output_iso}{trip_line}{pc_line}{su_line}{sn_line}"

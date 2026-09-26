@@ -626,6 +626,48 @@ def _patch_iso_pal(iso_path: str, seed: str = "", disable_trip: bool = True,
     return status
 
 
+# --- #51 : sauvegarde NTSC ----------------------------------------------------
+# En NTSC, MemoryCard::checkUseFile() reconnait le fichier de sauvegarde par son
+# NOM SEUL ("Pikmin dataFile"), sans verifier gameName/company (le PAL, lui, les
+# verifie : memoryCard.cpp, #if VERSION_GPIP01). Avec un Game ID patche, le jeu
+# trouvait donc le fichier d'une AUTRE partie (ex. la sauvegarde GPIE vanilla),
+# l'adoptait, puis toutes les ecritures etaient refusees par la lib CARD
+# (CARD_RESULT_NOPERM : gamecode different) sans que le jeu le verifie ->
+# "sauvegarde reussie" mais rien d'ecrit. On donne au fichier un nom propre a
+# l'ISO patchee ("Pikmin " + Game ID) : il ne correspond plus qu'a ses propres
+# sauvegardes. PAL inchange (compatibilite des sauvegardes existantes).
+CARD_FILENAME_ORIG = b"Pikmin dataFile\x00"
+
+
+def _dol_sections_all(f) -> list[tuple[int, int, int]]:
+    """Toutes les sections du DOL (7 .text + 11 .data) : (offset ISO, RAM, taille)."""
+    dol_off = _u32(f, 0x420)
+    out = []
+    for i in range(18):
+        file_off = _u32(f, dol_off + 0x00 + i * 4)
+        ram_addr = _u32(f, dol_off + 0x48 + i * 4)
+        size     = _u32(f, dol_off + 0x90 + i * 4)
+        if file_off and size:
+            out.append((dol_off + file_off, ram_addr, size))
+    return out
+
+
+def apply_ntsc_card_filename_patch(f, game_id: bytes) -> bool:
+    """Remplace "Pikmin dataFile" par "Pikmin <GameID>" dans le DOL NTSC."""
+    new = b"Pikmin " + game_id[:6]
+    assert len(new) < len(CARD_FILENAME_ORIG)
+    new = new.ljust(len(CARD_FILENAME_ORIG), b"\x00")
+    for file_off, _ram, size in _dol_sections_all(f):
+        f.seek(file_off)
+        data = f.read(size)
+        idx = data.find(CARD_FILENAME_ORIG)
+        if idx >= 0 and data.find(CARD_FILENAME_ORIG, idx + 1) < 0:
+            f.seek(file_off + idx)
+            f.write(new)
+            return True
+    return False
+
+
 def _patch_iso_ntsc(iso_path: str, seed: str = "", disable_trip: bool = True,
                     skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
                     suffix: str = "") -> dict:
@@ -651,6 +693,8 @@ def _patch_iso_ntsc(iso_path: str, seed: str = "", disable_trip: bool = True,
         f.write(branch)
         f.seek(0)
         f.write(new_game_id)
+        # #51 : nom de fichier de sauvegarde propre a cette ISO.
+        status["card_filename_patched"] = apply_ntsc_card_filename_patch(f, new_game_id)
         if disable_trip:
             status["trip_patched"] = apply_trip_patch(f)[0]
         if skip_ship_upgrade:
