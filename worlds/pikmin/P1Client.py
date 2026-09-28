@@ -3777,6 +3777,38 @@ def _write_playerstate_part_counts(game: Game, total: int, required: int) -> Non
         logger.debug(f"Error writing part counts: {e}")
 
 
+def _sync_stage_unlock_anim(game: Game, ap_areas: int, game_areas: int) -> None:
+    """#53 : animation de deblocage de zone de la carte du monde.
+
+    gameflow.mPendingStageUnlockID (-1 = aucune) est pose par
+    PlayState::openStage() : quand Olimar ramasse une piece EN JEU (un check
+    AP), PlayerState::registerPart() debloque la Forest of Hope (>= 1 piece)
+    et programme son animation. Meme si le client remet ensuite les zones a
+    l'etat AP, DrawWorldMap::start() fait APPARAITRE la zone de l'animation et
+    y place le curseur -> Forest of Hope accessible avec 0 piece AP.
+
+    - animation visant une zone NON debloquee par l'AP -> annulee (-1) ;
+    - zone nouvellement debloquee par l'AP (bit absent du jeu) -> on programme
+      la vraie animation du jeu pour le prochain passage sur la carte (hors
+      carte du monde : la, #12 rafraichit l'ecran en place).
+    """
+    addr = SYM_GAMEFLOW.get(game, {}).get("PENDING_STAGE_UNLOCK")
+    if addr is None:
+        return
+    try:
+        pending = struct.unpack(">i", dme.read_bytes(addr, 4))[0]
+        want = pending
+        if pending >= 0 and not (ap_areas >> pending) & 1:
+            want = -1
+        new_bits = ap_areas & ~game_areas & 0b11110  # Impact Site (bit 0) exclu
+        if new_bits and _oneplayer_subsection(game) != ONEPLAYER_MAP_SELECT:
+            want = new_bits.bit_length() - 1  # zone la plus avancee
+        if want != pending:
+            dme.write_bytes(addr, struct.pack(">i", want))
+    except Exception as e:
+        logger.debug(f"Error syncing stage unlock anim: {e}")
+
+
 def is_final_ending(game: Game) -> bool:
     """#32 : vrai pendant la sequence de fin (fin de la derniere journee avec
     30 pieces : decollage, oignons, Olimar dans l'espace). Le jeu y reinitialise
@@ -3825,7 +3857,9 @@ async def handle_areas(ctx: P1Context, game: Game):
     # playerState (et non plus a une adresse de tas codee en dur), et seulement
     # si la valeur change.
     _write_playerstate_part_counts(game, ship_parts_count, total_required)
-    if dme.read_byte(UNLOCKED_AREAS[game]) != areas:
+    game_areas = dme.read_byte(UNLOCKED_AREAS[game])
+    _sync_stage_unlock_anim(game, areas, game_areas)
+    if game_areas != areas:
         dme.write_byte(UNLOCKED_AREAS[game], areas)
 
     # Stage visuel du S.S. Dolphin (issue #8). Le jeu ne recalcule

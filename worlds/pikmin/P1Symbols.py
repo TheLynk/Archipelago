@@ -7,6 +7,7 @@ Regenerer: python gen_symbols.py <decomp>/config worlds/pikmin/P1Symbols.py
 SYM_GAMEFLOW = {
     b'GPIP01': {
         "UNLOCKED_AREAS": 0x803A2803,
+        "PENDING_STAGE_UNLOCK": 0x803A2808,
         "GAME_SECTION": 0x803A2824,
         "DAY_END_TRIGGERED": 0x803A281E,
         "TIME_OF_DAY": 0x803A2928,
@@ -28,6 +29,7 @@ SYM_GAMEFLOW = {
     },
     b'GPIE01': {
         "UNLOCKED_AREAS": 0x8039D983,
+        "PENDING_STAGE_UNLOCK": 0x8039D988,
         "GAME_SECTION": 0x8039D9A4,
         "DAY_END_TRIGGERED": 0x8039D99E,
         "TIME_OF_DAY": 0x8039DAA8,
