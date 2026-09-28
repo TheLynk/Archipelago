@@ -513,6 +513,16 @@ def kill_olimar(game: Game) -> bool:
             return None
         return v if _RAM_MIN <= v < _RAM_MAX else None
 
+    # #54 : n'amorcer la mort QUE si Olimar est dans son etat controlable
+    # normal (NaviWalkState). Dans un etat de demo / cinematique (sortie du
+    # vaisseau en debut de journee, etc.), l'etat force etait ecrase par le jeu
+    # et il ne restait que mHealth = 0 : "Olimar zombie" a 0 PV, insoignable,
+    # icone de sante disparue. Sinon on retente au prochain tick.
+    walk = _resolve_state_instance(navi, NAVISTATE_WALK)
+    cur = u32(navi + C["NAVI_CURRSTATE"])
+    if walk is None or cur != walk:
+        return False
+
     try:
         # Toujours mettre la sante a 0.
         dme.write_bytes(navi + C["CREATURE_HEALTH"], struct.pack(">f", 0.0))
@@ -1915,6 +1925,7 @@ class P1Context(SuperContext):
         # l'atterrissage (Olimar pas encore vraiment operationnel).
         self._trap_grace_ticks: int = 0
         self._trap_free_since: Optional[float] = None  # #48
+        self._dl_free_since: Optional[float] = None    # #54
         # #5 : vrai tant qu'un ecran (pause, carte, texte...) couvre le gameplay ;
         # sert a rearmer le delai de grace a la fermeture du menu.
         self._trap_overlay_was_active: bool = False
@@ -2689,6 +2700,38 @@ def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
     return removed
 
 
+def _fix_zombie_olimar(game: Game) -> None:
+    """#54 : Olimar a <= 1 PV, pas mort (orimaDead = 0) et en etat normal :
+    une mort amorcee a ete perdue -> on la reamorce."""
+    if read_orima_dead(game):
+        return
+    navi = _resolve_olimar(game)
+    if navi is None:
+        return
+    try:
+        hp = struct.unpack(">f", dme.read_bytes(navi + NAVI_CHAIN["CREATURE_HEALTH"], 4))[0]
+    except Exception:
+        return
+    if hp <= 1.0:
+        kill_olimar(game)  # ne fait rien tant qu'Olimar n'est pas en NaviWalkState
+
+
+def _free_play_elapsed(ctx, game: Game, attr: str) -> bool:
+    """#54 : vrai apres CONE_START_DELAY s de jeu libre (ni cinematique ni menu).
+
+    `attr` : attribut de ctx memorisant le debut de la periode libre (remis a
+    None des qu'une cinematique ou un menu interrompt le jeu)."""
+    if is_movie_playing(game) or is_overlay_active(game):
+        setattr(ctx, attr, None)
+        return False
+    now = time.monotonic()
+    since = getattr(ctx, attr, None)
+    if since is None:
+        setattr(ctx, attr, now)
+        return False
+    return now - since >= CONE_START_DELAY
+
+
 async def handle_death_link(ctx: P1Context, game: Game) -> None:
     """DeathLink : detection (envoi) et application (reception).
 
@@ -2710,8 +2753,18 @@ async def handle_death_link(ctx: P1Context, game: Game) -> None:
             ctx._pending_self_kill = False
             ctx._suppress_orima_send = True
 
+    # #54 : filet de securite "Olimar zombie" (0 PV mais pas mort : la mort
+    # amorcee a ete annulee par le jeu). On la reamorce des qu'il redevient
+    # controlable.
+    _fix_zombie_olimar(game)
+
     # --- Reception : tuer Olimar ---
-    if ctx.pending_kill:
+    # #54 : meme delai que les cones / traps : rien pendant une cinematique ou
+    # un menu, puis CONE_START_DELAY secondes de jeu libre.
+    if ctx.pending_kill and not ctx._deathlink_locked_this_day \
+            and not _free_play_elapsed(ctx, game, "_dl_free_since"):
+        pass
+    elif ctx.pending_kill:
         if ctx._deathlink_locked_this_day:
             # Un evenement DeathLink a deja eu lieu cette journee : on ignore les
             # morts recues jusqu'au reset de debut de journee.
@@ -4715,6 +4768,7 @@ async def dolphin_loop(ctx: P1Context):
             ctx._traps_suspended_until_next_day = False
             ctx._trap_grace_ticks = 0
             ctx._trap_free_since = None  # #48 : delai commun avec les cones
+            ctx._dl_free_since = None    # #54 : idem pour le DeathLink recu
         ctx._in_level_prev = in_level
         ctx._save_was_loaded_prev_death = save_active
 
