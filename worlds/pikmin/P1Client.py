@@ -3289,7 +3289,12 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
     # / reutilise par le rendu : y ecrire corrompait le flux GPU (Dolphin :
     # "GFX FIFO opcode inconnu 0xf6"). La persistance passe de toute facon par
     # STAGE (source de verite), inchangee.
-    in_game = (not ctx._onion_dyn_was_zero) and (current_day != 0) and is_day_active(game)
+    # #52 : le "sentinel" (gameflow+0x2EC) est WorldClock.mRealSecsIntoHour :
+    # il retombe a 0 a chaque changement d'heure et reste a 0 tant que
+    # l'horloge est figee (debut du jour 1). S'en servir comme verrou faisait
+    # sauter l'ajout live dans l'oignon -> Pikmin visibles le lendemain. On se
+    # base desormais sur l'etat reel du jeu (niveau charge + gameplay actif).
+    in_game = (current_day != 0) and is_in_level(game) and is_day_active(game)
 
     def add_pikmin(color: str, stage: str, amount: int) -> bool:
         """Applique un bonus. Renvoie toujours True : le compteur persistant
@@ -3350,13 +3355,15 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             ctx._pending_born[color] += amount
 
         if in_game and stage in DYN_OFFSETS:
-            base = getattr(ctx, DYN_BASE_CACHE.get(color, ""), None)
-            if not base:
-                # Oignon pas encore charge (pas dans cette zone) : on retente
-                # la resolution, mais on ne bloque plus la-dessus.
-                base = find_onion_containers(game).get(color)
-                if base:
-                    setattr(ctx, DYN_BASE_CACHE[color], base)
+            # #52 : on ne se fie plus a l'adresse mise en cache au "debut de
+            # journee". Au jour 1 (IntroGame puis NewPikiGame) et lors de
+            # certains rechargements, le sentinel ne repasse pas par 0 : le cache
+            # gardait l'oignon de l'ANCIEN chargement (objet libere) et l'ajout
+            # "live" partait dans le vide -> Pikmin visibles seulement le
+            # lendemain (via STAGE). On resout donc l'oignon VIVANT a chaque
+            # application (evenement rare, parcours peu couteux).
+            base = find_onion_containers(game).get(color)
+            setattr(ctx, DYN_BASE_CACHE[color], base)
             if base:
                 d_addr = base + DYN_OFFSETS[stage]
                 old_d = read_u32(d_addr)
@@ -3371,6 +3378,13 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                     f"STAGE updated instantly, live DYN sync skipped this tick"
                 )
 
+        if not in_game and ctx.debug_pbonus:
+            # #52 : expliquer pourquoi l'ajout live dans l'oignon est saute.
+            logger.info(
+                f"[DEBUG] {color}/{stage} +{amount} : live onion sync skipped "
+                f"(day={current_day} in_level={is_in_level(game)} "
+                f"day_active={is_day_active(game)} sub={_oneplayer_subsection(game)})"
+            )
         return True
 
     for item in ctx.items_received:
