@@ -3523,18 +3523,55 @@ async def handle_parts(ctx: P1Context, game: Game):
             await ctx.check_locations([data.ap_id])
 
         # Sens inverse : la location est validee cote serveur (ex. !collect,
-        # autre jeu termine) mais la piece n'est pas collectee en jeu -> on ecrit
-        # l'octet "collectee" pour qu'elle disparaisse physiquement du niveau.
+        # release) mais la piece n'est pas collectee en jeu. Le pellet est deja
+        # retire du niveau (despawn ci-dessus) ; l'octet "collectee" (c'est
+        # UfoParts.mPartVisType = Visible) n'est ecrit QU'HORS niveau par
+        # sync_server_collected_parts() (#55). Ici : seulement le hint.
         elif data.ap_id in ctx.checked_locations and read != data.collected_byte:
-            try:
-                dme.write_byte(addr, data.collected_byte)
-            except Exception:
-                continue
-            if ctx.debug_hint:
-                logger.info(f"[DEBUG] Pièce {name} auto-collectée (validée côté serveur)")
-            # Hint de l'emplacement de la piece si Super Radar / Both.
             if hint_mode in (2, 3):
                 await _create_super_radar_hint(ctx, name)
+
+
+async def sync_server_collected_parts(ctx: P1Context, game: Game) -> None:
+    """#55 : affiche sur le S.S. Dolphin les pieces validees cote serveur.
+
+    L'octet "collectee" de ShipPartData est PlayerState::UfoParts.mPartVisType.
+    Avec une ISO patchee recente (boite aux lettres #55), la piece est affichee
+    tout de suite et le jeu lance lui-meme son animation finale. Sinon :
+    Le passer a Visible en pleine journee affichait la piece sans que son
+    animation n'ait ete demarree (getUfoParts / ufoAssignStart jamais appeles) :
+    pose par defaut, a l'envers pour le Chronos Reactor, jusqu'au lendemain.
+    On ne l'ecrit donc que hors niveau (carte du monde, menus) : au debut de la
+    journee suivante, PlayerState::startAfterMotions() pose la piece correctement.
+    """
+    in_level = _oneplayer_subsection(game) == ONEPLAYER_NEW_PIKI_GAME
+    mailbox = getattr(ctx, "part_anim_mailbox", None)
+    if in_level:
+        # En journee : seulement avec la boite aux lettres du patch ISO, une
+        # piece a la fois (le jeu la vide apres avoir lance l'animation).
+        if mailbox is None:
+            return
+        try:
+            if dme.read_bytes(mailbox, 4) != b"\x00\x00\x00\x00":
+                return
+        except Exception:
+            return
+    for name, data in ALL_PARTS.items():
+        if data.ap_id not in ctx.checked_locations:
+            continue
+        addr = data.memory_address[game]
+        try:
+            if dme.read_byte(addr) == data.collected_byte:
+                continue
+            dme.write_byte(addr, data.collected_byte)
+            if ctx.debug_hint:
+                logger.info(f"[DEBUG] Pièce {name} auto-collectée (validée côté serveur)")
+            if in_level:
+                # Le stub du jeu appellera startUfoPartsMotion(id, After, false).
+                dme.write_bytes(mailbox, PART_MODEL_ID[name])
+                return
+        except Exception:
+            continue
 
 
 async def handle_pikmin_locations(ctx: P1Context, game: Game):
@@ -4560,6 +4597,19 @@ def read_iso_slot_name() -> str:
     return ""
 
 
+def find_part_anim_mailbox() -> Optional[int]:
+    """#55 : adresse de la boite aux lettres d'animation des pieces (patch ISO,
+    P1Rom.apply_part_anim_patch), ou None (ISO patchee avant ce changement).
+    Le bloc est dans une zone libre du .init du DOL (0x80003100-0x80005600)."""
+    from .P1Rom import PART_ANIM_MAGIC
+    try:
+        data = dme.read_bytes(0x80003000, 0x3000)
+    except Exception:
+        return None
+    i = data.find(PART_ANIM_MAGIC)
+    return 0x80003000 + i + len(PART_ANIM_MAGIC) if i >= 0 else None
+
+
 def _run_in_daemon_thread(func, *args) -> "asyncio.Future":
     """Execute func(*args) in a throwaway daemon thread and return an awaitable.
 
@@ -4692,6 +4742,7 @@ async def dolphin_loop(ctx: P1Context):
             if game != ctx._detected_game_id:
                 ctx._detected_game_id = game
                 ctx.iso_slot_name = read_iso_slot_name()
+                ctx.part_anim_mailbox = find_part_anim_mailbox()  # #55
             if not ctx.game_detected:
                 ctx.game_detected = True
                 if ctx._pending_connect is not None:
@@ -4780,7 +4831,7 @@ async def dolphin_loop(ctx: P1Context):
                              handle_death_link, handle_traps)
         # Handlers actifs aussi sur la carte du monde : reception d'objets
         # (persistee via STAGE) et deblocage des zones (visible sur la carte).
-        save_active_handlers = (handle_pikmin_items, handle_areas,
+        save_active_handlers = (handle_pikmin_items, handle_areas, sync_server_collected_parts,
                                 handle_qol_skip_cutscenes,
                                 handle_qol_min_leaf)
         # Handlers cosmetiques/mecaniques : tournent toujours (gardes internes).
@@ -5101,6 +5152,10 @@ def _handle_patch(appik1_path: str) -> None:
         if slot_name and not status.get("slot_name_written"):
             sn_line = ("\n\nSlot name could NOT be stored in the ISO "
                        "(the client will ask for it when connecting).")
+        # #55 : animation des pieces validees par le serveur.
+        if status.get("part_anim_patched") is False:
+            sn_line += ("\n\nShip part animation hook could NOT be applied: parts collected "
+                        "by the server will appear on the ship the next day.")
         # #51 : NTSC uniquement (cle absente en PAL).
         if status.get("card_filename_patched") is False:
             sn_line += ("\n\nSave file name could NOT be patched: saving may not work "

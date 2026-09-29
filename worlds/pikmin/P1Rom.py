@@ -568,6 +568,83 @@ def _write_slot_name(f, slot_name: str) -> bool:
     return True
 
 
+# --- #55 : animation forcee d'une piece de vaisseau ---------------------------
+# Quand le serveur valide la location d'une piece (release / !collect), le client
+# la rend visible sur le S.S. Dolphin (UfoParts.mPartVisType), mais son animation
+# n'est jamais demarree : pose par defaut (Chronos Reactor a l'envers). Le client
+# ne pouvant pas appeler de fonction du jeu, on ajoute une "boite aux lettres" :
+#   bloc = PART_ANIM_MAGIC (8) + mailbox (u32, fourCC de la piece) + stub
+# Le stub est appele a l'entree de PlayerState::renderParts() (chaque image ou le
+# vaisseau est dessine) : si mailbox != 0, il la vide puis appelle
+#   playerState->startUfoPartsMotion(mailbox, PelletMotion::After, false)
+# exactement comme startAfterMotions() en debut de journee.
+PART_ANIM_MAGIC = b"APPIKMBX"
+PART_ANIM_SITES = {
+    # version : (renderParts, startUfoPartsMotion) -- decomp config/*/symbols.txt
+    PAL_GAME_ID:  (0x800817CC, 0x800810C4),
+    NTSC_GAME_ID: (0x80081914, 0x8008120C),
+}
+MFLR_R0 = 0x7C0802A6
+PELLET_MOTION_AFTER = 2
+
+
+def _ppc(v: int) -> bytes:
+    return struct.pack(">I", v & 0xFFFFFFFF)
+
+
+def build_part_anim_stub(block_ram: int, render_parts: int, start_motion: int) -> bytes:
+    mb = block_ram + len(PART_ANIM_MAGIC)
+    ha, lo = ((mb + 0x8000) >> 16) & 0xFFFF, mb & 0xFFFF
+    code_ram = mb + 4
+    ins = []
+    lis   = lambda d, i: (15 << 26) | (d << 21) | (i & 0xFFFF)
+    lwz   = lambda d, a, o: (32 << 26) | (d << 21) | (a << 16) | (o & 0xFFFF)
+    stw   = lambda s_, a, o: (36 << 26) | (s_ << 21) | (a << 16) | (o & 0xFFFF)
+    stwu  = lambda s_, a, o: (37 << 26) | (s_ << 21) | (a << 16) | (o & 0xFFFF)
+    addi  = lambda d, a, i: (14 << 26) | (d << 21) | (a << 16) | (i & 0xFFFF)
+    cmpwi = lambda a, i: (11 << 26) | (a << 16) | (i & 0xFFFF)
+    beq   = lambda off: (16 << 26) | (12 << 21) | (2 << 16) | (off & 0xFFFC)
+    mr    = lambda d, s_: (31 << 26) | (s_ << 21) | (d << 16) | (s_ << 11) | (444 << 1)
+    b     = lambda fr, to, lk=0: (18 << 26) | ((to - fr) & 0x03FFFFFC) | lk
+    ins += [lis(12, ha), lwz(11, 12, lo), cmpwi(11, 0), None,            # 0-3
+            MFLR_R0, stwu(1, 1, -0x20), stw(0, 1, 0x24),                  # 4-6
+            stw(3, 1, 0x8), stw(4, 1, 0xC), stw(5, 1, 0x10),              # 7-9
+            addi(0, 0, 0), stw(0, 12, lo),                                # 10-11 mailbox = 0
+            mr(4, 11), addi(5, 0, PELLET_MOTION_AFTER), addi(6, 0, 0),    # 12-14
+            None,                                                         # 15 bl
+            lwz(3, 1, 0x8), lwz(4, 1, 0xC), lwz(5, 1, 0x10),              # 16-18
+            lwz(0, 1, 0x24), 0x7C0803A6, addi(1, 1, 0x20),                # 19-21 mtlr r0
+            MFLR_R0, None]                                                # 22-23
+    ins[3] = beq((22 - 3) * 4)
+    ins[15] = b(code_ram + 15 * 4, start_motion, 1)
+    ins[23] = b(code_ram + 23 * 4, render_parts + 4)
+    return PART_ANIM_MAGIC + b"\x00" * 4 + b"".join(_ppc(i) for i in ins)
+
+
+def apply_part_anim_patch(f, version: bytes) -> bool:
+    """#55 : installe la boite aux lettres + le stub (PAL et NTSC)."""
+    sites = PART_ANIM_SITES.get(version)
+    if sites is None:
+        return False
+    render_parts, start_motion = sites
+    try:
+        hook_off = ram_to_iso_offset(f, render_parts)
+        if _u32(f, hook_off) != MFLR_R0:
+            return False  # ISO deja modifiee a cet endroit
+        size = len(build_part_anim_stub(0x80000000, render_parts, start_motion))
+        ram, off = find_code_cave(f, size + 8)
+    except InvalidISOError:
+        return False
+    block_ram, block_off = ram + 4, off + 4
+    block = build_part_anim_stub(block_ram, render_parts, start_motion)
+    f.seek(block_off)
+    f.write(block)
+    stub_ram = block_ram + len(PART_ANIM_MAGIC) + 4
+    f.seek(hook_off)
+    f.write(ppc_b(render_parts, stub_ram))
+    return True
+
+
 def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
               skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
               suffix: str = "", title: str = "", slot_name: str = "") -> dict:
@@ -581,7 +658,8 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
     `title` : nom du jeu ecrit dans l'en-tete (ID complet de la run).
     Renvoie un dict de statut (trip_patched / part_collect_patched / ship_upgrade_patched).
     """
-    if read_game_id(iso_path) == NTSC_GAME_ID:
+    base_version = read_game_id(iso_path)
+    if base_version == NTSC_GAME_ID:
         status = _patch_iso_ntsc(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade, suffix)
     else:
         status = _patch_iso_pal(iso_path, seed, disable_trip, skip_part_collect, skip_ship_upgrade, suffix)
@@ -589,6 +667,10 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
         if title:
             _write_disc_title(f, title)
         # #38 : APRES les autres patchs (le stub NTSC occupe deja sa zone libre).
+        # #55 : AVANT le nom du slot, pour que chaque bloc ait sa propre zone
+        # libre (le bloc du slot contient du remplissage nul qui pourrait sinon
+        # etre pris pour une zone libre).
+        status["part_anim_patched"] = apply_part_anim_patch(f, base_version)
         if slot_name:
             status["slot_name_written"] = _write_slot_name(f, slot_name)
     return status
