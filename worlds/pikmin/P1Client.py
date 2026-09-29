@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Optional
 import faulthandler
 import logging
 
-import dolphin_memory_engine as dme
+from . import P1Memory as dme  # #58 : dolphin_memory_engine + MEM1 agrandie
 
 import Utils
 from Utils import async_start
@@ -237,7 +237,7 @@ def _named_counts(applied: dict) -> dict:
 
 # Bornes plausibles pour un pointeur en MEM1/MEM2 (validation anti-lecture sauvage).
 _RAM_MIN = 0x80000000
-_RAM_MAX = 0x81800000
+_RAM_MAX = 0x84000000  # #58 : jusqu'a 64 Mo avec "Emulated Memory Size Override"
 
 
 def resolve_ship_part_text_addr(game: Game) -> Optional[int]:
@@ -1587,7 +1587,7 @@ class P1CommandProcessor(SuperCommandProcessor):
                 v = int.from_bytes(dme.read_bytes(addr, 4), "big")
             except Exception:
                 return 0
-            return v if 0x80000000 <= v < 0x81800000 else 0
+            return v if _RAM_MIN <= v < _RAM_MAX else 0
 
         def obj_info(obj):
             """(objType, model_id, ap_id, name, is_alive) d'un objet, ou None."""
@@ -1685,7 +1685,7 @@ class P1CommandProcessor(SuperCommandProcessor):
                                     found.append(f"+0x{off:X}=fourCC {w!r}({_MODELID_TO_AP_ID[w]})")
                                     continue
                                 p = int.from_bytes(w, "big")
-                                if 0x80000000 <= p < 0x81800000:
+                                if _RAM_MIN <= p < _RAM_MAX:
                                     try:
                                         ot = int.from_bytes(dme.read_bytes(p + ONION_CHAIN["CREATURE_OBJTYPE"], 4), "big", signed=True)
                                     except Exception:
@@ -2282,7 +2282,7 @@ def find_onion_containers(game: Game) -> dict[str, int]:
         except Exception:
             return 0
         # Adresses GameCube/Wii valides uniquement -> evite de suivre du bruit.
-        if 0x80000000 <= val < 0x81800000:
+        if _RAM_MIN <= val < _RAM_MAX:
             return val
         return 0
 
@@ -2477,7 +2477,7 @@ def despawn_collected_part_pellets(ctx: P1Context, game: Game) -> int:
             v = int.from_bytes(dme.read_bytes(addr, 4), "big")
         except Exception:
             return 0
-        return v if 0x80000000 <= v < 0x81800000 else 0
+        return v if _RAM_MIN <= v < _RAM_MAX else 0
 
     mgr = u32(mgr_ptr)
     if not mgr:
@@ -2596,7 +2596,7 @@ def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
             v = int.from_bytes(dme.read_bytes(addr, 4), "big")
         except Exception:
             return 0
-        return v if 0x80000000 <= v < 0x81800000 else 0
+        return v if _RAM_MIN <= v < _RAM_MAX else 0
 
     radar = u32(ptr)
     if not radar:
@@ -3511,7 +3511,7 @@ async def handle_parts(ctx: P1Context, game: Game):
     sync_playerstate_parts(ctx, game)
 
     for name, data in ALL_PARTS.items():
-        addr = data.memory_address[game]
+        addr = part_vis_addr(game, data)
         try:
             read = dme.read_byte(addr)
         except Exception:
@@ -3530,6 +3530,35 @@ async def handle_parts(ctx: P1Context, game: Game):
         elif data.ap_id in ctx.checked_locations and read != data.collected_byte:
             if hint_mode in (2, 3):
                 await _create_super_radar_hint(ctx, name)
+
+
+# #58 : PlayerState.mUfoParts (_178, UfoParts*, indexe par l'enum UfoPartIndex =
+# ordre de ALL_PARTS), UfoParts de 0xE0 octets, mPartVisType a _DC.
+PLAYERSTATE_UFOPARTS = 0x178
+UFOPARTS_STRIDE = 0xE0
+UFOPART_VISTYPE_OFF = 0xDC
+_PART_INDEX = {data.ap_id: i for i, data in enumerate(ALL_PARTS.values())}
+
+
+def part_vis_addr(game: Game, data) -> int:
+    """Adresse de UfoParts.mPartVisType de la piece (octet "collectee").
+
+    Resolue via playerState->mUfoParts plutot que par l'adresse de tas codee en
+    dur de P1Data : avec "Emulated Memory Size Override" (#58), la disposition
+    du tas peut changer. Repli sur l'adresse codee en dur si la chaine echoue.
+    """
+    ptr = SYM_PLAYER_STATE_PTR.get(game)
+    idx = _PART_INDEX.get(data.ap_id)
+    if ptr is not None and idx is not None:
+        try:
+            ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
+            if _RAM_MIN <= ps < _RAM_MAX:
+                ufo = struct.unpack(">I", dme.read_bytes(ps + PLAYERSTATE_UFOPARTS, 4))[0]
+                if _RAM_MIN <= ufo < _RAM_MAX:
+                    return ufo + idx * UFOPARTS_STRIDE + UFOPART_VISTYPE_OFF
+        except Exception:
+            pass
+    return data.memory_address[game]
 
 
 async def sync_server_collected_parts(ctx: P1Context, game: Game) -> None:
@@ -3559,7 +3588,7 @@ async def sync_server_collected_parts(ctx: P1Context, game: Game) -> None:
     for name, data in ALL_PARTS.items():
         if data.ap_id not in ctx.checked_locations:
             continue
-        addr = data.memory_address[game]
+        addr = part_vis_addr(game, data)
         try:
             if dme.read_byte(addr) == data.collected_byte:
                 continue
@@ -4734,7 +4763,8 @@ async def dolphin_loop(ctx: P1Context):
             base_version = BASE_ID_BY_PATCHED_PREFIX.get(game[:3])
 
             if base_version is None:
-                ctx.dolphin_status_text = "Connected - Wrong Game (patch your ISO first)"
+                ctx.dolphin_status_text = (f"Connected - Wrong Game (patch your ISO first) "
+                                           f"[{game!r}, {'direct' if dme.uses_direct_access() else 'dme'}]")
                 continue
 
             # #38 : ISO patchee detectee -> nom du slot + connexion en attente.
