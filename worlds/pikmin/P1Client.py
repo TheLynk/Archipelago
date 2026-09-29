@@ -1926,6 +1926,8 @@ class P1Context(SuperContext):
         self._trap_grace_ticks: int = 0
         self._trap_free_since: Optional[float] = None  # #48
         self._dl_free_since: Optional[float] = None    # #54
+        self.tracker_stage_name: Optional[str] = None   # #56
+        self.visited_stage_names: Optional[set] = None  # #56
         # #5 : vrai tant qu'un ecran (pause, carte, texte...) couvre le gameplay ;
         # sert a rearmer le delai de grace a la fermeture du menu.
         self._trap_overlay_was_active: bool = False
@@ -2059,6 +2061,12 @@ class P1Context(SuperContext):
             # En stockant la vraie valeur, la reconnexion compare seed==seed (OK)
             # et le dump de debug affiche enfin le bon seed.
             self.seed_name = args.get("seed_name") or self.seed_name
+        elif cmd == "Retrieved":
+            # #56 : ensemble des zones deja visitees (dict utilise comme set).
+            key = AP_VISITED_STAGE_NAMES_KEY_FORMAT % self.slot if self.slot is not None else None
+            keys = args.get("keys", {})
+            if key and key in keys:
+                self.visited_stage_names = set((keys[key] or {}).keys())
         elif cmd == "Connected":
             self.slot_data = args.get("slot_data", {})
             if self.debug_hint:
@@ -2070,6 +2078,9 @@ class P1Context(SuperContext):
             self.needs_location_scout = True
             # Register for hints notifications
             self.stored_data_notification_keys.add(f"_read_hints_{self.team}_{self.slot}")
+            # #56 : zones deja visitees (PopTracker), comme le client TWW.
+            async_start(self.send_msgs([{"cmd": "Get", "keys": [AP_VISITED_STAGE_NAMES_KEY_FORMAT % self.slot]}]))
+            self.tracker_stage_name = None  # renvoyer la zone courante apres (re)connexion
 
             # --- DeathLink / TrapLink : configurer les tags depuis slot_data ---
             self.death_link_mode = int(self.slot_data.get("death_link", 0))
@@ -2254,6 +2265,75 @@ class P1Context(SuperContext):
 
 
 COLOR_BY_INDEX = {0: "blue", 1: "red", 2: "yellow"}  # GlobalGameOptions.h
+
+
+# --- #56 : PopTracker (changement d'onglet automatique) ------------------------
+# Meme principe que le client The Wind Waker :
+#  - Bounce {"pikmin_stage_name": <zone>} a chaque changement de zone ;
+#  - stockage serveur "pikmin_visited_stages_<slot>" = {zone: True} (zones vues).
+AP_STAGE_NAME_BOUNCE_KEY = "pikmin_stage_name"
+AP_VISITED_STAGE_NAMES_KEY_FORMAT = "pikmin_visited_stages_%i"
+TRACKER_STAGE_NAMES = {0: "The Impact Site", 1: "The Forest of Hope", 2: "The Forest Navel",
+                       3: "The Distant Spring", 4: "The Final Trial"}
+TRACKER_WORLD_MAP = "World Map"
+TRACKER_ONION_NAMES = {"red": "Red Onion", "yellow": "Yellow Onion", "blue": "Blue Onion"}
+NAVISTATE_CONTAINER = 12  # menu de l'oignon ouvert (include/NaviState.h)
+
+
+def _open_onion_color(game: Game) -> Optional[str]:
+    """Couleur de l'oignon dont le menu est ouvert, ou None."""
+    navi = _resolve_olimar(game)
+    if navi is None:
+        return None
+    try:
+        cont = _resolve_state_instance(navi, NAVISTATE_CONTAINER)
+        cur = struct.unpack(">I", dme.read_bytes(navi + NAVI_CHAIN["NAVI_CURRSTATE"], 4))[0]
+        if cont is None or cur != cont:
+            return None
+        goal = struct.unpack(">I", dme.read_bytes(navi + NAVI_CHAIN["NAVI_GOALITEM"], 4))[0]
+        if not (_RAM_MIN <= goal < _RAM_MAX):
+            return None
+        colour = int.from_bytes(dme.read_bytes(goal + ONION_CHAIN["GOAL_COLOUR"], 2), "big")
+        return COLOR_BY_INDEX.get(colour)
+    except Exception:
+        return None
+
+
+def current_tracker_stage(game: Game) -> Optional[str]:
+    """Nom de "zone" pour PopTracker : oignon ouvert, zone, carte du monde, ou None."""
+    sub = _oneplayer_subsection(game)
+    if sub == ONEPLAYER_MAP_SELECT:
+        return TRACKER_WORLD_MAP
+    if sub != ONEPLAYER_NEW_PIKI_GAME:
+        return None
+    color = _open_onion_color(game)
+    if color:
+        return TRACKER_ONION_NAMES[color]
+    addr = SYM_GAMEFLOW.get(game, {}).get("CURRENT_STAGE_ID")
+    if addr is None:
+        return None
+    try:
+        return TRACKER_STAGE_NAMES.get(struct.unpack(">i", dme.read_bytes(addr, 4))[0])
+    except Exception:
+        return None
+
+
+async def handle_tracker_stage(ctx: "P1Context", game: Game) -> None:
+    """#56 : informe PopTracker de la zone courante (Bounce) et des zones vues."""
+    if not ctx.slot or not getattr(ctx, "auth", None):
+        return
+    name = current_tracker_stage(game)
+    if not name or name == ctx.tracker_stage_name:
+        return
+    ctx.tracker_stage_name = name
+    await ctx.send_msgs([{"cmd": "Bounce", "slots": [ctx.slot],
+                          "data": {AP_STAGE_NAME_BOUNCE_KEY: name}}])
+    visited = ctx.visited_stage_names
+    if visited is not None and name not in visited:
+        visited.add(name)
+        await ctx.send_msgs([{"cmd": "Set", "key": AP_VISITED_STAGE_NAMES_KEY_FORMAT % ctx.slot,
+                              "default": {}, "want_reply": False,
+                              "operations": [{"operation": "update", "value": {name: True}}]}])
 
 
 def find_onion_containers(game: Game) -> dict[str, int]:
@@ -4862,6 +4942,7 @@ async def dolphin_loop(ctx: P1Context):
         # Handlers actifs aussi sur la carte du monde : reception d'objets
         # (persistee via STAGE) et deblocage des zones (visible sur la carte).
         save_active_handlers = (handle_pikmin_items, handle_areas, sync_server_collected_parts,
+                                handle_tracker_stage,
                                 handle_qol_skip_cutscenes,
                                 handle_qol_min_leaf)
         # Handlers cosmetiques/mecaniques : tournent toujours (gardes internes).
