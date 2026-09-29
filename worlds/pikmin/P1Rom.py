@@ -645,6 +645,68 @@ def apply_part_anim_patch(f, version: bytes) -> bool:
     return True
 
 
+# --- #57 : cause de la mort d'Olimar (messages DeathLink) ----------------------
+# Le jeu ne memorise pas ce qui a blesse Olimar. On accroche Navi::stimulate(
+# Interaction&) -- par ou passent TOUS les coups (attaque, feu, bombe, ecrasement,
+# avale...) -- pour noter, dans un petit tampon circulaire, la vtable de
+# l'interaction (= type de coup) et son mOwner (= creature responsable).
+#   bloc = DEATH_CAUSE_MAGIC (8) + index (u32) + 4 x (vtable u32, owner u32) + stub
+DEATH_CAUSE_MAGIC = b"APPIKDTH"
+DEATH_CAUSE_ENTRIES = 4
+NAVI_STIMULATE_ADDR = {
+    PAL_GAME_ID:  0x800FF820,   # stimulate__4NaviFR11Interaction
+    NTSC_GAME_ID: 0x800FF968,
+}
+
+
+def build_death_cause_block(block_ram: int, stimulate: int) -> bytes:
+    ring = block_ram + len(DEATH_CAUSE_MAGIC)          # index, puis les entrees
+    ha, lo = ((ring + 0x8000) >> 16) & 0xFFFF, ring & 0xFFFF
+    data_len = 4 + DEATH_CAUSE_ENTRIES * 8
+    code_ram = ring + data_len
+    lwz  = lambda d, a, o: (32 << 26) | (d << 21) | (a << 16) | (o & 0xFFFF)
+    stw  = lambda s_, a, o: (36 << 26) | (s_ << 21) | (a << 16) | (o & 0xFFFF)
+    addi = lambda d, a, i: (14 << 26) | (d << 21) | (a << 16) | (i & 0xFFFF)
+    ins = [
+        (15 << 26) | (12 << 21) | ha,                        # lis   r12, ring@ha
+        addi(12, 12, lo),                                    # addi  r12, r12, ring@l
+        lwz(11, 12, 0),                                      # lwz   r11, 0(r12)  index
+        addi(11, 11, 1),                                     # addi  r11, r11, 1
+        (28 << 26) | (11 << 21) | (11 << 16) | (DEATH_CAUSE_ENTRIES - 1),  # andi. r11, r11, 3
+        stw(11, 12, 0),                                      # stw   r11, 0(r12)
+        (21 << 26) | (11 << 21) | (11 << 16) | (3 << 11) | (0 << 6) | (28 << 1),  # slwi r11, r11, 3
+        (31 << 26) | (12 << 21) | (12 << 16) | (11 << 11) | (266 << 1),           # add r12, r12, r11
+        lwz(11, 4, 0), stw(11, 12, 4),                       # entree.vtable = interaction->vtbl
+        lwz(11, 4, 4), stw(11, 12, 8),                       # entree.owner  = interaction->mOwner
+        MFLR_R0,                                             # instruction d'origine
+        (18 << 26) | ((stimulate + 4 - (code_ram + 13 * 4)) & 0x03FFFFFC),  # b stimulate+4
+    ]
+    return DEATH_CAUSE_MAGIC + b"\x00" * data_len + b"".join(_ppc(i) for i in ins)
+
+
+def apply_death_cause_patch(f, version: bytes) -> bool:
+    """#57 : installe le tampon "derniers coups recus par Olimar" (PAL et NTSC)."""
+    stimulate = NAVI_STIMULATE_ADDR.get(version)
+    if stimulate is None:
+        return False
+    try:
+        hook_off = ram_to_iso_offset(f, stimulate)
+        if _u32(f, hook_off) != MFLR_R0:
+            return False  # ISO deja modifiee a cet endroit
+        size = len(build_death_cause_block(0x80000000, stimulate))
+        ram, off = find_code_cave(f, size + 8)
+    except InvalidISOError:
+        return False
+    block_ram, block_off = ram + 4, off + 4
+    block = build_death_cause_block(block_ram, stimulate)
+    f.seek(block_off)
+    f.write(block)
+    code_ram = block_ram + len(DEATH_CAUSE_MAGIC) + 4 + DEATH_CAUSE_ENTRIES * 8
+    f.seek(hook_off)
+    f.write(ppc_b(stimulate, code_ram))
+    return True
+
+
 def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
               skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
               suffix: str = "", title: str = "", slot_name: str = "") -> dict:
@@ -671,6 +733,7 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
         # libre (le bloc du slot contient du remplissage nul qui pourrait sinon
         # etre pris pour une zone libre).
         status["part_anim_patched"] = apply_part_anim_patch(f, base_version)
+        status["death_cause_patched"] = apply_death_cause_patch(f, base_version)  # #57
         if slot_name:
             status["slot_name_written"] = _write_slot_name(f, slot_name)
     return status

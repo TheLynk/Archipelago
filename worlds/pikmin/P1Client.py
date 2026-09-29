@@ -1039,6 +1039,168 @@ async def handle_trip_trap_timer(ctx, game: Game) -> None:
             pass
 
 
+# --- #57 : messages DeathLink selon la cause de la mort -------------------------
+# vtables des interactions qui blessent Olimar (config/*/symbols.txt) -> type.
+DAMAGE_VTABLES = {
+    b"GPIP01": {0x802AF6C4: "attack", 0x802AF67C: "swallow", 0x802AF5EC: "press",
+                0x802AF758: "flick", 0x802AF7E8: "fire", 0x802AF830: "bubble", 0x802D007C: "bomb"},
+    b"GPIE01": {0x802ACE04: "attack", 0x802ACDBC: "swallow", 0x802ACD2C: "press",
+                0x802ACE98: "flick", 0x802ACF28: "fire", 0x802ACF70: "bubble", 0x802CD9EC: "bomb"},
+}
+TEKI_TYPE_OFF = 0x320  # Teki::mTekiType (include/Teki.h)
+OBJTYPE_TEKI = 55
+OBJTYPE_BOMB = 14
+TEKI_NAMES = {  # enum TekiTypes (include/teki.h), noms PAL comme dans l'issue #57
+    0: "Yellow Wollyhop", 2: "Rolling Boulder", 3: "Dwarf Bulborb", 4: "Spotty Bulborb",
+    6: "Honeywisp", 8: "Breadbug", 9: "Puffstool", 10: "Pearly Clamclamp",
+    11: "Swooping Snitchbug", 13: "Pearly Clamclamp", 14: "Pearly Clamclamp",
+    15: "Fiery Blowhog", 16: "Puffy Blowhog", 17: "Armored Cannon Beetle",
+    18: "Female Sheargrub", 19: "Male Sheargrub", 20: "Shearwig", 22: "Smoky Progg",
+    23: "Fire Geyser", 24: "Mamuta", 25: "Wolpole", 30: "Water Dumple",
+    31: "Dwarf Bulbear", 32: "Spotty Bulbear", 33: "Wollyhop",
+}
+BOSS_NAMES = {  # enum ObjType (include/ObjType.h)
+    39: "Beady Long Legs", 41: "Burrowing Snagret", 43: "Emperor Bulblax", 44: "Goolix",
+    45: "Iridescent Flint Beetle", 46: "Candypop Bud", 48: "Goolix",
+}
+DEATH_MSG = {
+    "killed":   {"en": "{name} was killed by {enemy}.", "fr": "{name} a été tué par {enemy}.",
+                 "de": "{name} wurde von {enemy} getötet.", "it": "{name} è stato ucciso da {enemy}.",
+                 "es": "{name} fue asesinado por {enemy}."},
+    "eaten":    {"en": "{name} was eaten by {enemy}.", "fr": "{name} a été dévoré par {enemy}.",
+                 "de": "{name} wurde von {enemy} gefressen.", "it": "{name} è stato divorato da {enemy}.",
+                 "es": "{name} fue devorado por {enemy}."},
+    "crushed":  {"en": "{name} was crushed by {enemy}.", "fr": "{name} a été écrasé par {enemy}.",
+                 "de": "{name} wurde von {enemy} zerquetscht.", "it": "{name} è stato schiacciato da {enemy}.",
+                 "es": "{name} fue aplastado por {enemy}."},
+    "flung":    {"en": "{name} was sent flying by {enemy}.", "fr": "{name} a été projeté par {enemy}.",
+                 "de": "{name} wurde von {enemy} weggeschleudert.",
+                 "it": "{name} è stato scaraventato via da {enemy}.", "es": "{name} salió volando por {enemy}."},
+    "burned":   {"en": "{name} burned to death.", "fr": "{name} est mort brûlé.", "de": "{name} ist verbrannt.",
+                 "it": "{name} è morto bruciato.", "es": "{name} murió quemado."},
+    "burned_by": {"en": "{name} was burned to death by {enemy}.", "fr": "{name} a été brûlé vif par {enemy}.",
+                  "de": "{name} wurde von {enemy} verbrannt.", "it": "{name} è stato bruciato vivo da {enemy}.",
+                  "es": "{name} fue quemado vivo por {enemy}."},
+    "explosion": {"en": "{name} died in an explosion.", "fr": "{name} est mort dans une explosion.",
+                  "de": "{name} starb bei einer Explosion.", "it": "{name} è morto in un'esplosione.",
+                  "es": "{name} murió en una explosión."},
+    "grief":    {"en": "{name} died of grief over the loss of so many Pikmin.",
+                 "fr": "{name} est mort de chagrin après la perte de tant de Pikmin.",
+                 "de": "{name} starb vor Kummer über den Verlust so vieler Pikmin.",
+                 "it": "{name} è morto di dolore per la perdita di così tanti Pikmin.",
+                 "es": "{name} murió de pena por la pérdida de tantos Pikmin."},
+    "lost":     {"en": "{name} was lost on the planet.", "fr": "{name} s'est perdu sur la planète.",
+                 "de": "{name} ging auf dem Planeten verloren.", "it": "{name} si è perso sul pianeta.",
+                 "es": "{name} se perdió en el planeta."},
+    "trap_from": {"en": "{name} was taken down by a Damage Trap from {source}.",
+                  "fr": "{name} a été terrassé par un Damage Trap de {source}.",
+                  "de": "{name} wurde von einer Damage Trap von {source} niedergestreckt.",
+                  "it": "{name} è stato abbattuto da una Damage Trap di {source}.",
+                  "es": "{name} fue derribado por una Damage Trap de {source}."},
+    "trap":     {"en": "{name} was taken down by the Damage Trap.",
+                 "fr": "{name} a été terrassé par le Damage Trap.",
+                 "de": "{name} wurde von der Damage Trap niedergestreckt.",
+                 "it": "{name} è stato abbattuto dalla Damage Trap.",
+                 "es": "{name} fue derribado por la Damage Trap."},
+}
+# Noms officiels traduits (Pikipedia, "Names in other languages"), deja
+# accordes avec l'article/le cas utilises dans DEATH_MSG. Les ennemis absents
+# (Fire Geyser, Rolling Boulder : pas de nom officiel traduit) restent en anglais.
+ENEMY_I18N = {
+    "Dwarf Bulborb":           {"fr": "un Bulborbe nain", "de": "einem Zwerg-Punktkäfer", "it": "un Coleto nano", "es": "un Bulbo enano"},
+    "Spotty Bulborb":          {"fr": "un Bulborbe à pois", "de": "einem Punktkäfer", "it": "un Coleto", "es": "un Bulbo Moteado"},  # page Bulborb
+    "Dwarf Bulbear":           {"fr": "un Bulbours Nain", "de": "einem Zwerg-Punktbär", "it": "un Coleto nano macchiato", "es": "un Bulboso enano"},
+    "Spotty Bulbear":          {"fr": "un Bulbours à pois", "de": "einem Getupften Punktbär", "it": "un Coleto Macchiato", "es": "un Bulboso moteado"},
+    "Yellow Wollyhop":         {"fr": "un Wog jaune", "de": "einem Gelben Orcalog", "it": "una Ranuca idropica gialla", "es": "un Sapo gigante amarillo"},
+    "Wollyhop":                {"fr": "un Wog Sauteur", "de": "einem Orcalog", "it": "una Ranuca idropica", "es": "un Sapo gigante"},
+    "Wolpole":                 {"fr": "un Wog Larvaire", "de": "einer Wackelquappe", "it": "una Ranuchetta", "es": "un Sapicuajo"},
+    "Honeywisp":               {"fr": "un Mouchamiel", "de": "einer Nektarelfe", "it": "una Vespa nettarice", "es": "un Agarramiel"},
+    "Breadbug":                {"fr": "un Scaratax", "de": "einem Diebischen Saprophag", "it": "un Saprofago", "es": "una Chinche Carroñera"},
+    "Puffstool":               {"fr": "un Champispore", "de": "einer Puffmorchel", "it": "un'Amanita panciuta", "es": "una Seta de esporas"},
+    "Pearly Clamclamp":        {"fr": "une Coquiperle", "de": "einer Amphibienauster", "it": "un Chelus perlato", "es": "un Bivalvo Opalescente"},
+    "Swooping Snitchbug":      {"fr": "un Piquépille", "de": "einem Flatternden Piknapper", "it": "un Dittero ladro", "es": "un Moscardón ladrón"},
+    "Fiery Blowhog":           {"fr": "un Crachefeu", "de": "einem Rüsselignis", "it": "un Eruptor igneo", "es": "un Verraco dragón"},
+    "Puffy Blowhog":           {"fr": "un Puffy Volant", "de": "einem Ballonerus", "it": "una Moschita Vacua", "es": "un Verraco volador"},
+    "Armored Cannon Beetle":   {"fr": "un Scaracanon Blindé", "de": "einem Crustabitze", "it": "uno Scarabeo Corazzato", "es": "un Escarabajo Tirador"},
+    "Female Sheargrub":        {"fr": "un Boufpon femelle", "de": "einem Weiblichen Termitentos", "it": "un Tarlo molare femmina", "es": "un Comején hembra"},
+    "Male Sheargrub":          {"fr": "un Boufpon mâle", "de": "einem Männlichen Termitentos", "it": "un Tarlo molare maschio", "es": "un Comején macho"},
+    "Shearwig":                {"fr": "un Boufpon Volant", "de": "einem Scherenzopf", "it": "un Tarlo alato", "es": "un Comején volador"},
+    "Smoky Progg":             {"fr": "un Molosko Fumant", "de": "einem Dilabovum", "it": "un Gassovo", "es": "un Cigoto Fumoso"},
+    "Mamuta":                  {"fr": "un Mamuta", "de": "einem Mamuta", "it": "un Mamuta", "es": "un Mamuta"},
+    "Water Dumple":            {"fr": "un Bouledeau", "de": "einem Wasser-Klößling", "it": "un'Idrotalpa", "es": "una Mole acuática"},
+    "Beady Long Legs":         {"fr": "un Baba Longues jambes", "de": "einem Perligen Langbein", "it": "un Longopede", "es": "una Pelota patas largas"},
+    "Burrowing Snagret":       {"fr": "un Snabrek Fouisseur", "de": "einem Gemeinen Schnapper", "it": "una Vermentilla squamata", "es": "un Tagarote escurridizo"},
+    "Emperor Bulblax":         {"fr": "un Bulblax Empereur", "de": "einem Fürst Knollenauge", "it": "un Bulbico Imperiale", "es": "un Bulbo emperador"},
+    "Goolix":                  {"fr": "un Bavox", "de": "einem Golemgel", "it": "un Bigelico", "es": "un Mocrobio"},
+    "Iridescent Flint Beetle": {"fr": "un Scarabée Iridescent", "de": "einem Psychilex", "it": "un Iridococco", "es": "un Escarabajo de sílex iridiscente"},
+    "Candypop Bud":            {"fr": "une Fleur Cracheuse", "de": "einer Königinblume", "it": "una Cromanvillea", "es": "un Brote rebotador"},
+}
+_ARTICLE = {"en": lambda e: ("an " if e[0] in "AEIOU" else "a ") + e,
+            "fr": lambda e: "un " + e, "de": lambda e: "einem " + e,
+            "it": lambda e: "un " + e, "es": lambda e: "un " + e}
+
+
+def death_message(ctx, kind: str, enemy: Optional[str] = None, source: Optional[str] = None) -> str:
+    """Message DeathLink dans la langue du jeu detectee (#57)."""
+    lang = getattr(ctx, "detected_language", "en") or "en"
+    table = DEATH_MSG.get(kind, DEATH_MSG["lost"])
+    text = table.get(lang, table["en"])
+    name = ctx.player_names.get(ctx.slot, "Olimar")
+    if not enemy:
+        enemy_txt = ""
+    elif lang in ENEMY_I18N.get(enemy, {}):
+        enemy_txt = ENEMY_I18N[enemy][lang]  # nom officiel traduit, article inclus
+    else:
+        enemy_txt = _ARTICLE.get(lang, _ARTICLE["en"])(enemy)
+    return text.format(name=name, enemy=enemy_txt, source=source or "")
+
+
+def _creature_name(owner: int) -> tuple[Optional[str], int]:
+    """(nom de la creature, mObjType) a partir d'un Creature*."""
+    if not (_RAM_MIN <= owner < _RAM_MAX):
+        return None, -1
+    try:
+        obj = struct.unpack(">i", dme.read_bytes(owner + ONION_CHAIN["CREATURE_OBJTYPE"], 4))[0]
+        if obj == OBJTYPE_TEKI:
+            t = struct.unpack(">i", dme.read_bytes(owner + TEKI_TYPE_OFF, 4))[0]
+            return TEKI_NAMES.get(t), obj
+        return BOSS_NAMES.get(obj), obj
+    except Exception:
+        return None, -1
+
+
+def olimar_death_message(ctx, game: Game) -> str:
+    """#57 : message selon le dernier coup recu par Olimar (tampon du patch ISO)."""
+    ring = getattr(ctx, "death_cause_ring", None)
+    vt = DAMAGE_VTABLES.get(game, {})
+    if ring is None or not vt:
+        return death_message(ctx, "lost")
+    try:
+        raw = dme.read_bytes(ring, 4 + 4 * 8)
+    except Exception:
+        return death_message(ctx, "lost")
+    idx = struct.unpack_from(">I", raw, 0)[0] & 3
+    for k in range(4):  # du plus recent au plus ancien
+        e = (idx - k) & 3
+        vtable, owner = struct.unpack_from(">II", raw, 4 + e * 8)
+        kind = vt.get(vtable)
+        if kind is None:
+            continue
+        if kind == "bomb":
+            return death_message(ctx, "explosion")
+        enemy, obj = _creature_name(owner)
+        if kind == "fire":
+            # Source du feu si connue (Fiery Blowhog, Fire Geyser...).
+            return death_message(ctx, "burned_by", enemy) if enemy else death_message(ctx, "burned")
+        if obj == OBJTYPE_BOMB:
+            return death_message(ctx, "explosion")
+        if not enemy:
+            return death_message(ctx, "lost")
+        msg_kind = {"swallow": "eaten", "press": "crushed", "flick": "flung"}.get(kind, "killed")
+        return death_message(ctx, msg_kind, enemy)
+    return death_message(ctx, "lost")
+
+
 async def report_client_kill(ctx) -> None:
     """#43 : envoie le DeathLink d'une mort d'Olimar provoquee par le client
     (Damage Trap, lien Olimar/Pikmin).
@@ -1058,11 +1220,12 @@ async def report_client_kill(ctx) -> None:
         return
     if getattr(ctx, "_deathlink_locked_this_day", False):
         return
-    name = ctx.player_names.get(ctx.slot, "Olimar")
-    if source:
-        await ctx.send_death(f"{name} was taken down by a {reason} from {source}.")
+    if reason == "Pikmin Bond":
+        await ctx.send_death(death_message(ctx, "grief"))  # #57
+    elif source:
+        await ctx.send_death(death_message(ctx, "trap_from", source=source))
     else:
-        await ctx.send_death(f"{name} was taken down by the {reason}.")
+        await ctx.send_death(death_message(ctx, "trap"))
     ctx._deathlink_locked_this_day = True
 
 
@@ -1926,6 +2089,7 @@ class P1Context(SuperContext):
         self._trap_grace_ticks: int = 0
         self._trap_free_since: Optional[float] = None  # #48
         self._dl_free_since: Optional[float] = None    # #54
+        self.death_cause_ring: Optional[int] = None     # #57
         self.tracker_stage_name: Optional[str] = None   # #56
         self.visited_stage_names: Optional[set] = None  # #56
         # #5 : vrai tant qu'un ecran (pause, carte, texte...) couvre le gameplay ;
@@ -2812,6 +2976,29 @@ def _free_play_elapsed(ctx, game: Game, attr: str) -> bool:
     return now - since >= CONE_START_DELAY
 
 
+async def detect_olimar_death(ctx: "P1Context", game: Game) -> None:
+    """DeathLink classic/both : envoi sur front montant de orimaDead.
+
+    #57 : des qu'un monstre tue Olimar, le jeu se met en pause et enchaine la
+    sequence de mort / fin de journee (mIsPauseAllowed = FALSE) : les handlers
+    "en jeu" ne tournent plus et le front montant n'etait jamais vu -> aucun
+    DeathLink. Cette detection tourne donc a chaque tick tant qu'on est dans un
+    niveau, journee active ou non. Lecture seule (+ envoi reseau).
+    """
+    if ctx.death_link_mode not in (1, 3):
+        return
+    is_dead = read_orima_dead(game)
+    if is_dead and not ctx._orima_was_dead:
+        if ctx._suppress_orima_send:
+            # Mort provoquee par un DeathLink recu (ou par le seuil pikmin en
+            # mode both, ou par le client) : on la consomme sans re-emettre.
+            ctx._suppress_orima_send = False
+        elif not ctx._deathlink_locked_this_day:
+            await ctx.send_death(olimar_death_message(ctx, game))  # #57
+            ctx._deathlink_locked_this_day = True
+    ctx._orima_was_dead = is_dead
+
+
 async def handle_death_link(ctx: P1Context, game: Game) -> None:
     """DeathLink : detection (envoi) et application (reception).
 
@@ -2877,22 +3064,10 @@ async def handle_death_link(ctx: P1Context, game: Game) -> None:
     send_on_pikmin = ctx.death_link_mode in (2, 3)   # pikmin, both
     pikmin_kills_olimar = ctx.death_link_mode == 3    # both
 
-    # --- Envoi sur mort d'Olimar (front montant) ---
-    if send_on_olimar:
-        is_dead = read_orima_dead(game)
-        if is_dead and not ctx._orima_was_dead:
-            if ctx._suppress_orima_send:
-                # Mort provoquee par un DeathLink recu (ou par le seuil pikmin en
-                # mode both) : on la consomme sans re-emettre.
-                ctx._suppress_orima_send = False
-            else:
-                await ctx.send_death(
-                    f"{ctx.player_names.get(ctx.slot, 'Olimar')} was lost on the planet."
-                )
-                ctx._deathlink_locked_this_day = True
-        ctx._orima_was_dead = is_dead
-        if ctx._deathlink_locked_this_day:
-            return
+    # --- Envoi sur mort d'Olimar : voir detect_olimar_death() (#57), appele
+    # meme hors gameplay interactif, car la mort coupe aussitot le jeu. ---
+    if send_on_olimar and ctx._deathlink_locked_this_day:
+        return
 
     # --- Envoi sur morts de Pikmin (tous les X, par journee) ---
     if send_on_pikmin:
@@ -2916,9 +3091,7 @@ async def handle_death_link(ctx: P1Context, game: Game) -> None:
         should_have_sent = dead_total // ctx.pikmin_death_amount
         if ctx._dead_pikis_sent < should_have_sent:
             ctx._dead_pikis_sent += 1
-            await ctx.send_death(
-                f"{ctx.player_names.get(ctx.slot, 'Olimar')} lost too many Pikmin."
-            )
+            await ctx.send_death(death_message(ctx, "grief"))  # #57
             ctx._deathlink_locked_this_day = True
             # Mode both : franchir le seuil tue aussi Olimar localement. C'est une
             # consequence de NOTRE envoi (pas une reception), donc on tue en ligne
@@ -3641,6 +3814,19 @@ def part_vis_addr(game: Game, data) -> int:
     return data.memory_address[game]
 
 
+def _ufo_part_drawable(vis_addr: int) -> bool:
+    """UfoParts chargee et dessinable : mRepairAnimJointIndex (_04) != -1 et
+    mPelletShape (_D4) valide. Sinon, l'afficher / l'animer ferait planter
+    renderParts() ou startUfoPartsMotion() (pointeur de forme nul)."""
+    part = vis_addr - UFOPART_VISTYPE_OFF
+    try:
+        joint = struct.unpack(">i", dme.read_bytes(part + 0x04, 4))[0]
+        shape = struct.unpack(">I", dme.read_bytes(part + 0xD4, 4))[0]
+    except Exception:
+        return False
+    return joint != -1 and _RAM_MIN <= shape < _RAM_MAX
+
+
 async def sync_server_collected_parts(ctx: P1Context, game: Game) -> None:
     """#55 : affiche sur le S.S. Dolphin les pieces validees cote serveur.
 
@@ -3657,8 +3843,12 @@ async def sync_server_collected_parts(ctx: P1Context, game: Game) -> None:
     mailbox = getattr(ctx, "part_anim_mailbox", None)
     if in_level:
         # En journee : seulement avec la boite aux lettres du patch ISO, une
-        # piece a la fois (le jeu la vide apres avoir lance l'animation).
-        if mailbox is None:
+        # piece a la fois (le jeu la vide apres avoir lance l'animation), et
+        # seulement en gameplay actif : pendant la mort d'Olimar / la fin de
+        # journee, PlayerState::exitCourse() remet les mPelletShape a nullptr
+        # et startUfoPartsMotion() lirait 0x28(nullptr) ("Invalid read from
+        # 0x00000028" dans startUfoPartsMotion).
+        if mailbox is None or not is_day_active(game):
             return
         try:
             if dme.read_bytes(mailbox, 4) != b"\x00\x00\x00\x00":
@@ -3672,6 +3862,8 @@ async def sync_server_collected_parts(ctx: P1Context, game: Game) -> None:
         try:
             if dme.read_byte(addr) == data.collected_byte:
                 continue
+            if in_level and not _ufo_part_drawable(addr):
+                continue  # piece pas (encore) chargee sur le vaisseau : plus tard
             dme.write_byte(addr, data.collected_byte)
             if ctx.debug_hint:
                 logger.info(f"[DEBUG] Pièce {name} auto-collectée (validée côté serveur)")
@@ -4719,6 +4911,18 @@ def find_part_anim_mailbox() -> Optional[int]:
     return 0x80003000 + i + len(PART_ANIM_MAGIC) if i >= 0 else None
 
 
+def find_death_cause_ring() -> Optional[int]:
+    """#57 : adresse du tampon des derniers coups recus par Olimar (patch ISO,
+    P1Rom.apply_death_cause_patch), ou None (ISO patchee avant ce changement)."""
+    from .P1Rom import DEATH_CAUSE_MAGIC
+    try:
+        data = dme.read_bytes(0x80003000, 0x3000)
+    except Exception:
+        return None
+    i = data.find(DEATH_CAUSE_MAGIC)
+    return 0x80003000 + i + len(DEATH_CAUSE_MAGIC) if i >= 0 else None
+
+
 def _run_in_daemon_thread(func, *args) -> "asyncio.Future":
     """Execute func(*args) in a throwaway daemon thread and return an awaitable.
 
@@ -4853,6 +5057,7 @@ async def dolphin_loop(ctx: P1Context):
                 ctx._detected_game_id = game
                 ctx.iso_slot_name = read_iso_slot_name()
                 ctx.part_anim_mailbox = find_part_anim_mailbox()  # #55
+                ctx.death_cause_ring = find_death_cause_ring()     # #57
             if not ctx.game_detected:
                 ctx.game_detected = True
                 if ctx._pending_connect is not None:
@@ -4975,6 +5180,9 @@ async def dolphin_loop(ctx: P1Context):
         # quand le gameplay est reellement interactif.
         if in_level and is_day_active(game_version):
             handlers = list(in_level_handlers) + handlers
+        # #57 : detection de la mort d'Olimar, meme pendant sa sequence de mort.
+        if in_level and not ending:
+            handlers = [detect_olimar_death] + handlers
 
         # Chaque handler est isole : une exception dans l'un d'eux ne doit pas
         # tuer la boucle entiere. Sans ca, une seule erreur (par exemple dans les
@@ -5267,6 +5475,9 @@ def _handle_patch(appik1_path: str) -> None:
         if status.get("part_anim_patched") is False:
             sn_line += ("\n\nShip part animation hook could NOT be applied: parts collected "
                         "by the server will appear on the ship the next day.")
+        if status.get("death_cause_patched") is False:
+            sn_line += ("\n\nDeath cause hook could NOT be applied: DeathLink messages "
+                        "will not name the cause of death.")
         # #51 : NTSC uniquement (cle absente en PAL).
         if status.get("card_filename_patched") is False:
             sn_line += ("\n\nSave file name could NOT be patched: saving may not work "
