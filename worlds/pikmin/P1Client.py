@@ -718,7 +718,12 @@ def apply_damage_trap(game: Game, ctx=None) -> bool:
         new = h - loss
         if new <= 1.0:
             if can_kill:
-                if kill_olimar(game) and ctx is not None:
+                # kill_olimar() n'agit que si Olimar est controlable (#54) : sinon
+                # on renvoie False et le trap reste en attente (retente au tick
+                # suivant) au lieu d'etre consomme sans effet.
+                if not kill_olimar(game):
+                    return False
+                if ctx is not None:
                     ctx._client_kill_reason = "Damage Trap"
                 return True
             new = DAMAGE_TRAP_FLOOR
@@ -2089,6 +2094,7 @@ class P1Context(SuperContext):
         self._trap_grace_ticks: int = 0
         self._trap_free_since: Optional[float] = None  # #48
         self._dl_free_since: Optional[float] = None    # #54
+        self._bond_kill_pending: bool = False
         self.death_cause_ring: Optional[int] = None     # #57
         self.tracker_stage_name: Optional[str] = None   # #56
         self.visited_stage_names: Optional[set] = None  # #56
@@ -3118,6 +3124,16 @@ async def handle_pikmin_bond(ctx: P1Context, game: Game) -> None:
     """
     if not ctx.pikmin_bond:
         return
+    # Mort par le lien en attente : Olimar n'etait pas controlable (projete,
+    # ecrase, en train de siffler...) -> kill_olimar() refusait (#54) et les
+    # degats etaient perdus. On retente a chaque tick.
+    if ctx._bond_kill_pending:
+        if read_orima_dead(game):
+            ctx._bond_kill_pending = False
+        elif kill_olimar(game):
+            ctx._bond_kill_pending = False
+            ctx._client_kill_reason = "Pikmin Bond"
+            await report_client_kill(ctx)
     dead_total = read_dead_pikis_total(game)
     if dead_total is None:
         return
@@ -3146,10 +3162,13 @@ async def handle_pikmin_bond(ctx: P1Context, game: Game) -> None:
     if ctx.debug_trap:
         logger.info(f"[DEBUG BOND] {deaths} Pikmin mort(s) : PV {h:.1f} -> {max(new, 0.0):.1f}")
     if new <= 1.0:
-        # Mort d'Olimar par le lien : sequence de mort reelle du jeu.
+        # Mort d'Olimar par le lien : sequence de mort reelle du jeu. Si Olimar
+        # n'est pas controlable a cet instant, la mort reste en attente.
         if kill_olimar(game):
             ctx._client_kill_reason = "Pikmin Bond"
             await report_client_kill(ctx)
+        else:
+            ctx._bond_kill_pending = True
     else:
         try:
             dme.write_bytes(addr, struct.pack(">f", new))
@@ -5122,6 +5141,7 @@ async def dolphin_loop(ctx: P1Context):
             ctx._dead_pikis_last = None
             ctx._dead_pikis_sent = 0
             ctx._bond_dead_last = None
+            ctx._bond_kill_pending = False
             ctx._olimar_bond_last = None
             ctx._cone_ok = set()
             ctx._cone_tries = {}
