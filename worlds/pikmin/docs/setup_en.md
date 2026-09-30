@@ -75,8 +75,12 @@ There are a few important quirks that must be observed when playing.
 
 - Do not run the Archipelago Launcher or Dolphin as an administrator on Windows.
 - Ensure that you do not have any Dolphin cheats or codes enabled. Some cheats or codes can unexpectedly interfere with emulation and make troubleshooting errors difficult.
-- Ensure that Enable Emulated Memory Size Override in Dolphin (under Options > Configuration > Advanced) is disabled.
+- Ensure that Enable Emulated Memory Size Override in Dolphin (under Options > Configuration > Advanced) is disabled. This option is not supported: when it is enabled, the Dolphin status shows `Disconnected - Hook Failed - Disable "Enable Emulated Memory Size Override"`. Disable it, then restart the game.
 - If the client cannot connect to Dolphin, ensure Dolphin is on the same drive as Archipelago. Having Dolphin on an external drive has reportedly caused connection issues.
+
+### Known issues
+
+- **Error message during the final cutscene** (`GFX FIFO: Unknown Opcode` or `stream_size_temp < 16`, with the planet missing while Olimar flies through space): this is a vanilla bug that also happens on a clean ISO without Archipelago. It mostly occurs when the ship takes off from **The Forest of Hope** at the end of the final day. To avoid it, end the final day in another area (for example The Impact Site).
 
 ## Report Bugs
 You can report any issues [here](https://github.com/TheLynk/Archipelago/issues) or to [the Pikmin 1 Archipelago server thread](https://discord.com/channels/731205301247803413/1397286080184844390).

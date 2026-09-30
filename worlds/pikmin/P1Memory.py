@@ -1,16 +1,7 @@
-"""Access to the game RAM in Dolphin.
+"""Access to the game RAM in Dolphin through dolphin_memory_engine.
 
-Facade compatible with `dolphin_memory_engine` (hook, un_hook, is_hooked,
-read_bytes, write_bytes, read_byte, write_byte).
-
-The `dolphin_memory_engine` Python binding (v1.3.x) only finds the emulated RAM
-when MEM1 has its original size: with the Dolphin "Enable Emulated Memory Size
-Override" option (MEM1 = 64 MB), the hook fails and the client never detects the
-game. So dolphin_memory_engine is always tried first and, on Windows, we fall back
-to direct access (ReadProcessMemory / WriteProcessMemory) that locates MEM1
-whatever its size, like recent Dolphin Memory Engine versions do: it looks for
-Dolphin's shared memory region whose header holds the GameCube disc magic word
-(0xC2339F3D at 0x8000001C).
+On Windows, a read-only scan of Dolphin's memory is used to detect the
+"Enable Emulated Memory Size Override" option, which is not supported.
 """
 import os
 import struct
@@ -20,15 +11,14 @@ import dolphin_memory_engine as _dme
 
 MEM1_START = 0x80000000
 GC_DISC_MAGIC = 0xC2339F3D
-_BOOT_CODES = (0x0D15EA5E, 0xE5207C22)  # normal boot / JTAG (0x80000020)
-_MIN_MEM1 = 0x01800000   # 24 MB (original size)
-_MAX_MEM1 = 0x04000000   # 64 MB (maximum of the Dolphin option)
+_BOOT_CODES = (0x0D15EA5E, 0xE5207C22)
+_MIN_MEM1 = 0x01800000
+_MAX_MEM1 = 0x04000000
 
-_backend = None  # None, "dme" or "win"
 
 
 class _WinBackend:
-    """Direct access to Dolphin memory on Windows (ctypes)."""
+    """Read-only access to Dolphin memory on Windows (ctypes), used for detection only."""
 
     PROCESS_NAMES = ("Dolphin.exe", "DolphinQt2.exe", "DolphinWx.exe")
 
@@ -38,9 +28,6 @@ class _WinBackend:
         self.ct = ctypes
         self.wt = wintypes
         self.k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        self.handle = None
-        self.base = 0
-        self.size = 0
 
         class MBI(ctypes.Structure):
             _fields_ = [("BaseAddress", ctypes.c_void_p),
@@ -77,17 +64,13 @@ class _WinBackend:
         k.VirtualQueryEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.POINTER(MBI), ctypes.c_size_t]
         k.ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
                                         ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
-        k.WriteProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
-                                         ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
-        k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
 
-    # -- process ---------------------------------------------------------
     def _find_pid(self):
         names = self.PROCESS_NAMES
         env = os.environ.get("DME_DOLPHIN_PROCESS_NAME")
         if env:
             names = (env, env + ".exe")
-        snap = self.k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+        snap = self.k32.CreateToolhelp32Snapshot(0x2, 0)
         if not snap or snap == self.wt.HANDLE(-1).value:
             return None
         try:
@@ -102,82 +85,40 @@ class _WinBackend:
             self.k32.CloseHandle(snap)
         return None
 
-    def _raw_read(self, address: int, size: int):
+    def _raw_read(self, handle, address: int, size: int):
         buf = self.ct.create_string_buffer(size)
         n = self.ct.c_size_t(0)
-        if not self.k32.ReadProcessMemory(self.handle, self.ct.c_void_p(address), buf, size, self.ct.byref(n)):
+        if not self.k32.ReadProcessMemory(handle, self.ct.c_void_p(address), buf, size, self.ct.byref(n)):
             return None
         return buf.raw[:n.value] if n.value == size else None
 
-    def hook(self) -> bool:
-        self.un_hook()
+    def mem1_size(self):
+        """Simulated MEM1 size of the running game, or None if no game RAM is found."""
         pid = self._find_pid()
         if pid is None:
-            return False
-        # QUERY_INFORMATION | VM_OPERATION | VM_READ | VM_WRITE
-        self.handle = self.k32.OpenProcess(0x0400 | 0x0008 | 0x0010 | 0x0020, False, pid)
-        if not self.handle:
-            self.handle = None
-            return False
-        mbi = self.MBI()
-        addr = 0
-        while addr < 0x7FFFFFFFFFFF:
-            if self.k32.VirtualQueryEx(self.handle, self.ct.c_void_p(addr), self.ct.byref(mbi),
-                                       self.ct.sizeof(mbi)) != self.ct.sizeof(mbi):
-                break
-            base = mbi.BaseAddress or 0
-            region = mbi.RegionSize
-            # MEM_COMMIT (0x1000) + MEM_MAPPED (0x40000): view of the shared memory.
-            if (mbi.State == 0x1000 and mbi.Type == 0x40000
-                    and _MIN_MEM1 <= region <= 2 * _MAX_MEM1):
-                head = self._raw_read(base, 0x100)
-                if (head and struct.unpack_from(">I", head, 0x1C)[0] == GC_DISC_MAGIC
-                        and struct.unpack_from(">I", head, 0x20)[0] in _BOOT_CODES):
-                    # Simulated MEM1 size (OS globals, 0x800000F0).
-                    size = struct.unpack_from(">I", head, 0xF0)[0]
-                    if not (_MIN_MEM1 <= size <= _MAX_MEM1):
-                        size = min(region, _MAX_MEM1)
-                    self.base, self.size = base, min(size, region)
-                    return True
-            addr = base + region
-        self.un_hook()
-        return False
-
-    def un_hook(self) -> None:
-        if self.handle:
-            try:
-                self.k32.CloseHandle(self.handle)
-            except Exception:
-                pass
-        self.handle, self.base, self.size = None, 0, 0
-
-    def is_hooked(self) -> bool:
-        if not self.handle:
-            return False
-        code = self.wt.DWORD(0)
-        if not self.k32.GetExitCodeProcess(self.handle, self.ct.byref(code)) or code.value != 259:
-            self.un_hook()  # STILL_ACTIVE = 259
-            return False
-        return True
-
-    def _offset(self, address: int, size: int) -> int:
-        off = address - MEM1_START
-        if not self.handle or off < 0 or off + size > self.size:
-            raise RuntimeError(f"Address 0x{address:08X} out of emulated RAM")
-        return off
-
-    def read_bytes(self, address: int, size: int) -> bytes:
-        data = self._raw_read(self.base + self._offset(address, size), size)
-        if data is None:
-            raise RuntimeError(f"Could not read 0x{address:08X}")
-        return data
-
-    def write_bytes(self, address: int, data: bytes) -> None:
-        off = self._offset(address, len(data))
-        n = self.ct.c_size_t(0)
-        if not self.k32.WriteProcessMemory(self.handle, self.ct.c_void_p(self.base + off),
-                                           data, len(data), self.ct.byref(n)) or n.value != len(data):
-            raise RuntimeError(f"Could not write 0x{address:08X}")
+            return None
+        handle = self.k32.OpenProcess(0x0400 | 0x0010, False, pid)
+        if not handle:
+            return None
+        try:
+            mbi = self.MBI()
+            addr = 0
+            while addr < 0x7FFFFFFFFFFF:
+                if self.k32.VirtualQueryEx(handle, self.ct.c_void_p(addr), self.ct.byref(mbi),
+                                           self.ct.sizeof(mbi)) != self.ct.sizeof(mbi):
+                    break
+                base = mbi.BaseAddress or 0
+                region = mbi.RegionSize
+                if (mbi.State == 0x1000 and mbi.Type == 0x40000
+                        and _MIN_MEM1 <= region <= 2 * _MAX_MEM1):
+                    head = self._raw_read(handle, base, 0x100)
+                    if (head and struct.unpack_from(">I", head, 0x1C)[0] == GC_DISC_MAGIC
+                            and struct.unpack_from(">I", head, 0x20)[0] in _BOOT_CODES):
+                        return struct.unpack_from(">I", head, 0xF0)[0]
+                addr = base + region
+        finally:
+            self.k32.CloseHandle(handle)
+        return None
 
 
 _win = None
@@ -194,10 +135,6 @@ def _win_backend():
 
 
 def _dme_header_ok() -> bool:
-    """Check that dolphin_memory_engine really reads a GameCube game's RAM.
-
-    With an enlarged MEM1 it can hook the wrong Dolphin memory region and
-    read garbage (hence "Wrong Game")."""
     try:
         head = _dme.read_bytes(MEM1_START + 0x1C, 8)
     except Exception:
@@ -206,66 +143,83 @@ def _dme_header_ok() -> bool:
     return magic == GC_DISC_MAGIC and boot in _BOOT_CODES
 
 
+_override_detected = False
+
+
+def _check_override() -> bool:
+    win = _win_backend()
+    if win is None:
+        return False
+    try:
+        size = win.mem1_size()
+    except Exception:
+        return False
+    return size is not None and size != _MIN_MEM1
+
+
 def hook() -> None:
-    global _backend
+    global _override_detected
     try:
         _dme.hook()
     except Exception:
         pass
-    if _dme.is_hooked():
-        if _dme_header_ok():
-            _backend = "dme"
-            return
-        try:
-            _dme.un_hook()  # wrong region: switch to direct access
-        except Exception:
-            pass
-    win = _win_backend()
-    _backend = "win" if win is not None and win.hook() else None
+    if _dme.is_hooked() and _dme_header_ok():
+        _override_detected = False
+        return
+    try:
+        _dme.un_hook()
+    except Exception:
+        pass
+    _override_detected = _check_override()
 
 
 def un_hook() -> None:
-    global _backend
-    if _backend == "win" and _win:
-        _win.un_hook()
-    else:
-        try:
-            _dme.un_hook()
-        except Exception:
-            pass
-    _backend = None
+    try:
+        _dme.un_hook()
+    except Exception:
+        pass
 
 
 def is_hooked() -> bool:
-    if _backend == "win":
-        return bool(_win) and _win.is_hooked()
     return _dme.is_hooked()
 
 
-def uses_direct_access() -> bool:
-    """True if direct Windows access is used (enlarged MEM1)."""
-    return _backend == "win"
+def memory_override_detected() -> bool:
+    """True if the last failed hook was caused by "Enable Emulated Memory Size Override"."""
+    return _override_detected
 
 
 def read_bytes(address: int, size: int) -> bytes:
-    if _backend == "win":
-        return _win.read_bytes(address, size)
     return _dme.read_bytes(address, size)
 
 
+trace_writes = False
+block_writes = False
+
+
+def _trace(address: int, size: int) -> None:
+    if trace_writes:
+        import logging
+        import traceback
+        caller = traceback.extract_stack(limit=3)[0]
+        state = "BLOCKED" if block_writes else "written"
+        logging.getLogger("Client").info(
+            f"[DEBUG WRITE] 0x{address:08X} ({size} bytes, {state}) from {caller.name}:{caller.lineno}")
+
+
 def write_bytes(address: int, data: bytes) -> None:
-    if _backend == "win":
-        return _win.write_bytes(address, data)
+    _trace(address, len(data))
+    if block_writes:
+        return
     return _dme.write_bytes(address, data)
 
 
 def read_byte(address: int) -> int:
-    if _backend == "win":
-        return _win.read_bytes(address, 1)[0]
     return _dme.read_byte(address)
 
 
 def write_byte(address: int, value: int) -> None:
-    if _backend == "win":
-        return _win.write_bytes(address, bytes([value & 0xFF]))
+    _trace(address, 1)
+    if block_writes:
+        return
     return _dme.write_byte(address, value)

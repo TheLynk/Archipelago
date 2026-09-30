@@ -46,3 +46,5 @@ When the Pikmin locations option is enabled, each location is named after a colo
 - /debugtext - Follow the pointer chain to the on-screen text and compare with the known PAL address.
 - /debugsave - Show whether the client considers a save file to be loaded.
 - /debugdump - Dump every debug info at once, to attach when reporting a bug.
+- /debugwrites - Toggle logging of every RAM write made by the client.
+- /nowrites - Toggle blocking of every RAM write made by the client (diagnostic only).

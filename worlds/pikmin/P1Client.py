@@ -225,9 +225,11 @@ def _named_counts(applied: dict) -> dict:
 # NTSC-U: the field does not exist (English-only game) and 0x1A0 holds the vtable
 # pointer, so it is never read and "en" is returned.
 
-# Plausible bounds for a MEM1/MEM2 pointer (guards against wild reads).
+MEMORY_OVERRIDE_OPTION = '"Enable Emulated Memory Size Override"'
+
+# Plausible bounds for a MEM1 pointer (guards against wild reads).
 _RAM_MIN = 0x80000000
-_RAM_MAX = 0x84000000  # up to 64 MB with "Emulated Memory Size Override"
+_RAM_MAX = 0x81800000
 
 
 def resolve_ship_part_text_addr(game: Game) -> Optional[int]:
@@ -1390,6 +1392,19 @@ class P1CommandProcessor(SuperCommandProcessor):
     def __init__(self, ctx: CommonContext):
         super().__init__(ctx)
 
+    def _cmd_debugwrites(self) -> bool:
+        """Toggle logging of every RAM write made by the client."""
+        self.ctx.debug_writes = not getattr(self.ctx, "debug_writes", False)
+        dme.trace_writes = self.ctx.debug_writes
+        logger.info(f"[DEBUG] RAM write logging: {'ON' if self.ctx.debug_writes else 'OFF'}")
+        return True
+
+    def _cmd_nowrites(self) -> bool:
+        """Toggle blocking of every RAM write made by the client (diagnostic)."""
+        dme.block_writes = not dme.block_writes
+        logger.info(f"[DEBUG] RAM writes blocked: {'ON' if dme.block_writes else 'OFF'}")
+        return True
+
     def _cmd_debughint(self) -> bool:
         """Toggle debug logging for hint-related messages."""
         self.ctx.debug_hint = not getattr(self.ctx, "debug_hint", False)
@@ -1923,6 +1938,7 @@ class P1Context(SuperContext):
         # exit_event that arms the exit watchdog.
         self.exit_event = _P1ExitEvent()
         self.dolphin_status_text = "Disconnected"
+        self._override_warned = False
 
         # Track Pikmin counts for location checking
         self.pikmin_counts = {"red": 0, "yellow": 0, "blue": 0}
@@ -3731,8 +3747,7 @@ def part_vis_addr(game: Game, data) -> int:
     """Address of the part's UfoParts.mPartVisType (the "collected" byte).
 
     Resolved via playerState->mUfoParts rather than the hardcoded heap address
-    from P1Data, since the heap layout can change with "Emulated Memory Size
-    Override". Falls back to the hardcoded address if the chain fails.
+    from P1Data. Falls back to the hardcoded address if the chain fails.
     """
     ptr = SYM_PLAYER_STATE_PTR.get(game)
     idx = _PART_INDEX.get(data.ap_id)
@@ -4957,8 +4972,17 @@ async def dolphin_loop(ctx: P1Context):
                 continue
 
             if game is None:
-                ctx.dolphin_status_text = "Disconnected - Hook Failed"
+                if dme.memory_override_detected():
+                    ctx.dolphin_status_text = ("Disconnected - Hook Failed - "
+                                               f"Disable {MEMORY_OVERRIDE_OPTION}")
+                    if not ctx._override_warned:
+                        ctx._override_warned = True
+                        logger.warning(f"Disable {MEMORY_OVERRIDE_OPTION} in Dolphin "
+                                       "(Options > Configuration > Advanced), then restart the game.")
+                else:
+                    ctx.dolphin_status_text = "Disconnected - Hook Failed"
                 continue
+            ctx._override_warned = False
 
             # Build expected patched Game ID from slot_data
             slot_data = getattr(ctx, "slot_data", {}) or {}
@@ -4970,8 +4994,7 @@ async def dolphin_loop(ctx: P1Context):
             base_version = BASE_ID_BY_PATCHED_PREFIX.get(game[:3])
 
             if base_version is None:
-                ctx.dolphin_status_text = (f"Connected - Wrong Game (patch your ISO first) "
-                                           f"[{game!r}, {'direct' if dme.uses_direct_access() else 'dme'}]")
+                ctx.dolphin_status_text = f"Connected - Wrong Game (patch your ISO first) [{game!r}]"
                 continue
 
             # Patched ISO detected: read the slot name and start the pending connection.
@@ -5087,6 +5110,11 @@ async def dolphin_loop(ctx: P1Context):
         # During the ending sequence (takeoff -> space) the game reinitializes its
         # heaps for cutscenes: no writes, only the goal is sent.
         ending = story_active and is_final_ending(game_version)
+        if getattr(ctx, "debug_writes", False):
+            _state = (_oneplayer_subsection(game_version), is_day_active(game_version), ending)
+            if _state != getattr(ctx, "_debug_state", None):
+                ctx._debug_state = _state
+                logger.info(f"[DEBUG WRITES] subsection={_state[0]} day_active={_state[1]} ending={_state[2]}")
         if in_level and not is_day_active(game_version):
             _clear_part_anim_mailbox(ctx)
         if ending and not ctx.finished_game:
@@ -5420,4 +5448,4 @@ def _handle_patch(appik1_path: str) -> None:
 
 
 if __name__ == "__main__":
-    run_client()
+    run_client()
