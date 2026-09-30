@@ -4,10 +4,10 @@ from kivy.uix.layout import Layout
 
 
 def build_p1_ui(base: "type[GameManager]") -> "type[GameManager]":
-    """Construit l'UI du client Pikmin au-dessus de `base`.
+    """Build the Pikmin client UI on top of `base`.
 
-    #37 : quand Universal Tracker est installe, `base` est l'UI de UT (onglet
-    Tracker inclus) ; sinon c'est le GameManager standard d'Archipelago.
+    When Universal Tracker is installed, `base` is the UT UI (Tracker tab
+    included); otherwise it is the standard Archipelago GameManager.
     """
 
     class P1UI(base):
@@ -19,10 +19,8 @@ def build_p1_ui(base: "type[GameManager]") -> "type[GameManager]":
 
         def build(self) -> Layout:
             container = super().build()
-            # #2 : armer le chien de garde de fermeture DES le clic sur la croix.
-            # Dans les logs du bug, Kivy sort de sa boucle ("Leaving application
-            # in progress...") mais on_stop (qui leve exit_event) n'est jamais
-            # atteint : le blocage a lieu pendant la fermeture Kivy/SDL elle-meme.
+            # Arm the exit watchdog as soon as the window close button is clicked:
+            # on_stop may never be reached if shutdown hangs inside Kivy/SDL itself.
             from kivy.core.window import Window
             Window.bind(on_request_close=self._p1_on_request_close)
 
@@ -35,7 +33,7 @@ def build_p1_ui(base: "type[GameManager]") -> "type[GameManager]":
         def _p1_on_request_close(self, *args, **kwargs):
             from .P1Client import _arm_exit_watchdog
             _arm_exit_watchdog()
-            return False  # ne pas bloquer la fermeture
+            return False  # do not block window close
 
         def update_texts(self, dt):
             super().update_texts(dt)
@@ -44,5 +42,5 @@ def build_p1_ui(base: "type[GameManager]") -> "type[GameManager]":
     return P1UI
 
 
-# UI sans Universal Tracker (compatibilite).
+# UI without Universal Tracker (compatibility).
 P1UI = build_p1_ui(GameManager)

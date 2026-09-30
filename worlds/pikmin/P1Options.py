@@ -211,7 +211,7 @@ class TrapLink(Toggle):
     display_name = "Trap Link"
 
 
-# Noms d'affichage des traps Pikmin (doivent correspondre a TRAP_KINDS/TRAP_ITEMS).
+# Display names of the Pikmin traps (must match TRAP_KINDS/TRAP_ITEMS).
 TRAP_LINK_TRAP_NAMES = (
     "Time Trap",
     "End Day Trap",
@@ -503,7 +503,7 @@ class PikminDeathAmount(Range):
 
 
 # ====================================================================
-# OLIMAR / PIKMIN BOND (#3)
+# OLIMAR / PIKMIN BOND
 # ====================================================================
 
 class PikminBond(Toggle):
@@ -602,7 +602,7 @@ class P1Options(PerGameCommonOptions):
     normal_first_day: NormalFirstDay
 # - DISABLE PIKMIN TRIP
     disable_pikmin_trip: DisablePikminTrip
-# - CUTSCENE / TEXT SKIPS (fusionnes en un seul OptionSet)
+# - CUTSCENE / TEXT SKIPS (merged into a single OptionSet)
     skip_events: SkipEvents
     always_min_one_leaf: AlwaysMinOneLeaf
 # - DAY CYCLE MODE
@@ -615,7 +615,7 @@ class P1Options(PerGameCommonOptions):
 
 
 # ====================================================================
-# OPTION GROUPS (#47) - web Options Creator / generated YAML template
+# OPTION GROUPS - web Options Creator / generated YAML template
 # ====================================================================
 P1_OPTION_GROUPS = [
     OptionGroup("Ship Parts", [

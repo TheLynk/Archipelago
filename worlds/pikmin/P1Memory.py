@@ -1,17 +1,16 @@
-"""Acces a la RAM du jeu dans Dolphin (#58).
+"""Access to the game RAM in Dolphin.
 
-Facade compatible avec `dolphin_memory_engine` (hook, un_hook, is_hooked,
+Facade compatible with `dolphin_memory_engine` (hook, un_hook, is_hooked,
 read_bytes, write_bytes, read_byte, write_byte).
 
-Le module `dolphin_memory_engine` (binding Python, v1.3.x) ne trouve la RAM
-emulee que si MEM1 fait sa taille d'origine : avec l'option Dolphin "Enable
-Emulated Memory Size Override" (exigee par l'apworld Pikmin 2, MEM1 = 64 Mo),
-le hook echoue et le client ne detecte jamais le jeu. On essaie donc toujours
-dolphin_memory_engine en premier (comportement inchange) et, sous Windows, on
-retombe sur un acces direct (ReadProcessMemory / WriteProcessMemory) qui
-repere MEM1 quelle que soit sa taille, comme le fait le Dolphin Memory Engine
-recent : region memoire partagee de Dolphin dont l'en-tete contient le "magic
-word" des disques GameCube (0xC2339F3D a 0x8000001C).
+The `dolphin_memory_engine` Python binding (v1.3.x) only finds the emulated RAM
+when MEM1 has its original size: with the Dolphin "Enable Emulated Memory Size
+Override" option (MEM1 = 64 MB), the hook fails and the client never detects the
+game. So dolphin_memory_engine is always tried first and, on Windows, we fall back
+to direct access (ReadProcessMemory / WriteProcessMemory) that locates MEM1
+whatever its size, like recent Dolphin Memory Engine versions do: it looks for
+Dolphin's shared memory region whose header holds the GameCube disc magic word
+(0xC2339F3D at 0x8000001C).
 """
 import os
 import struct
@@ -21,15 +20,15 @@ import dolphin_memory_engine as _dme
 
 MEM1_START = 0x80000000
 GC_DISC_MAGIC = 0xC2339F3D
-_BOOT_CODES = (0x0D15EA5E, 0xE5207C22)  # boot normal / JTAG (0x80000020)
-_MIN_MEM1 = 0x01800000   # 24 Mo (taille d'origine)
-_MAX_MEM1 = 0x04000000   # 64 Mo (maximum de l'option Dolphin)
+_BOOT_CODES = (0x0D15EA5E, 0xE5207C22)  # normal boot / JTAG (0x80000020)
+_MIN_MEM1 = 0x01800000   # 24 MB (original size)
+_MAX_MEM1 = 0x04000000   # 64 MB (maximum of the Dolphin option)
 
-_backend = None  # None, "dme" ou "win"
+_backend = None  # None, "dme" or "win"
 
 
 class _WinBackend:
-    """Acces direct a la memoire de Dolphin sous Windows (ctypes)."""
+    """Direct access to Dolphin memory on Windows (ctypes)."""
 
     PROCESS_NAMES = ("Dolphin.exe", "DolphinQt2.exe", "DolphinWx.exe")
 
@@ -82,7 +81,7 @@ class _WinBackend:
                                          ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
         k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
 
-    # -- processus ---------------------------------------------------------
+    # -- process ---------------------------------------------------------
     def _find_pid(self):
         names = self.PROCESS_NAMES
         env = os.environ.get("DME_DOLPHIN_PROCESS_NAME")
@@ -128,13 +127,13 @@ class _WinBackend:
                 break
             base = mbi.BaseAddress or 0
             region = mbi.RegionSize
-            # MEM_COMMIT (0x1000) + MEM_MAPPED (0x40000) : vue de la memoire partagee.
+            # MEM_COMMIT (0x1000) + MEM_MAPPED (0x40000): view of the shared memory.
             if (mbi.State == 0x1000 and mbi.Type == 0x40000
                     and _MIN_MEM1 <= region <= 2 * _MAX_MEM1):
                 head = self._raw_read(base, 0x100)
                 if (head and struct.unpack_from(">I", head, 0x1C)[0] == GC_DISC_MAGIC
                         and struct.unpack_from(">I", head, 0x20)[0] in _BOOT_CODES):
-                    # Taille de MEM1 simulee (OS globals, 0x800000F0).
+                    # Simulated MEM1 size (OS globals, 0x800000F0).
                     size = struct.unpack_from(">I", head, 0xF0)[0]
                     if not (_MIN_MEM1 <= size <= _MAX_MEM1):
                         size = min(region, _MAX_MEM1)
@@ -195,10 +194,10 @@ def _win_backend():
 
 
 def _dme_header_ok() -> bool:
-    """Verifie que dolphin_memory_engine lit bien la RAM d'un jeu GameCube.
+    """Check that dolphin_memory_engine really reads a GameCube game's RAM.
 
-    Avec une MEM1 agrandie, il peut se "hooker" sur une mauvaise region
-    memoire de Dolphin : on lirait alors n'importe quoi (d'ou "Wrong Game")."""
+    With an enlarged MEM1 it can hook the wrong Dolphin memory region and
+    read garbage (hence "Wrong Game")."""
     try:
         head = _dme.read_bytes(MEM1_START + 0x1C, 8)
     except Exception:
@@ -218,7 +217,7 @@ def hook() -> None:
             _backend = "dme"
             return
         try:
-            _dme.un_hook()  # mauvaise region : on passe a l'acces direct
+            _dme.un_hook()  # wrong region: switch to direct access
         except Exception:
             pass
     win = _win_backend()
@@ -244,7 +243,7 @@ def is_hooked() -> bool:
 
 
 def uses_direct_access() -> bool:
-    """Vrai si l'acces direct Windows est utilise (MEM1 agrandie)."""
+    """True if direct Windows access is used (enlarged MEM1)."""
     return _backend == "win"
 
 

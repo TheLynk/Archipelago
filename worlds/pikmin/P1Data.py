@@ -145,33 +145,33 @@ PIKMIN_BONUS_ITEMS: dict[str, tuple[str, str, int]] = {
 # ====================================================================
 # TRAP ITEMS
 # ====================================================================
-# Items de trap (effets negatifs). Appliques en jeu par le client.
-# Cle interne -> id AP. Le nom lisible sert d'identifiant unique.
+# Trap items (negative effects), applied in-game by the client.
+# Item name -> AP ID. The readable name is the unique identifier.
 
 TRAP_ITEMS: dict[str, int] = {
-    "Time Trap":      71818,   # avance l'horloge (reduit le temps restant)
-    "End Day Trap":   71819,   # force la fin de la journee en cours
-    "Damage Trap":    71820,   # blesse Olimar (sante reduite)
-    "Teleport Trap":  71821,   # teleporte Olimar a un endroit aleatoire proche
-    "Disbanding Trap": 71822,  # disperse l'escouade (siffle le disband)
-    "Trip Trap":      71824,   # #7 : les Pikmin qui courent trebuchent pendant 10 s
+    "Time Trap":      71818,   # advances the clock (reduces remaining time)
+    "End Day Trap":   71819,   # forces the current day to end
+    "Damage Trap":    71820,   # hurts Olimar (reduces health)
+    "Teleport Trap":  71821,   # teleports Olimar to a random nearby spot
+    "Disbanding Trap": 71822,  # disbands the squad (disband whistle)
+    "Trip Trap":      71824,   # running Pikmin trip for 10 s
 }
 
 # ====================================================================
 # USEFUL ITEMS
 # ====================================================================
-# Items "Useful" (amelioration). Appliques en jeu par le client.
+# "Useful" items (upgrades), applied in-game by the client.
 USEFUL_ITEMS: dict[str, int] = {
-    # Desactive definitivement le trebuchement des Pikmin quand recu.
-    # Utilise uniquement quand l'option Disable Pikmin Trip = "item".
+    # Permanently disables Pikmin tripping once received.
+    # Only used when the Disable Pikmin Trip option is "item".
     "Trip Immunity": 71823,
 }
 
 TRIP_IMMUNITY_ITEM_ID = USEFUL_ITEMS["Trip Immunity"]
 
-# Nom de piece -> model ID (fourCC) du Pellet in-game (enum UfoPartID,
-# include/Pellet.h). Sert a retrouver le Pellet physique d'une piece dans le
-# niveau pour le faire disparaitre quand la location est validee cote serveur.
+# Part name -> in-game Pellet model ID (fourCC, enum UfoPartID in include/Pellet.h).
+# Used to find a part's physical Pellet in the level and remove it when the
+# location is checked server-side.
 PART_MODEL_ID: dict[str, bytes] = {
     "Bowsprit":            b"ust1",
     "Gluon Drive":         b"ust2",
@@ -206,7 +206,7 @@ PART_MODEL_ID: dict[str, bytes] = {
 }
 
 
-# Nom d'item -> type interne, pour le client.
+# Item name -> internal kind, for the client.
 TRAP_KINDS: dict[str, str] = {
     "Time Trap":       "time",
     "End Day Trap":    "end_day",
@@ -238,10 +238,10 @@ del _next_id, _color, _threshold, _location_name
 
 
 # ====================================================================
-# Noms des locations de pieces de vaisseau
+# Ship part location names
 # ====================================================================
-# Format : "<abrev zone> - <nom piece>", ex. "TDS - Bowsprit".
-# AREA_ABBREV est l'unique source de verite : ne renommer une zone qu'ici.
+# Format: "<area abbrev> - <part name>", e.g. "TDS - Bowsprit".
+# AREA_ABBREV is the single source of truth: only rename an area here.
 
 AREA_ABBREV: Dict[str, str] = {
     "The Impact Site":    "TIS",
@@ -251,9 +251,8 @@ AREA_ABBREV: Dict[str, str] = {
     "The Final Trial":    "TFT",
 }
 
-# Zone -> stageID (enum StageID, GlobalGameOptions.h). Sert au comptage des
-# etoiles par niveau (PlayerState.mStagePartsCollected) quand une piece est
-# validee cote serveur.
+# Area -> stageID (enum StageID, GlobalGameOptions.h). Used for the per-stage
+# part count (PlayerState.mStagePartsCollected) when a part is checked server-side.
 AREA_STAGE_ID: Dict[str, int] = {
     "The Impact Site":    0,   # STAGE_Practice
     "The Forest of Hope": 1,   # STAGE_Forest
@@ -262,8 +261,8 @@ AREA_STAGE_ID: Dict[str, int] = {
     "The Final Trial":    4,   # STAGE_Last
 }
 
-# Pieces qui donnent une capacite au vaisseau (PlayerState.mShipEffectPartFlag) :
-# nom -> bit. Radar = bit 0, jets ioniques = bits 1 et 2.
+# Parts that grant the ship an ability (PlayerState.mShipEffectPartFlag):
+# name -> bit. Radar = bit 0, Ionium jets = bits 1 and 2.
 SHIP_EFFECT_PARTS: Dict[str, int] = {
     "Whimsical Radar": 0x01,
     "#1 Ionium Jet":   0x02,
@@ -272,7 +271,7 @@ SHIP_EFFECT_PARTS: Dict[str, int] = {
 
 
 def ship_part_location_name(part_name: str) -> str:
-    """Nom de la location d'une piece, prefixe par l'abreviation de sa zone."""
+    """Location name of a part, prefixed with its area abbreviation."""
     return f"{AREA_ABBREV[ALL_PARTS[part_name].area]} - {part_name}"
 
 
@@ -285,4 +284,4 @@ ALL_LOCATIONS: Dict[str, int] = {
     **{ship_part_location_name(name): data.ap_id for name, data in ALL_PARTS.items()},
     # Pikmin locations
     **PIKMIN_LOCATIONS_MAP,
-}
+}

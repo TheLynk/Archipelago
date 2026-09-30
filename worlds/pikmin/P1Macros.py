@@ -12,12 +12,12 @@ can_access: dict[Area, Callable[[CollectionState, int], bool]] = {
 }
 
 def can_obtain_reds(state: CollectionState, player: int) -> bool:
-    return can_access["The Impact Site"](state, player) # state.can_reach_region("impact_site", player)
+    return can_access["The Impact Site"](state, player)
 
 
 def can_obtain_blues(state: CollectionState, player: int) -> bool:
-    return can_access["The Forest Navel"](state, player) # state.can_reach_region("forest_navel", player)
+    return can_access["The Forest Navel"](state, player)
 
 
 def can_obtain_yellows(state: CollectionState, player: int) -> bool:
-    return can_access["The Forest of Hope"](state, player) # state.can_reach_region("forest_of_hope", player)
+    return can_access["The Forest of Hope"](state, player)

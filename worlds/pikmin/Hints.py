@@ -51,11 +51,8 @@ def _get_location_for_item_mode(world: "P1World", player: int, hint_name: str) -
     Returns THIS player's own ship part location (e.g. "TDS - Bowsprit"), so the
     hint can report which item is placed there.
 
-    The previous implementation scanned only `get_filled_locations(player)` for an
-    item named `hint_name` owned by `player`. In a multiworld with item shuffle
-    the player's own parts usually land in OTHER players' worlds, so it returned
-    None for most (or all) parts and logged a warning for each. Fetching the
-    location by name always succeeds and matches the item-mode semantics.
+    Looks the location up by name rather than scanning filled locations, since the
+    player's own parts usually land in other players' worlds.
     """
     try:
         return world.get_location(ship_part_location_name(hint_name))
@@ -143,4 +140,4 @@ def get_hints_by_option(multiworld: MultiWorld, player_hints: set[int]) -> None:
                     "Hint Mode": mode,
                 }}
 
-                world.hints.update(hint)
+                world.hints.update(hint)

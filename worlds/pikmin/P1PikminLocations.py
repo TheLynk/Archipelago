@@ -154,4 +154,4 @@ if __name__ == "__main__":
         blue_interval=1,
     )
     print("Example 2 - Interval 1 for all colors:")
-    print(f"Summary: {gen2.get_summary()}")
+    print(f"Summary: {gen2.get_summary()}")

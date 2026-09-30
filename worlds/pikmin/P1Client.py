@@ -11,14 +11,14 @@ from typing import TYPE_CHECKING, Optional
 import faulthandler
 import logging
 
-from . import P1Memory as dme  # #58 : dolphin_memory_engine + MEM1 agrandie
+from . import P1Memory as dme
 
 import Utils
 from Utils import async_start
 from CommonClient import ClientCommandProcessor, CommonContext, get_base_parser, gui_enabled, logger, server_loop
 from NetUtils import ClientStatus
 
-# #37 : Universal Tracker integre au client (onglet "Tracker") s'il est installe.
+# Integrate Universal Tracker into the client ("Tracker" tab) if it is installed.
 tracker_loaded = False
 try:
     from worlds.tracker.TrackerClient import TrackerGameContext as SuperContext
@@ -89,23 +89,21 @@ SCOUT_RETRY_INTERVAL = 5.0  # seconds between scout retries
 
 
 def _gf(field: str) -> MemoryAddress:
-    """Adresse d'un champ de `gameflow`, par version (source: decomp)."""
+    """Address of a `gameflow` field, per game version (source: decomp)."""
     return {g: t[field] for g, t in SYM_GAMEFLOW.items()}
 
 
-# Derive de la decomp -- gameflow+0x1CB / +0x2F8 / +0x2FF.
+# Derived from the decomp: gameflow+0x1CB / +0x2F8 / +0x2FF.
 UNLOCKED_AREAS: MemoryAddress = _gf("UNLOCKED_AREAS")
-# FIX NTSC: ces deux adresses utilisaient par erreur la valeur PAL en NTSC.
-TIME_HOURS: MemoryAddress = _gf("TIME_HOURS")   # int, 7=matin, >=19=fin de journee
-DAY_NUMBER: MemoryAddress = _gf("DAY_NUMBER")   # byte, jour courant
-# Heap (alloue dynamiquement): aucun symbole statique, valeurs trouvees a la main.
+TIME_HOURS: MemoryAddress = _gf("TIME_HOURS")   # int, 7=morning, >=19=end of day
+DAY_NUMBER: MemoryAddress = _gf("DAY_NUMBER")   # byte, current day
+# Heap (dynamically allocated): no static symbol, addresses found manually.
 COUNT_TOTAL_PARTS: MemoryAddress = mem(0x812427FF, 0x81249DE7)  # byte
 COUNT_REQUIRED_PARTS: MemoryAddress = mem(0x81242803, 0x81249DEB)  # byte
 
 # Ship part hint text address (PAL) — universal for all parts
-# Ancienne adresse PAL codee en dur. Plus utilisee pour lire/ecrire : l'adresse
-# est desormais resolue via resolve_ship_part_text_addr(). Conservee uniquement
-# comme valeur de reference dans /debugtext.
+# Hardcoded PAL address, kept only as a reference value in /debugtext.
+# Reads/writes resolve the address via resolve_ship_part_text_addr().
 SHIP_PART_TEXT_ADDR = 0x807B100A
 SHIP_PART_TEXT_LENGTH = 313  # 0x807B1143 - 0x807B100A
 LANG_NAMES = {"en": "English", "fr": "Français", "de": "Deutsch", "it": "Italiano", "es": "Español"}
@@ -118,8 +116,7 @@ LANG_MSG_DETECTED = {
     "es": "Idioma detectado",
 }
 
-# Synchronisation AP active (une partie vient d'etre chargee), par langue du jeu.
-# Options actives annoncees a la connexion, par langue du jeu.
+# Active options announced on connection, per game language.
 BOND_ACTIVE_MSG = {
     "en": "Olimar-Pikmin Bond active (-{dmg} HP per Pikmin death).",
     "fr": "Lien Olimar/Pikmin actif (-{dmg} PV par Pikmin mort).",
@@ -142,7 +139,7 @@ TRAPLINK_ACTIVE_MSG = {
     "es": "TrapLink activo.",
 }
 
-# #38 : connexion differee jusqu'a la detection du jeu.
+# Connection is deferred until the game is detected.
 WAIT_GAME_MSG = {
     "en": "Waiting for Pikmin (patched ISO) to be running in Dolphin before connecting...",
     "fr": "En attente de Pikmin (ISO patchée) dans Dolphin avant la connexion...",
@@ -166,7 +163,6 @@ SYNC_ACTIVE_MSG = {
     "es": "Partida cargada — sincronización AP activa.",
 }
 
-# Synchronisation AP en pause (retour a un menu), par langue du jeu.
 SYNC_PAUSED_MSG = {
     "en": "Returned to menu — AP sync paused.",
     "fr": "Retour au menu — synchronisation AP en pause.",
@@ -175,7 +171,6 @@ SYNC_PAUSED_MSG = {
     "es": "Vuelta al menú — sincronización AP en pausa.",
 }
 
-# DeathLink recu : Olimar est tue, par langue du jeu.
 DEATHLINK_RECEIVED_MSG = {
     "en": "DeathLink received — Olimar has been eliminated.",
     "fr": "DeathLink reçu — Olimar est éliminé.",
@@ -185,10 +180,10 @@ DEATHLINK_RECEIVED_MSG = {
 }
 
 def _read_apworld_version() -> str:
-    """Version de l'apworld, lue depuis archipelago.json (manifeste).
+    """Apworld version, read from the archipelago.json manifest.
 
-    Fonctionne en source (dossier) comme en .apworld (zip) : on essaie d'abord
-    importlib.resources (gere le zip), puis un simple acces fichier en repli.
+    Works from source (folder) and from a .apworld (zip): tries importlib.resources
+    first (zip-aware), then falls back to plain file access.
     """
     try:
         from importlib.resources import files
@@ -206,15 +201,14 @@ def _read_apworld_version() -> str:
 
 APWORLD_VERSION = _read_apworld_version()
 
-# id d'objet -> nom lisible (bonus Pikmin), pour les logs de debug.
+# Item id -> readable name (Pikmin bonuses), for debug logs.
 ITEM_ID_TO_NAME: dict[int, str] = {ap_id: name for name, ap_id in FILLER_ITEMS.items()}
 
 
 def _named_counts(applied: dict) -> dict:
-    """Remplace les id d'objets par leur nom lisible dans un dict {id: n}.
+    """Replace item ids with readable names in an {id: n} dict.
 
-    Trie par nom d'objet pour une lecture stable, et garde l'id brut en repli si
-    un id est inconnu.
+    Sorted by item name for stable output; unknown ids fall back to the raw id.
     """
     out = {}
     for item_id, n in applied.items():
@@ -222,36 +216,30 @@ def _named_counts(applied: dict) -> dict:
         out[name] = n
     return dict(sorted(out.items()))
 
-# Detection de langue.
+# Language detection.
 #
-# Ancienne methode : comparer des chaines d'interface ("PRESS START", ...) a des
-# adresses codees en dur. Fragile (adresses non issues de la decomp, PAL
-# uniquement, valable seulement a l'ecran titre).
+# Read `gsys->mLanguageID` (StdSystem, include/system.h of the projectPiki/pikmin
+# decomp). `gsys` is a global pointer and mLanguageID is at offset 0x1A0. Valid at
+# any point in the game.
 #
-# Nouvelle methode : lire `gsys->mLanguageID` (StdSystem, include/system.h de la
-# decomp projectPiki/pikmin). `gsys` est un pointeur global, mLanguageID est a
-# l'offset 0x1A0. Valable a tout moment de la partie.
-#
-# NTSC-U : le champ n'existe pas (le jeu est anglais uniquement) et 0x1A0 y
-# porte le pointeur de vtable -> on ne lit jamais, on renvoie "en".
+# NTSC-U: the field does not exist (English-only game) and 0x1A0 holds the vtable
+# pointer, so it is never read and "en" is returned.
 
-# Bornes plausibles pour un pointeur en MEM1/MEM2 (validation anti-lecture sauvage).
+# Plausible bounds for a MEM1/MEM2 pointer (guards against wild reads).
 _RAM_MIN = 0x80000000
-_RAM_MAX = 0x84000000  # #58 : jusqu'a 64 Mo avec "Emulated Memory Size Override"
+_RAM_MAX = 0x84000000  # up to 64 MB with "Emulated Memory Size Override"
 
 
 def resolve_ship_part_text_addr(game: Game) -> Optional[int]:
-    """Adresse du buffer de texte actuellement affiche, ou None.
+    """Address of the currently displayed text buffer, or None.
 
-    Suit la chaine de pointeurs issue de la decomp :
+    Follows the pointer chain from the decomp:
         tutorialWindow (statique) -> ogScrTutorialMgr
           +0x00  mMessageMgr      -> ogScrMessageMgr
           +0x4F2 mFormattedDisplayStrings[0]
 
-    Remplace l'ancienne adresse de tas codee en dur (0x807B100A), qui n'etait
-    valable qu'en PAL. La chaine ne depend que de symboles statiques et
-    d'offsets de structures, donc elle fonctionne aussi en NTSC-U.
-    Verifie en jeu : la chaine retombe exactement sur l'ancienne adresse PAL.
+    Depends only on static symbols and struct offsets, so it works on both
+    PAL and NTSC-U.
     """
     mgr = resolve_message_mgr(game)
     if mgr is None:
@@ -260,14 +248,14 @@ def resolve_ship_part_text_addr(game: Game) -> Optional[int]:
 
 
 def resolve_message_mgr(game: Game) -> Optional[int]:
-    """Adresse du ogScrMessageMgr courant, ou None si aucune fenetre de texte."""
+    """Address of the current ogScrMessageMgr, or None if no text window is open."""
     tw_addr = SYM_TUTORIAL_WINDOW_PTR.get(game)
     if tw_addr is None:
         return None
     try:
         tut = struct.unpack(">I", dme.read_bytes(tw_addr, 4))[0]
         if not (_RAM_MIN <= tut < _RAM_MAX):
-            return None  # aucune fenetre de texte active
+            return None  # no active text window
         mgr = struct.unpack(
             ">I", dme.read_bytes(tut + TUTORIAL_TEXT_CHAIN["TUTORIALMGR_MESSAGEMGR"], 4)
         )[0]
@@ -278,20 +266,19 @@ def resolve_message_mgr(game: Game) -> Optional[int]:
     return mgr
 
 
-# Plages d'EnumTutorial que l'on accepte de remplacer par un hint.
-# On affiche le hint uniquement AVANT la collecte :
-#   - "discovery" : on s'approche d'une piece pour la premiere fois
-#   - "info"      : on interagit avec une piece pas encore collectee
-# On exclut :
-#   - "collect" : texte de RECUPERATION de la piece. Y ecrire un hint sur
-#     l'emplacement de la piece n'a plus de sens (on vient de l'obtenir) et
-#     ecrasait le texte de recuperation.
-#   - "power"   : texte d'amelioration du vaisseau, sans rapport avec un emplacement.
+# EnumTutorial ranges that may be replaced by a hint.
+# The hint is shown only BEFORE collection:
+#   - "discovery": approaching a part for the first time
+#   - "info"     : interacting with a part not yet collected
+# Excluded:
+#   - "collect": the part pickup text (a location hint is meaningless once the
+#     part is obtained).
+#   - "power"  : ship upgrade text, unrelated to a location.
 HINTABLE_TEXT_KINDS = ("discovery", "info")
 
 
 def read_displayed_message_id(msgmgr: int) -> Optional[int]:
-    """Identifiant EnumTutorial du texte actuellement affiche, ou None."""
+    """EnumTutorial id of the currently displayed text, or None."""
     try:
         page = struct.unpack(
             ">h", dme.read_bytes(msgmgr + TUTORIAL_TEXT_CHAIN["MSGMGR_CURR_PAGE"], 2)
@@ -315,11 +302,11 @@ def read_displayed_message_id(msgmgr: int) -> Optional[int]:
 
 
 def part_from_message_id(msg_id: int) -> Optional[str]:
-    """Nom de la piece correspondant a un ID de texte, ou None si ce n'en est pas un.
+    """Name of the part matching a text ID, or None if it is not a part text.
 
-    Les textes de pieces occupent des plages precises d'EnumTutorial, chacune
-    couvrant les 30 pieces dans l'ordre de UfoPartIndex. Tout autre ID est un
-    texte de tutoriel ou de scenario, qu'il ne faut pas toucher.
+    Part texts occupy specific EnumTutorial ranges, each covering the 30 parts in
+    UfoPartIndex order. Any other ID is a tutorial or story text and must be left
+    untouched.
     """
     for kind in HINTABLE_TEXT_KINDS:
         base = TUT_PART_TEXT_RANGES[kind]
@@ -329,12 +316,11 @@ def part_from_message_id(msg_id: int) -> Optional[str]:
 
 
 def read_displayed_part(game: Game) -> Optional[str]:
-    """Nom de la piece dont le texte est affiche, ou None si ce n'est pas un texte de piece.
+    """Name of the part whose text is displayed, or None if it is not a part text.
 
-    On identifie le texte par son ID de message (TextInfoType.mMsgUniqueId), et
-    non par `gameflow.mShipTextPartID` : ce dernier est REMANENT, il conserve la
-    derniere piece concernee meme pendant un texte sans rapport. C'est ce qui
-    faisait ecraser les textes du tutoriel par un hint.
+    The text is identified by its message ID (TextInfoType.mMsgUniqueId), not by
+    `gameflow.mShipTextPartID`, which is persistent: it keeps the last part even
+    during an unrelated text.
     """
     msgmgr = resolve_message_mgr(game)
     if msgmgr is None:
@@ -346,17 +332,17 @@ def read_displayed_part(game: Game) -> Optional[str]:
 
 
 def _oneplayer_subsection(game: Game) -> Optional[int]:
-    """Sous-section OnePlayer courante (enum OnePlayerSectionID), ou None.
+    """Current OnePlayer subsection (OnePlayerSectionID enum), or None.
 
-    Lit `gameflow.mNextOnePlayerSectionID`. Vaut :
-      - ONEPLAYER_NewPikiGame (7) : Olimar dans un niveau, journee jouee ;
-      - ONEPLAYER_MapSelect (6)   : carte du monde / choix de niveau ;
-      - ONEPLAYER_CardSelect (1)  : menu de selection de sauvegarde.
-    Renvoie None hors mode histoire (ecran titre, boot).
+    Reads `gameflow.mNextOnePlayerSectionID`. Values:
+      - ONEPLAYER_NewPikiGame (7): Olimar in a level, day in progress;
+      - ONEPLAYER_MapSelect (6)  : world map / level select;
+      - ONEPLAYER_CardSelect (1) : save selection menu.
+    Returns None outside story mode (title screen, boot).
 
-    `mCurrGameSectionID` (section externe) ne suffit pas : tous ces menus sont
-    des sous-sections de SECTION_OnePlayer. `DAY_NUMBER` non plus : il garde une
-    valeur residuelle non nulle sur ces menus.
+    `mCurrGameSectionID` (outer section) is not enough: all these menus are
+    subsections of SECTION_OnePlayer. `DAY_NUMBER` is not either: it keeps a
+    non-zero residual value on these menus.
     """
     gf = SYM_GAMEFLOW.get(game)
     if not gf:
@@ -371,12 +357,11 @@ def _oneplayer_subsection(game: Game) -> Optional[int]:
 
 
 def is_day_active(game: Game) -> bool:
-    """Vrai si la journee a reellement commence (gameplay interactif).
+    """True if the day has actually started (interactive gameplay).
 
-    Lit `gameflow.mIsPauseAllowed` : TRUE seulement quand le joueur controle
-    Olimar, FALSE pendant le chargement, la cinematique d'intro de journee et la
-    fin de journee. Sert a mettre les traps en attente tant que la journee n'a
-    pas vraiment demarre.
+    Reads `gameflow.mIsPauseAllowed`: TRUE only while the player controls Olimar,
+    FALSE during loading, the day intro cutscene and the end of day. Used to hold
+    traps until the day has really started.
     """
     gf = SYM_GAMEFLOW.get(game)
     if not gf:
@@ -388,15 +373,15 @@ def is_day_active(game: Game) -> bool:
 
 
 def is_overlay_active(game: Game) -> bool:
-    """#5 : vrai si un ecran couvre le gameplay (traps a suspendre).
+    """True if a screen covers the gameplay (traps must be suspended).
 
-    D'apres la decomp (newPikiGame.cpp, GameFlow) :
-      - mIsUIOverlayActive (_338) : menu Pause (Start), carte/commandes (Y),
-        texte de piece de vaisseau, autres fenetres par-dessus le jeu ;
-      - mPauseAll (_33C) : gameplay gele (menu d'oignon, cinematique) ;
-      - mIsTutorialTextActive (_340) : fenetre de texte ouverte.
-    En cas d'echec de lecture on considere l'overlay actif (prudence : mieux
-    vaut retarder un trap que l'appliquer menu ouvert).
+    Per the decomp (newPikiGame.cpp, GameFlow):
+      - mIsUIOverlayActive (_338): Pause menu (Start), map/controls (Y),
+        ship part text, other windows over the game;
+      - mPauseAll (_33C): gameplay frozen (onion menu, cutscene);
+      - mIsTutorialTextActive (_340): text window open.
+    On read failure the overlay is assumed active (safer to delay a trap than to
+    apply it while a menu is open).
     """
     gf = SYM_GAMEFLOW.get(game)
     if not gf:
@@ -411,32 +396,31 @@ def is_overlay_active(game: Game) -> bool:
 
 
 def is_in_level(game: Game) -> bool:
-    """Vrai si le joueur controle Olimar dans un niveau (journee en cours).
+    """True if the player controls Olimar in a level (day in progress).
 
-    Verrou des handlers qui LISENT de la memoire propre au niveau : collecte des
-    pieces (objets sur le tas) et compteurs de Pikmin de l'escouade. Hors niveau,
-    ces adresses ne sont pas pertinentes et pourraient envoyer de faux checks.
+    Guards handlers that READ level-specific memory: part collection (heap
+    objects) and squad Pikmin counters. Outside a level these addresses are not
+    meaningful and could send false checks.
     """
     return _oneplayer_subsection(game) == ONEPLAYER_NEW_PIKI_GAME
 
 
 def is_save_active(game: Game) -> bool:
-    """Vrai si une partie est en cours : dans un niveau OU sur la carte du monde.
+    """True if a save is in progress: in a level OR on the world map.
 
-    Verrou plus large que is_in_level, pour la RECEPTION d'objets (les bonus
-    Pikmin se persistent via STAGE et s'appliqueront au prochain niveau) et le
-    deblocage des zones (qui doit etre visible sur la carte du monde). Exclut le
-    menu de selection de sauvegarde (CardSelect) et l'ecran titre.
+    Broader guard than is_in_level, for item RECEPTION (Pikmin bonuses persist via
+    STAGE and apply on the next level) and area unlocking (which must be visible
+    on the world map). Excludes the save selection menu (CardSelect) and the title
+    screen.
 
-    Sert aussi de reference pour le message de synchronisation : sans ca, passer
-    par la carte du monde entre deux niveaux affichait a tort "synchronisation en
-    pause".
+    Also the reference for the sync status message, so passing through the world
+    map between levels does not report sync as paused.
     """
     return _oneplayer_subsection(game) in (ONEPLAYER_NEW_PIKI_GAME, ONEPLAYER_MAP_SELECT)
 
 
 def read_orima_dead(game: Game) -> bool:
-    """Vrai si Olimar est mort (GameStat::orimaDead, mis a 1 par NaviDeadState)."""
+    """True if Olimar is dead (GameStat::orimaDead, set to 1 by NaviDeadState)."""
     addr = SYM_ORIMA_DEAD.get(game)
     if addr is None:
         return False
@@ -447,7 +431,7 @@ def read_orima_dead(game: Game) -> bool:
 
 
 def read_dead_pikis_total(game: Game) -> Optional[int]:
-    """Total de Pikmin morts (GameStat::deadPikis, somme Blue+Red+Yellow), ou None."""
+    """Total dead Pikmin (GameStat::deadPikis, sum of Blue+Red+Yellow), or None."""
     addr = SYM_DEAD_PIKIS.get(game)
     if addr is None:
         return None
@@ -459,9 +443,9 @@ def read_dead_pikis_total(game: Game) -> Optional[int]:
 
 
 def _resolve_olimar(game: Game) -> Optional[int]:
-    """Adresse de l'objet Navi d'Olimar, ou None.
+    """Address of Olimar's Navi object, or None.
 
-    naviMgr -> +MONO_OBJECTLIST (Creature**) -> [0] = Navi (Olimar en 1 joueur).
+    naviMgr -> +MONO_OBJECTLIST (Creature**) -> [0] = Navi (Olimar in single player).
     """
     mgr_ptr = SYM_NAVI_MGR_PTR.get(game)
     if mgr_ptr is None:
@@ -482,23 +466,22 @@ def _resolve_olimar(game: Game) -> Optional[int]:
 
 
 def kill_olimar(game: Game) -> bool:
-    """Tue Olimar a la reception d'un DeathLink.
+    """Kill Olimar when a DeathLink is received.
 
-    Ecrire mHealth = 0 ne suffit PAS : le jeu ne verifie la sante que dans les
-    etats de degats, pas en continu. On force donc Olimar dans l'etat 'ecrase'
-    (NaviPressedState) avec un timer deja ecoule : son exec(), appele chaque
-    frame par le jeu, verifie alors mHealth <= 1 et declenche lui-meme la vraie
-    transition vers NaviDeadState (avec toute la sequence : orimaDead, fin de
-    journee, animation). C'est le jeu qui execute la transition, on ne fait
-    qu'amorcer.
+    Writing mHealth = 0 is not enough: the game only checks health inside damage
+    states, not continuously. Olimar is therefore forced into the "pressed" state
+    (NaviPressedState) with an already-expired timer; its exec(), called every
+    frame, then sees mHealth <= 1 and performs the real transition to
+    NaviDeadState itself (full sequence: death animation, end of day). The game
+    runs the transition, we only prime it.
 
-    Sequence :
-      1. Resoudre Olimar (Navi).
-      2. Retrouver l'instance NaviPressedState via les tables de la StateMachine.
-      3. Ecrire mCurrState = NaviPressedState, mPressedTimer < 0, mHealth = 0.
+    Steps:
+      1. Resolve Olimar (Navi).
+      2. Find the NaviPressedState instance via the StateMachine tables.
+      3. Write mCurrState = NaviPressedState, mPressedTimer < 0, mHealth = 0.
 
-    En cas d'echec d'une lecture, repli sur l'ecriture de mHealth seule.
-    Renvoie True si l'amorce a abouti.
+    If a read fails, falls back to writing mHealth only.
+    Returns True if the kill was primed.
     """
     navi = _resolve_olimar(game)
     if navi is None:
@@ -513,28 +496,26 @@ def kill_olimar(game: Game) -> bool:
             return None
         return v if _RAM_MIN <= v < _RAM_MAX else None
 
-    # #54 : n'amorcer la mort QUE si Olimar est dans son etat controlable
-    # normal (NaviWalkState). Dans un etat de demo / cinematique (sortie du
-    # vaisseau en debut de journee, etc.), l'etat force etait ecrase par le jeu
-    # et il ne restait que mHealth = 0 : "Olimar zombie" a 0 PV, insoignable,
-    # icone de sante disparue. Sinon on retente au prochain tick.
+    # Only prime the kill when Olimar is in his normal controllable state
+    # (NaviWalkState). In demo/cutscene states the forced state gets overwritten
+    # by the game, leaving only mHealth = 0 (a zombie Olimar). Retry next tick.
     walk = _resolve_state_instance(navi, NAVISTATE_WALK)
     cur = u32(navi + C["NAVI_CURRSTATE"])
     if walk is None or cur != walk:
         return False
 
     try:
-        # Toujours mettre la sante a 0.
+        # Always set health to 0.
         dme.write_bytes(navi + C["CREATURE_HEALTH"], struct.pack(">f", 0.0))
 
         sm = u32(navi + C["NAVI_STATEMACHINE"])
         if sm is None:
-            return True  # sante a 0 ecrite, mais pas d'etat forcable
+            return True  # health 0 written, but no state to force
         state_indexes = u32(sm + C["SM_STATEINDEXES"])
         states = u32(sm + C["SM_STATES"])
         if state_indexes is None or states is None:
             return True
-        # mStateIndexes[NAVISTATE_Pressed] -> index dans mStates
+        # mStateIndexes[NAVISTATE_Pressed] -> index into mStates
         idx = struct.unpack(">i", dme.read_bytes(state_indexes + NAVISTATE_PRESSED * 4, 4))[0]
         if idx < 0 or idx > 64:
             return True
@@ -542,7 +523,7 @@ def kill_olimar(game: Game) -> bool:
         if pressed_state is None:
             return True
 
-        # Amorcer : timer ecoule + etat Pressed. Le exec() du jeu fera la mort.
+        # Prime: expired timer + Pressed state; the game's exec() performs the death.
         dme.write_bytes(navi + C["NAVI_PRESSED_TIMER"], struct.pack(">f", -1.0))
         dme.write_bytes(navi + C["NAVI_CURRSTATE"], struct.pack(">I", pressed_state))
         return True
@@ -552,19 +533,18 @@ def kill_olimar(game: Game) -> bool:
 
 # --- Traps ---------------------------------------------------------------
 
-# Reglages des effets de trap.
-TIME_TRAP_HOURS = 2      # heures de jeu ajoutees a l'horloge
-DAMAGE_TRAP_LOSS = 20.0  # % de sante retire par defaut (#43 : option damage_trap_amount)
-DAMAGE_TRAP_FLOOR = 2.0  # plancher pour ne pas tuer Olimar (mort a <= 1.0)
-TELEPORT_TRAP_LIFT = 60.0    # hauteur ajoutee pour retomber sur le terrain
+# Trap effect settings.
+TIME_TRAP_HOURS = 2      # game hours added to the clock
+DAMAGE_TRAP_LOSS = 20.0  # default % of health removed (option damage_trap_amount)
+DAMAGE_TRAP_FLOOR = 2.0  # floor so Olimar is not killed (death at <= 1.0)
+TELEPORT_TRAP_LIFT = 60.0    # height added so Olimar drops onto the terrain
 
 
 def apply_time_trap(game: Game) -> bool:
-    """Avance l'horloge : reduit le temps restant dans la journee.
+    """Advance the clock, reducing the time left in the day.
 
-    On ecrit mCurrentGameHour (l'entier de l'heure, TIME_HOURS), PAS mTimeOfDay :
-    WorldClock::update recalcule mTimeOfDay chaque frame depuis mCurrentGameHour,
-    donc ecrire mTimeOfDay etait immediatement ecrase (Time Trap sans effet).
+    Writes mCurrentGameHour (integer hour, TIME_HOURS), not mTimeOfDay:
+    WorldClock::update recomputes mTimeOfDay every frame from mCurrentGameHour.
     """
     gf = SYM_GAMEFLOW.get(game)
     if not gf:
@@ -572,9 +552,8 @@ def apply_time_trap(game: Game) -> bool:
     addr = gf["TIME_HOURS"]
     try:
         h = struct.unpack(">i", dme.read_bytes(addr, 4))[0]
-        # #42 : plafond a l'heure de fin de journee (19h). Au-dela, le jeu
-        # enregistrerait le point du graphique hors de son tableau
-        # (TimeGraph::set sans verification -> ecriture memoire hors limites).
+        # Cap at the end-of-day hour (19h): beyond it the game would record the
+        # graph point out of bounds (TimeGraph::set is unchecked).
         graph = _read_population_graph(game)
         end = graph[2] if graph else 19
         new = min(h + TIME_TRAP_HOURS, end)
@@ -586,16 +565,15 @@ def apply_time_trap(game: Game) -> bool:
         return False
 
 
-# --- #42 : graphique de population et Time Trap --------------------------------
-# PlayerState::mPerHourGraph (TimeGraph @ PlayerState+0x18C) : u16 mStartTime,
-# u16 mEndTime, PikiNum* mEntries (int[3] Blue/Red/Yellow par heure, -1 = vide).
-# Le jeu n'enregistre un point qu'au CHANGEMENT d'heure ; un Time Trap saute
-# des heures, qui restent a -1, et le dessin s'arrete au premier -1 (ogGraph) :
-# plusieurs traps tot dans la journee = graphique vide. On comble les heures
-# sautees avec la valeur de l'heure precedente (courbe plate).
+# --- Population graph and Time Trap --------------------------------------------
+# PlayerState::mPerHourGraph (TimeGraph @ PlayerState+0x18C): u16 mStartTime,
+# u16 mEndTime, PikiNum* mEntries (int[3] Blue/Red/Yellow per hour, -1 = empty).
+# The game only records a point when the hour CHANGES; a Time Trap skips hours,
+# which stay at -1, and the drawing stops at the first -1 (ogGraph). Skipped
+# hours are filled with the previous hour's value (flat curve).
 
 def _read_population_graph(game: Game) -> Optional[tuple]:
-    """(adresse des entrees, heure de debut, heure de fin) ou None."""
+    """Return (entries address, start hour, end hour), or None."""
     ps_ptr = SYM_PLAYER_STATE_PTR.get(game)
     if ps_ptr is None:
         return None
@@ -611,7 +589,7 @@ def _read_population_graph(game: Game) -> Optional[tuple]:
 
 
 def _fill_population_graph_gaps(game: Game) -> None:
-    """Remplit les heures sautees (-1) jusqu'a l'heure courante."""
+    """Fill skipped hours (-1) up to the current hour."""
     gf = SYM_GAMEFLOW.get(game)
     if not gf:
         return
@@ -650,25 +628,24 @@ def _fill_population_graph_gaps(game: Game) -> None:
 
 
 async def handle_population_graph(ctx: "P1Context", game: Game) -> None:
-    """#42 : comble les trous du graphique (Time Trap, TrapLink...) a chaque tick."""
+    """Fill population graph gaps (Time Trap, TrapLink...) every tick."""
     _fill_population_graph_gaps(game)
 
 
 def apply_end_day_trap(game: Game) -> bool:
-    """Force la fin de la journee : ecrit gameflow.mIsDayEndTriggered.
+    """Force the end of the day by writing gameflow.mIsDayEndTriggered.
 
-    La sequence de fin de journee (OnePlayerSection) consomme ce flag "hors menu"
-    et demarre la cinematique de fin de journee via gameflow.mGameInterface. Si on
-    arme le flag a un mauvais moment, le consommateur deref un pointeur nul et lit
-    a l'offset +0xEC (crash "Invalid read from 0x000000ec", menu de fin de journee
-    qui ne s'affiche plus). Deux cas dangereux :
-      - la fin de journee est deja active ou en attente (coucher de soleil, mort
-        d'Olimar, ou un End Day Trap precedent pas encore consomme) ;
-      - mGameInterface est nul (transition de section en cours).
-    On n'arme donc le flag que dans un etat stable ; sinon on renvoie False et le
-    trap reste en attente pour se rejouer a la prochaine journee propre.
+    The end-of-day sequence (OnePlayerSection) consumes this flag outside menus
+    and starts the end-of-day cutscene via gameflow.mGameInterface. Arming the
+    flag at the wrong time makes the consumer dereference a null pointer at
+    offset +0xEC (crash "Invalid read from 0x000000ec"). Dangerous cases:
+      - end of day already active or pending (sunset, Olimar's death, or an
+        earlier End Day Trap not yet consumed);
+      - mGameInterface is null (section transition in progress).
+    The flag is therefore only armed in a stable state; otherwise False is
+    returned and the trap stays pending.
 
-    Offsets deduits de include/gameflow.h autour de mCurrGameSectionID (_1EC) :
+    Offsets derived from include/gameflow.h around mCurrGameSectionID (_1EC):
       _1E4 s16 mIsDayEndActive           = DAY_END_TRIGGERED - 2
       _1E6 s16 mIsDayEndTriggered        = DAY_END_TRIGGERED
       _1E8 GameInterface* mGameInterface = GAME_SECTION - 4
@@ -679,13 +656,13 @@ def apply_end_day_trap(game: Game) -> bool:
     day_end_active = gf["DAY_END_TRIGGERED"] - 2
     game_interface_ptr = gf["GAME_SECTION"] - 4
     try:
-        # Fin de journee deja active ou deja armee : ne pas re-declencher.
+        # End of day already active or armed: do not re-trigger.
         if struct.unpack(">h", dme.read_bytes(day_end_active, 2))[0] != 0:
             return False
         if struct.unpack(">h", dme.read_bytes(gf["DAY_END_TRIGGERED"], 2))[0] != 0:
             return False
-        # mGameInterface doit pointer sur un objet valide : c'est lui que la
-        # cinematique de fin de journee deref (source directe du crash +0xEC).
+        # mGameInterface must point to a valid object: the end-of-day cutscene
+        # dereferences it (source of the +0xEC crash).
         gi = struct.unpack(">I", dme.read_bytes(game_interface_ptr, 4))[0]
         if not (_RAM_MIN <= gi < _RAM_MAX):
             return False
@@ -695,15 +672,15 @@ def apply_end_day_trap(game: Game) -> bool:
         return False
 
 
-DAMAGE_TRAP_MAX_HEALTH = 100.0  # sante max d'Olimar
+DAMAGE_TRAP_MAX_HEALTH = 100.0  # Olimar's max health
 
 
 def apply_damage_trap(game: Game, ctx=None) -> bool:
-    """Blesse Olimar de `damage_trap_amount` % de sa sante max (#43).
+    """Hurt Olimar by `damage_trap_amount` % of his max health.
 
-    Option `damage_trap_can_kill` : si la sante tombe au seuil de mort du jeu
-    (<= 1.0), Olimar meurt (vraie sequence de mort via kill_olimar, qui declenche
-    aussi le DeathLink classic) ; sinon on laisse DAMAGE_TRAP_FLOOR PV.
+    Option `damage_trap_can_kill`: if health drops to the game's death threshold
+    (<= 1.0), Olimar dies (real death sequence via kill_olimar, which also
+    triggers the classic DeathLink); otherwise DAMAGE_TRAP_FLOOR health is left.
     """
     navi = _resolve_olimar(game)
     if navi is None:
@@ -718,16 +695,15 @@ def apply_damage_trap(game: Game, ctx=None) -> bool:
         new = h - loss
         if new <= 1.0:
             if can_kill:
-                # kill_olimar() n'agit que si Olimar est controlable (#54) : sinon
-                # on renvoie False et le trap reste en attente (retente au tick
-                # suivant) au lieu d'etre consomme sans effet.
+                # kill_olimar() only acts if Olimar is controllable; otherwise
+                # return False so the trap stays pending and retries next tick.
                 if not kill_olimar(game):
                     return False
                 if ctx is not None:
                     ctx._client_kill_reason = "Damage Trap"
                 return True
             new = DAMAGE_TRAP_FLOOR
-        # Ne jamais soigner : si Olimar est deja plus bas, on laisse tel quel.
+        # Never heal: if Olimar is already lower, leave as is.
         if new < h:
             dme.write_bytes(addr, struct.pack(">f", new))
         return True
@@ -741,9 +717,9 @@ WP_LINKCOUNT_OFF = 0x34       # int mLinkCount
 
 
 def _read_waypoint_graph(game: Game) -> Optional[list]:
-    """#48 : lit tout le reseau de waypoints (groupe 0) en une lecture.
+    """Read the whole waypoint network (group 0) in one read.
 
-    Renvoie une liste de dicts {pos, open, flags, links} ou None.
+    Returns a list of dicts {pos, open, flags, links}, or None.
     """
     mgr_ptr = SYM_ROUTE_MGR_PTR.get(game)
     if mgr_ptr is None:
@@ -790,13 +766,13 @@ def _read_waypoint_graph(game: Game) -> Optional[list]:
 
 
 def _safe_teleport_position(game: Game, origin: tuple) -> Optional[tuple]:
-    """#48 : Teleport Trap intelligent.
+    """Pick a safe destination for the Teleport Trap.
 
-    Part du waypoint ouvert le plus proche d'Olimar et ne garde que les waypoints
-    atteignables A PIED dans les deux sens (aller ET retour) en ne traversant que
-    des waypoints ouverts : portes fermees, ponts non construits et obstacles
-    (waypoints fermes par le jeu) coupent le chemin. Exclut l'eau et les
-    waypoints marques "Pebble". Aucun soft lock : Olimar peut toujours revenir.
+    Starts from the open waypoint nearest to Olimar and keeps only waypoints
+    reachable on foot in both directions (there AND back) through open waypoints
+    only: closed gates, unbuilt bridges and obstacles (waypoints closed by the
+    game) cut the path. Water and "Pebble" waypoints are excluded, so no soft
+    lock: Olimar can always come back.
     """
     graph = _read_waypoint_graph(game)
     if not graph:
@@ -806,8 +782,8 @@ def _safe_teleport_position(game: Game, origin: tuple) -> Optional[tuple]:
     def usable(i: int) -> bool:
         return graph[i]["open"] and not (graph[i]["flags"] & WP_FLAG_INWATER)
 
-    # Point de depart : waypoint utilisable le plus proche (hauteur penalisee
-    # pour ne pas choisir un point au-dessus/en dessous d'une falaise).
+    # Start point: nearest usable waypoint (height is penalized so a point
+    # above/below a cliff is not chosen).
     start, best = None, None
     for i, wp in enumerate(graph):
         if not usable(i):
@@ -848,10 +824,10 @@ def _safe_teleport_position(game: Game, origin: tuple) -> Optional[tuple]:
 
 
 def apply_teleport_trap(game: Game) -> bool:
-    """#48 : teleporte Olimar sur un waypoint sur (aller-retour a pied possible).
+    """Teleport Olimar to a safe waypoint (walkable both ways).
 
-    Si aucun point sur n'est trouve, renvoie False : le trap reste en attente et
-    sera retente au tick suivant (plus de decalage aleatoire, source de soft lock).
+    If no safe point is found, returns False: the trap stays pending and is
+    retried on the next tick.
     """
     navi = _resolve_olimar(game)
     if navi is None:
@@ -870,7 +846,7 @@ def apply_teleport_trap(game: Game) -> bool:
 
 
 def _resolve_state_instance(navi: int, state_id: int) -> Optional[int]:
-    """Pointeur de l'instance d'etat `state_id` via les tables de la StateMachine."""
+    """Pointer to the state instance `state_id`, via the StateMachine tables."""
     C = NAVI_CHAIN
 
     def u32(addr: int) -> Optional[int]:
@@ -897,16 +873,15 @@ def _resolve_state_instance(navi: int, state_id: int) -> Optional[int]:
 
 
 async def apply_disband_trap(game: Game) -> bool:
-    """Disperse l'escouade de facon deterministe.
+    """Disband the squad deterministically.
 
-    L'injection de la touche de disband etait trop dependante du timing des
-    frames. A la place on exploite le meme mecanisme que le jeu :
-      - NaviWalkState::exec transite vers NAVISTATE_Stuck des que
-        Creature.mStickListHead est non-nul ;
-      - NaviStuckState::init appelle releasePikis() -> la dispersion.
-    On force donc l'etat Walk et on met mStickListHead non-nul : le jeu execute
-    lui-meme la vraie transition et le disband. On remet ensuite mStickListHead a
-    zero pour que Stuck::exec ramene Olimar en Walk.
+    Uses the game's own mechanism:
+      - NaviWalkState::exec transitions to NAVISTATE_Stuck as soon as
+        Creature.mStickListHead is non-null;
+      - NaviStuckState::init calls releasePikis(), which disperses the squad.
+    The Walk state is forced and mStickListHead set non-null so the game performs
+    the real transition and disband. mStickListHead is then reset to zero so
+    Stuck::exec returns Olimar to Walk.
     """
     navi = _resolve_olimar(game)
     if navi is None:
@@ -917,25 +892,25 @@ async def apply_disband_trap(game: Game) -> bool:
     stick_addr = navi + NAVI_CHAIN["CREATURE_STICKLIST"]
     curr_addr = navi + NAVI_CHAIN["NAVI_CURRSTATE"]
     try:
-        # Forcer l'etat Walk (pour que son exec tourne) + amorcer le "stuck".
-        # mStickListHead = navi : pointeur non-nul et valide (evite tout deref
-        # sauvage si quelque chose le lit avant qu'on le remette a zero).
+        # Force the Walk state (so its exec runs) and prime the "stuck".
+        # mStickListHead = navi: a valid non-null pointer (avoids a wild deref
+        # if something reads it before it is reset to zero).
         dme.write_bytes(curr_addr, struct.pack(">I", walk_state))
         dme.write_bytes(stick_addr, struct.pack(">I", navi))
     except Exception:
         return False
-    # Laisser quelques frames au jeu pour transiter vers Stuck et disperser.
+    # Give the game a few frames to transition to Stuck and disperse.
     await asyncio.sleep(0.1)
     try:
-        # Vider la liste : Stuck::exec ramene alors Olimar en Walk.
+        # Clear the list: Stuck::exec then returns Olimar to Walk.
         dme.write_bytes(stick_addr, struct.pack(">I", 0))
     except Exception:
         pass
     return True
 
 
-# Appliers synchrones (une ecriture). Le disband est asynchrone (rafale) et
-# traite a part dans apply_trap.
+# Synchronous appliers (single write). Disband is asynchronous (burst) and
+# handled separately in apply_trap.
 TRAP_APPLIERS = {
     "time":     apply_time_trap,
     "end_day":  apply_end_day_trap,
@@ -944,30 +919,30 @@ TRAP_APPLIERS = {
 }
 
 
-# --- #7 Trip Trap ----------------------------------------------------------
+# --- Trip Trap ------------------------------------------------------------
 #
-# Test de trebuchement (ActCrowd::exec, aiCrowd.cpp) :
-#     if (getRand(1.0f) >= 0.9999f && getRand(1.0f) > 0.7f) -> trebuche
-# Il est evalue pour chaque Pikmin qui suit Olimar en courant (> 110 u/s) tous
-# les 100 unites parcourues. Le Trip Trap remplace la constante 0.9999 (copie
-# propre a ce test en .sdata2, SYM_TRIP_RAND_CONST) par 0.0 pendant
-# TRIP_TRAP_SECONDS : le 1er test est toujours vrai -> ~30 % de chance a chaque
-# test, donc quasiment toute l'escouade en mouvement trebuche (animation normale
-# du jeu, PIKIANIM_Korobu). Ensuite on remet la valeur normale (0.9999, ou 2.0
-# si Trip Immunity est actif). C'est une DONNEE : le JIT de Dolphin la relit.
-# Le temps ne s'ecoule que pendant le gameplay interactif (pas en pause/menu).
+# Trip test (ActCrowd::exec, aiCrowd.cpp):
+#     if (getRand(1.0f) >= 0.9999f && getRand(1.0f) > 0.7f) -> trip
+# It is evaluated for each Pikmin following Olimar while running (> 110 u/s)
+# every 100 units travelled. The Trip Trap replaces the 0.9999 constant (a copy
+# private to this test in .sdata2, SYM_TRIP_RAND_CONST) with 0.0 for
+# TRIP_TRAP_SECONDS: the first test is always true -> ~30% chance per test, so
+# almost the whole moving squad trips (normal game animation, PIKIANIM_Korobu).
+# Afterwards the normal value is restored (0.9999, or 2.0 if Trip Immunity is
+# active). It is DATA, so Dolphin's JIT re-reads it.
+# The timer only runs during interactive gameplay (not in pause/menus).
 
 TRIP_TRAP_SECONDS = 10.0
 
 
 def _trip_mode(ctx) -> int:
-    """Option Disable Pikmin Trip : 0 off, 1 always (ISO patchee), 2 item."""
+    """Disable Pikmin Trip option: 0 off, 1 always (patched ISO), 2 item."""
     slot_data = getattr(ctx, "slot_data", None) or {}
     return int(slot_data.get("disable_pikmin_trip", 1))
 
 
 def _trip_immune(ctx) -> bool:
-    """Vrai si les Pikmin ne peuvent plus trebucher (always, ou item recu)."""
+    """True if Pikmin can no longer trip (always mode, or item received)."""
     mode = _trip_mode(ctx)
     if mode == 1:
         return True
@@ -981,14 +956,14 @@ def _trip_normal_value(ctx) -> float:
 
 
 def apply_trip_trap(ctx, game: Game) -> bool:
-    """Demarre (ou relance) le Trip Trap. Toujours True : consomme le trap."""
+    """Start (or restart) the Trip Trap. Always True: the trap is consumed."""
     if ctx is None:
         return False
     if _trip_immune(ctx):
-        # Choix de design : immunite (item Trip Immunity / option always) ->
-        # trap consomme sans effet.
+        # Design choice: immunity (Trip Immunity item / always option) ->
+        # the trap is consumed without effect.
         if ctx.debug_trap:
-            logger.info("[DEBUG TRAP] Trip Trap sans effet : Pikmin immunises.")
+            logger.info("[DEBUG TRAP] Trip Trap has no effect: Pikmin are immune.")
         return True
     addr = SYM_TRIP_RAND_CONST.get(game)
     if addr is None:
@@ -1003,7 +978,7 @@ def apply_trip_trap(ctx, game: Game) -> bool:
 
 
 def restore_trip_constant(ctx, game: Game) -> None:
-    """Remet la constante de trip a sa valeur normale (fin de trap / fermeture)."""
+    """Restore the trip constant to its normal value (trap end / shutdown)."""
     addr = SYM_TRIP_RAND_CONST.get(game)
     if addr is None:
         return
@@ -1014,13 +989,13 @@ def restore_trip_constant(ctx, game: Game) -> None:
 
 
 async def handle_trip_trap_timer(ctx, game: Game) -> None:
-    """Decompte du Trip Trap et restauration de la constante."""
+    """Count down the Trip Trap and restore the constant."""
     addr = SYM_TRIP_RAND_CONST.get(game)
     if addr is None:
         return
     if ctx._trip_trap_remaining <= 0:
-        # Securite : constante restee forcee (client ferme pendant un trap,
-        # reconnexion...) -> on la remet d'aplomb.
+        # Safety: constant left forced (client closed during a trap,
+        # reconnection...) -> restore it.
         try:
             if dme.read_bytes(addr, 4) == struct.pack(">f", TRIP_FORCED_FLOAT):
                 restore_trip_constant(ctx, game)
@@ -1036,7 +1011,7 @@ async def handle_trip_trap_timer(ctx, game: Game) -> None:
         ctx._trip_trap_remaining = 0.0
         restore_trip_constant(ctx, game)
         if ctx.debug_trap:
-            logger.info("[DEBUG TRAP] Trip Trap termine.")
+            logger.info("[DEBUG TRAP] Trip Trap finished.")
     else:
         try:
             dme.write_bytes(addr, struct.pack(">f", TRIP_FORCED_FLOAT))
@@ -1044,8 +1019,8 @@ async def handle_trip_trap_timer(ctx, game: Game) -> None:
             pass
 
 
-# --- #57 : messages DeathLink selon la cause de la mort -------------------------
-# vtables des interactions qui blessent Olimar (config/*/symbols.txt) -> type.
+# --- DeathLink messages according to the cause of death -------------------------
+# vtables of the interactions that hurt Olimar (config/*/symbols.txt) -> type.
 DAMAGE_VTABLES = {
     b"GPIP01": {0x802AF6C4: "attack", 0x802AF67C: "swallow", 0x802AF5EC: "press",
                 0x802AF758: "flick", 0x802AF7E8: "fire", 0x802AF830: "bubble", 0x802D007C: "bomb"},
@@ -1055,7 +1030,7 @@ DAMAGE_VTABLES = {
 TEKI_TYPE_OFF = 0x320  # Teki::mTekiType (include/Teki.h)
 OBJTYPE_TEKI = 55
 OBJTYPE_BOMB = 14
-TEKI_NAMES = {  # enum TekiTypes (include/teki.h), noms PAL comme dans l'issue #57
+TEKI_NAMES = {  # enum TekiTypes (include/teki.h), PAL names
     0: "Yellow Wollyhop", 2: "Rolling Boulder", 3: "Dwarf Bulborb", 4: "Spotty Bulborb",
     6: "Honeywisp", 8: "Breadbug", 9: "Puffstool", 10: "Pearly Clamclamp",
     11: "Swooping Snitchbug", 13: "Pearly Clamclamp", 14: "Pearly Clamclamp",
@@ -1108,9 +1083,9 @@ DEATH_MSG = {
                  "it": "{name} è stato abbattuto dalla Damage Trap.",
                  "es": "{name} fue derribado por la Damage Trap."},
 }
-# Noms officiels traduits (Pikipedia, "Names in other languages"), deja
-# accordes avec l'article/le cas utilises dans DEATH_MSG. Les ennemis absents
-# (Fire Geyser, Rolling Boulder : pas de nom officiel traduit) restent en anglais.
+# Official translated names (Pikipedia, "Names in other languages"), already
+# inflected with the article/case used in DEATH_MSG. Enemies not listed
+# (Fire Geyser, Rolling Boulder: no official translated name) stay in English.
 ENEMY_I18N = {
     "Dwarf Bulborb":           {"fr": "un Bulborbe nain", "de": "einem Zwerg-Punktkäfer", "it": "un Coleto nano", "es": "un Bulbo enano"},
     "Spotty Bulborb":          {"fr": "un Bulborbe à pois", "de": "einem Punktkäfer", "it": "un Coleto", "es": "un Bulbo Moteado"},  # page Bulborb
@@ -1146,7 +1121,7 @@ _ARTICLE = {"en": lambda e: ("an " if e[0] in "AEIOU" else "a ") + e,
 
 
 def death_message(ctx, kind: str, enemy: Optional[str] = None, source: Optional[str] = None) -> str:
-    """Message DeathLink dans la langue du jeu detectee (#57)."""
+    """DeathLink message in the detected game language."""
     lang = getattr(ctx, "detected_language", "en") or "en"
     table = DEATH_MSG.get(kind, DEATH_MSG["lost"])
     text = table.get(lang, table["en"])
@@ -1154,14 +1129,14 @@ def death_message(ctx, kind: str, enemy: Optional[str] = None, source: Optional[
     if not enemy:
         enemy_txt = ""
     elif lang in ENEMY_I18N.get(enemy, {}):
-        enemy_txt = ENEMY_I18N[enemy][lang]  # nom officiel traduit, article inclus
+        enemy_txt = ENEMY_I18N[enemy][lang]  # official translated name, article included
     else:
         enemy_txt = _ARTICLE.get(lang, _ARTICLE["en"])(enemy)
     return text.format(name=name, enemy=enemy_txt, source=source or "")
 
 
 def _creature_name(owner: int) -> tuple[Optional[str], int]:
-    """(nom de la creature, mObjType) a partir d'un Creature*."""
+    """Return (creature name, mObjType) from a Creature*."""
     if not (_RAM_MIN <= owner < _RAM_MAX):
         return None, -1
     try:
@@ -1175,7 +1150,7 @@ def _creature_name(owner: int) -> tuple[Optional[str], int]:
 
 
 def olimar_death_message(ctx, game: Game) -> str:
-    """#57 : message selon le dernier coup recu par Olimar (tampon du patch ISO)."""
+    """Message based on the last hit Olimar received (buffer from the ISO patch)."""
     ring = getattr(ctx, "death_cause_ring", None)
     vt = DAMAGE_VTABLES.get(game, {})
     if ring is None or not vt:
@@ -1185,7 +1160,7 @@ def olimar_death_message(ctx, game: Game) -> str:
     except Exception:
         return death_message(ctx, "lost")
     idx = struct.unpack_from(">I", raw, 0)[0] & 3
-    for k in range(4):  # du plus recent au plus ancien
+    for k in range(4):  # from most recent to oldest
         e = (idx - k) & 3
         vtable, owner = struct.unpack_from(">II", raw, 4 + e * 8)
         kind = vt.get(vtable)
@@ -1195,7 +1170,7 @@ def olimar_death_message(ctx, game: Game) -> str:
             return death_message(ctx, "explosion")
         enemy, obj = _creature_name(owner)
         if kind == "fire":
-            # Source du feu si connue (Fiery Blowhog, Fire Geyser...).
+            # Fire source if known (Fiery Blowhog, Fire Geyser...).
             return death_message(ctx, "burned_by", enemy) if enemy else death_message(ctx, "burned")
         if obj == OBJTYPE_BOMB:
             return death_message(ctx, "explosion")
@@ -1207,18 +1182,18 @@ def olimar_death_message(ctx, game: Game) -> str:
 
 
 async def report_client_kill(ctx) -> None:
-    """#43 : envoie le DeathLink d'une mort d'Olimar provoquee par le client
-    (Damage Trap, lien Olimar/Pikmin).
+    """Send the DeathLink for an Olimar death caused by the client
+    (Damage Trap, Olimar/Pikmin bond).
 
-    La detection "classic" (front montant de orimaDead dans handle_death_link)
-    ne tourne que pendant le gameplay interactif ; or la mort coupe aussitot
-    le gameplay (debut de la sequence de fin de journee) : le front n'etait
-    jamais vu et aucun DeathLink ne partait. On l'envoie donc directement, et
-    on neutralise la detection pour ne pas l'envoyer une 2e fois.
+    The "classic" detection (rising edge of orimaDead in handle_death_link)
+    only runs during interactive gameplay, but death immediately stops
+    gameplay (start of the end-of-day sequence), so the edge would never be
+    seen. The DeathLink is therefore sent directly, and the detection is
+    suppressed so it is not sent a second time.
     """
     reason = getattr(ctx, "_client_kill_reason", None) or "the client"
     ctx._client_kill_reason = None
-    # Joueur a l'origine (Damage Trap : slot qui a envoye le trap / source TrapLink).
+    # Originating player (Damage Trap: slot that sent the trap / TrapLink source).
     source = getattr(ctx, "_trap_source", None) if reason == "Damage Trap" else None
     ctx._suppress_orima_send = True
     if getattr(ctx, "death_link_mode", 0) not in (1, 3):  # classic / both
@@ -1226,7 +1201,7 @@ async def report_client_kill(ctx) -> None:
     if getattr(ctx, "_deathlink_locked_this_day", False):
         return
     if reason == "Pikmin Bond":
-        await ctx.send_death(death_message(ctx, "grief"))  # #57
+        await ctx.send_death(death_message(ctx, "grief"))
     elif source:
         await ctx.send_death(death_message(ctx, "trap_from", source=source))
     else:
@@ -1235,7 +1210,7 @@ async def report_client_kill(ctx) -> None:
 
 
 async def apply_trap(game: Game, kind: str, ctx=None) -> bool:
-    """Applique un trap par type interne. Renvoie True si applique."""
+    """Apply a trap by internal kind. Return True if applied."""
     if kind == "disband":
         return await apply_disband_trap(game)
     if kind == "trip":
@@ -1250,13 +1225,13 @@ async def apply_trap(game: Game, kind: str, ctx=None) -> bool:
 
 
 def read_game_language(game: Game) -> Optional[str]:
-    """Renvoie le code langue courant, ou None si illisible.
+    """Return the current language code, or None if unreadable.
 
-    Toute valeur inattendue (pointeur nul, hors RAM, ID hors enum) renvoie None
-    plutot qu'une langue fausse : l'appelant conserve alors la valeur precedente.
+    Any unexpected value (null pointer, out of RAM, ID outside the enum) returns
+    None rather than a wrong language: the caller then keeps the previous value.
     """
     if game != b"GPIP01":
-        # NTSC-U (et tout le reste) : anglais uniquement.
+        # NTSC-U (and anything else): English only.
         return "en"
 
     gsys_ptr_addr = SYM_GSYS_PTR.get(game)
@@ -1266,7 +1241,7 @@ def read_game_language(game: Game) -> Optional[str]:
     try:
         gsys = struct.unpack(">I", dme.read_bytes(gsys_ptr_addr, 4))[0]
         if not (_RAM_MIN <= gsys < _RAM_MAX):
-            return None  # pas encore initialise au tout debut du boot
+            return None  # not yet initialized at the very start of boot
         lang_id = struct.unpack(
             ">I", dme.read_bytes(gsys + STDSYSTEM_LANGUAGE_OFFSET, 4)
         )[0]
@@ -1296,9 +1271,7 @@ SHIP_PART_TRANSLATIONS: dict[str, dict[str, bytes]] = {
     "Analog Computer":     {"fr": b"Intelligence Artificielle", "de": b"Analoger Computer",      "it": b"Computer analogico",    "es": b"Sistema Anal\xf3gico"},
     "Guard Satellite":     {"fr": b"Satellite de Garde",     "de": b"W\xe4chter-Satellit",       "it": b"Satellite guardia",     "es": b"Sat\xe9lite"},
     "Libra":               {"fr": b"Balance",                "de": b"Die Waage",                 "it": b"Bilancia",              "es": b"Libra"},
-    # Attention a la casse : la cle doit correspondre EXACTEMENT a ALL_PARTS
-    # (P1Data.py). C'etait "Repair-Type Bolt" ici contre "Repair-type Bolt" dans
-    # ALL_PARTS, donc cette piece n'etait traduite dans aucune langue.
+    # Mind the case: the key must match ALL_PARTS (P1Data.py) EXACTLY.
     "Repair-type Bolt":    {"fr": b"Boulon de Secours",      "de": b"Reparatur-Bolzen",          "it": b"Bullone riparazione",   "es": b"Perno reparador"},
     "Gluon Drive":         {"fr": b"Unit\xe9 Gluonique",     "de": b"Gluon-Antrieb",             "it": b"Unit\xe0 a gluoni",     "es": b"Emisor de gluones"},
     "Zirconium Rotor":     {"fr": b"Rotor Zirconium",        "de": b"Zirkonium-Rotor",           "it": b"Rotore zirconio",       "es": b"Rotor de zirconio"},
@@ -1314,22 +1287,21 @@ SHIP_PART_TRANSLATIONS: dict[str, dict[str, bytes]] = {
     "Secret Safe":         {"fr": b"Coffre Secret",          "de": b"Geheimsafe",                "it": b"Cassaforte",            "es": b"Caja fuerte"},
 }
 
-# Langues traduites (l'anglais utilise directement les cles de ALL_PARTS).
+# Translated languages (English uses the ALL_PARTS keys directly).
 TRANSLATED_LANGS = ("fr", "de", "it", "es")
 
 
 def _check_translation_tables() -> list[str]:
-    """Verifie que chaque piece de ALL_PARTS a bien une traduction par langue.
+    """Check that every ALL_PARTS entry has a translation for each language.
 
-    Une simple faute de casse dans une cle desactivait silencieusement la
-    traduction d'une piece pour le hint mode. On journalise desormais l'ecart
-    au demarrage au lieu de le laisser passer inapercu.
+    A case mismatch in a key would silently disable the translation of a part
+    in hint mode, so any gap is reported at startup.
     """
     problems: list[str] = []
     for part_name in ALL_PARTS:
         entry = SHIP_PART_TRANSLATIONS.get(part_name)
         if entry is None:
-            problems.append(f"aucune traduction pour la piece {part_name!r}")
+            problems.append(f"no translation for part {part_name!r}")
             continue
         for lang in TRANSLATED_LANGS:
             if not entry.get(lang):
@@ -1340,8 +1312,7 @@ def _check_translation_tables() -> list[str]:
     return problems
 
 
-# Libelles du hint, par langue. Le texte etait auparavant toujours en anglais,
-# meme quand le jeu tournait dans une autre langue.
+# Hint labels, per language.
 HINT_LABELS: dict[str, dict[str, str]] = {
     "en": {"contains": "Contains:", "for": "For:",
            "at": "Your Ship Part is at", "in": "in", "none": "No hint data"},
@@ -1361,7 +1332,7 @@ def _labels(lang: str) -> dict[str, str]:
 
 
 def _part_display_name(part_name: str, lang: str) -> str:
-    """Nom de la piece dans la langue detectee, avec repli sur l'anglais."""
+    """Part name in the detected language, falling back to English."""
     if lang == "en":
         return part_name
     translated = SHIP_PART_TRANSLATIONS.get(part_name, {}).get(lang)
@@ -1371,10 +1342,10 @@ def _part_display_name(part_name: str, lang: str) -> str:
 
 
 def _encode_hint(text: str) -> bytes:
-    """Encode le texte du hint pour le moteur de texte du jeu.
+    """Encode hint text for the game's text engine.
 
-    Le jeu utilise un jeu de caracteres latin-1 : encoder en ASCII transformait
-    tous les accents en '?' (noms de joueurs, d'objets et libelles traduits).
+    The game uses latin-1, so accents (player/item names, translated labels)
+    are preserved instead of being turned into '?'.
     """
     result = text.encode("latin-1", errors="replace")
     if len(result) > SHIP_PART_TEXT_LENGTH:
@@ -1385,36 +1356,33 @@ def _encode_hint(text: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Adresses derivees de la decompilation (projectPiki/pikmin) via P1Symbols.py.
-# PAL et NTSC-U sont desormais fournis pour TOUTES les tables ci-dessous ;
-# auparavant seul le PAL existait, ce qui desactivait silencieusement les
-# items Pikmin en NTSC.
+# Addresses derived from the decompilation (projectPiki/pikmin) via P1Symbols.py.
+# Both PAL and NTSC-U are provided for all the tables below.
 # ---------------------------------------------------------------------------
 
-# formationPikis__8GameStat -- octet de poids faible du u32 (big-endian).
-# Sert au check de locations.
+# formationPikis__8GameStat -- low byte of the u32 (big-endian).
+# Used for the location check.
 PIKMIN_ADDRESSES = SYM_PIKMIN_ADDRESSES
 
-# GameStat::containerPikis__8GameStat -- total live par couleur (Pikmin
-# actuellement "dans un oignon"), incremente par le jeu en temps reel des
-# qu'un Piki entre/sort d'un oignon (goalItem.cpp, itemAI.cpp).
+# GameStat::containerPikis__8GameStat -- live total per color (Pikmin currently
+# "in an onion"), updated by the game in real time whenever a Piki enters/leaves
+# an onion (goalItem.cpp, itemAI.cpp).
 ONION_DYN_ADDRS = SYM_ONION_DYN_ADDRS
 
-# GameStat::allPikis__8GameStat -- LE total reellement affiche au HUD
-# (bas-droite, "compteur total tout confondu") et sur l'ecran de resultats,
-# via zen::pGameInfo->mTotalPikiNum = GameStat::allPikis (gameCoreSection.cpp).
-# Recalcule uniquement quand GameStat::update() tourne (evenements de jeu
-# reels : Piki qui entre/sort d'un oignon, formation, etc., ou une fois par
-# jour au chargement du niveau) -- jamais a partir de pikiInfMgr.mPikiCounts
-# en continu. C'est pour ca qu'ecrire seulement STAGE ne change rien tant
-# que le jeu ne refait pas ce calcul lui-meme.
+# GameStat::allPikis__8GameStat -- the total actually shown on the HUD
+# (bottom-right overall counter) and on the results screen, via
+# zen::pGameInfo->mTotalPikiNum = GameStat::allPikis (gameCoreSection.cpp).
+# Only recomputed when GameStat::update() runs (real game events: a Piki
+# entering/leaving an onion, formation, etc., or once per day on level load),
+# never continuously from pikiInfMgr.mPikiCounts. Writing only STAGE therefore
+# changes nothing until the game redoes this computation itself.
 GAMESTAT_ALLPIKIS_ADDRS = SYM_ALLPIKIS_ADDRS
 
-# Sentinelle de debut de journee: gameflow+0x2EC (0 au menu, non-nul en jeu).
+# Start-of-day sentinel: gameflow+0x2EC (0 in menus, non-zero in game).
 ONION_DYN_SENTINEL = _gf("SENTINEL")
 
-# pikiInfMgr.mPikiCounts[couleur][stade], u32 chacun.
-# Le jeu recalcule seul le total affiche = Leaf + Bud + Flower.
+# pikiInfMgr.mPikiCounts[color][stage], u32 each.
+# The game recomputes the displayed total itself = Leaf + Bud + Flower.
 ONION_STAGE_ADDRS_CLIENT = SYM_ONION_STAGE_ADDRS
 
 
@@ -1758,7 +1726,7 @@ class P1CommandProcessor(SuperCommandProcessor):
             return v if _RAM_MIN <= v < _RAM_MAX else 0
 
         def obj_info(obj):
-            """(objType, model_id, ap_id, name, is_alive) d'un objet, ou None."""
+            """Return (objType, model_id, ap_id, name, is_alive) for an object, or None."""
             try:
                 obj_type = int.from_bytes(
                     dme.read_bytes(obj + ONION_CHAIN["CREATURE_OBJTYPE"], 4), "big", signed=True
@@ -1785,8 +1753,8 @@ class P1CommandProcessor(SuperCommandProcessor):
         logger.info(f"[DEBUG PARTS] Game: {game!r} | parts checked on server: "
                     f"{sorted(ap_to_name[a] for a in checked if a in ap_to_name)}")
 
-        # --- pelletMgr : TOUS les slots (meme mEntryStatus != 0), pour reperer
-        #     un pellet tenu/avale par une creature.
+        # --- pelletMgr: ALL slots (even mEntryStatus != 0), to spot
+        #     a pellet held/swallowed by a creature.
         mgr = u32(SYM_PELLET_MGR_PTR.get(game, 0)) if game in SYM_PELLET_MGR_PTR else 0
         if not mgr:
             logger.info("[DEBUG PARTS] pelletMgr not found.")
@@ -1805,7 +1773,7 @@ class P1CommandProcessor(SuperCommandProcessor):
                     continue
                 info = obj_info(obj)
                 if not info or info[0] != OBJTYPE_PELLET or info[2] is None:
-                    continue  # seulement les pellets de PIECES (model connu)
+                    continue  # only ship part pellets (known model)
                 obj_type, model_id, ap_id, name, alive = info
                 try:
                     status = int.from_bytes(dme.read_bytes(entry_status + i * 4, 4), "big", signed=True)
@@ -1818,7 +1786,7 @@ class P1CommandProcessor(SuperCommandProcessor):
             if not shown:
                 logger.info("[DEBUG PARTS] No ship part pellet in pelletMgr.")
 
-        # --- radar : liste des icones reellement dessinees sur la carte.
+        # --- radar: icons actually drawn on the map.
         radar = u32(SYM_RADAR_INFO_PTR.get(game, 0)) if game in SYM_RADAR_INFO_PTR else 0
         if not radar:
             logger.info("[DEBUG PARTS] radarInfo not found.")
@@ -1836,10 +1804,9 @@ class P1CommandProcessor(SuperCommandProcessor):
                         logger.info(f"[DEBUG PARTS] radar node @0x{node:08X} part=0x{part:08X} "
                                     f"objType={obj_type} model={model_id!r} ap={ap_id} ({name}) "
                                     f"alive={alive} checked={'YES' if ap_id in checked else 'no'}")
-                        # Le nœud pointe vers une CREATURE (ex. Snake/Snagret) qui
-                        # CONTIENT une piece : on cherche comment elle la reference,
-                        # en scannant son objet pour un fourCC de piece connu OU un
-                        # pointeur vers un Pellet/PelletConfig de piece (issue #11).
+                        # The node points to a CREATURE (e.g. Snagret) that HOLDS a part:
+                        # scan its object for a known part fourCC or a pointer to a
+                        # part Pellet/PelletConfig to find how it references the part.
                         if obj_type != OBJTYPE_PELLET:
                             known = set(_MODELID_TO_AP_ID.keys())
                             found = []
@@ -1887,9 +1854,9 @@ class P1CommandProcessor(SuperCommandProcessor):
         return True
 
 
-# --- #2 : fermeture du client ------------------------------------------------
+# --- Client shutdown ------------------------------------------------------
 
-# Delai max (s) entre le clic sur la croix (ou /exit) et la fin du processus.
+# Max delay (s) between a close request (window X or /exit) and process exit.
 EXIT_WATCHDOG_SECONDS = 6
 _exit_watchdog_file = None
 
@@ -1898,17 +1865,12 @@ _exit_watchdog_armed = False
 
 
 def _arm_exit_watchdog() -> None:
-    """#2 : garantit que le processus se termine apres une demande de fermeture.
+    """Guarantee the process terminates after a close request.
 
-    Symptome : clic sur la croix en pleine journee, connecte -> Kivy sort de sa
-    boucle ("Leaving application in progress...") puis plus rien : la fenetre
-    ne repond plus jusqu'a ce que Windows tue le processus.
-
-    faulthandler.dump_traceback_later() arme un minuteur en C, independant du
-    GIL et de la boucle asyncio : s'il n'est pas annule a temps, il ecrit la
-    pile de TOUS les threads dans le log (pour savoir ou ca bloquait) puis
-    termine le processus. Ca marche meme si le thread principal est coince
-    dans un appel C (dolphin_memory_engine, Kivy/SDL, join de thread...).
+    faulthandler.dump_traceback_later() arms a C-level timer that is independent
+    of the GIL and the asyncio loop: if not cancelled in time, it writes the
+    stack of ALL threads to the log and kills the process. It works even if the
+    main thread is stuck in a C call (dolphin_memory_engine, Kivy/SDL, thread join...).
     """
     global _exit_watchdog_file, _exit_watchdog_armed
     if _exit_watchdog_armed:
@@ -1923,9 +1885,9 @@ def _arm_exit_watchdog() -> None:
         if stream is None:
             _exit_watchdog_file = open(Utils.user_path("logs", "PikminClient_exit_freeze.txt"), "a")
             stream = _exit_watchdog_file
-        stream.write(f"\n[Pikmin] Fermeture demandee : si le client n'est pas ferme dans "
-                     f"{EXIT_WATCHDOG_SECONDS}s, les piles des threads sont ecrites ci-dessous "
-                     f"et le processus est termine de force.\n")
+        stream.write(f"\n[Pikmin] Exit requested: if the client has not closed within "
+                     f"{EXIT_WATCHDOG_SECONDS}s, thread stacks are dumped below "
+                     f"and the process is force-terminated.\n")
         stream.flush()
         faulthandler.dump_traceback_later(EXIT_WATCHDOG_SECONDS, exit=True, file=stream)
     except Exception as e:
@@ -1933,8 +1895,8 @@ def _arm_exit_watchdog() -> None:
 
 
 class _P1ExitEvent(asyncio.Event):
-    """exit_event qui arme le chien de garde de fermeture (#2) des qu'il est
-    leve : par la croix de la fenetre (kvui.on_stop), /exit, ou autre."""
+    """exit_event that arms the exit watchdog as soon as it is set
+    (window close via kvui.on_stop, /exit, or anything else)."""
 
     def set(self) -> None:
         if not self.is_set():
@@ -1946,19 +1908,19 @@ class P1Context(SuperContext):
     command_processor = P1CommandProcessor
     game: str = "Pikmin"
     items_handling: int = 0b111
-    # #37 : UT ajoute le tag "Tracker" (connexion en simple tracker) ; ici on
-    # joue vraiment, donc on garde les tags d'un client de jeu normal.
+    # UT adds the "Tracker" tag (tracker-only connection); here we actually play,
+    # so keep the tags of a normal game client.
     tags = {"AP"}
 
     def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
         super().__init__(server_address, password)
-        self.items_handling = 0b111  # UT le redefinit dans son __init__
-        # #38 : jeu detecte dans Dolphin / connexion en attente / slot lu dans l'ISO.
+        self.items_handling = 0b111  # UT redefines it in its __init__
+        # Game detected in Dolphin / pending connection / slot name read from the ISO.
         self.game_detected: bool = False
         self._pending_connect: Optional[str] = None
         self.iso_slot_name: str = ""
         self._detected_game_id: Optional[bytes] = None
-        # #2 : exit_event qui arme le chien de garde de fermeture.
+        # exit_event that arms the exit watchdog.
         self.exit_event = _P1ExitEvent()
         self.dolphin_status_text = "Disconnected"
 
@@ -1971,21 +1933,21 @@ class P1Context(SuperContext):
 
         # Track how many Pikmin bonus items have already been applied
         self.pikmin_items_applied: dict[int, int] = {}
-        # #4 Custom Save : bonus Pikmin appliques, par sauvegarde du jeu
-        # (cle = checksum du fichier, hex). Voir track_game_save().
+        # Custom Save: applied Pikmin bonuses, per game save
+        # (key = save file checksum, hex). See track_game_save().
         self.game_saves: dict[str, dict] = {}
         self._save_prev_sub: Optional[int] = None
         self._save_crc: Optional[int] = None
         self._pending_save_load: Optional[tuple] = None
-        # #33 : bonus Pikmin recus hors journee, a compter comme "germes" au
-        # debut de la prochaine journee (couleur -> nombre).
+        # Pikmin bonuses received outside a day, to be counted as "sprouts" at the
+        # start of the next day (color -> count).
         self._pending_born: dict[str, int] = {"red": 0, "yellow": 0, "blue": 0}
-        # #34 : oignons abandonnes / nb de corrections du cone, par journee.
+        # Abandoned onions / number of cone corrections, per day.
         self._cone_ok: set = set()
         self._cone_tries: dict = {}
-        self._cone_free_since: Optional[float] = None  # #46
-        self._client_kill_reason: Optional[str] = None  # #43
-        self._olimar_bond_last: Optional[int] = None     # #44 : reference bornPikis
+        self._cone_free_since: Optional[float] = None
+        self._client_kill_reason: Optional[str] = None
+        self._olimar_bond_last: Optional[int] = None     # bornPikis reference
         # Day start detection for safety check
         self.last_hour: int = -1
         # Debug mode toggles (via /debughint, /debugdays, /debugpbonus)
@@ -2030,78 +1992,77 @@ class P1Context(SuperContext):
         self.hint_both_last_toggle: float = 0.0
         # Detected game language (set during DAY_NUMBER == 0 phase)
         self.detected_language: str = "en"  # default English
-        # Une partie etait-elle chargee au tick precedent ? Sert a ne journaliser
-        # que les transitions (chargement / retour au titre), pas chaque tick.
+        # Was a save loaded on the previous tick? Used to log only transitions
+        # (load / return to title), not every tick.
         self._save_was_loaded: bool = False
 
-        # QOL Disable Pikmin Trip mode 'item' : le patch RAM du trebuchement
-        # n'est applique qu'une fois, une fois l'item 'Trip Immunity' recu.
+        # QOL Disable Pikmin Trip, 'item' mode: the RAM patch removing tripping is
+        # applied only once, after the 'Trip Immunity' item is received.
         self._trip_ram_patched: bool = False
-        # #7 Trip Trap : secondes de gameplay restantes (0 = inactif).
+        # Trip Trap: remaining gameplay seconds (0 = inactive).
         self._trip_trap_remaining: float = 0.0
         self._trip_trap_last: float = 0.0
 
         # --- DeathLink / TrapLink ---
-        # Configures depuis slot_data a la connexion.
+        # Configured from slot_data on connection.
         self.death_link_mode: int = 0        # 0=off, 1=classic, 2=pikmin, 3=both
         self.pikmin_death_amount: int = 10
         self.trap_link_enabled: bool = False
-        # Conversion des traps TrapLink inter-jeux inconnus : True = un trap
-        # inconnu (d'un autre jeu) est converti en trap Pikmin aleatoire ; False =
-        # il est ignore. `trap_link_conversion_traps` restreint le pool de traps
-        # Pikmin utilisables pour la conversion (vide = tous).
+        # Conversion of unknown cross-game TrapLink traps: True = an unknown trap
+        # (from another game) is converted into a random Pikmin trap; False =
+        # it is ignored. `trap_link_conversion_traps` restricts the pool of Pikmin
+        # traps usable for conversion (empty = all).
         self.trap_link_conversion: bool = True
         self.trap_link_conversion_traps: list = []
-        # Detection cote envoi.
-        self._orima_was_dead: bool = False   # etat mort au tick precedent (front montant)
-        # deadPikis est deja remis a zero par le jeu a chaque journee ; on suit
-        # la valeur du tick precedent pour detecter la remise a zero (nouvelle
-        # journee) et repartir le comptage des DeathLink.
+        # Send-side detection.
+        self._orima_was_dead: bool = False   # dead state on the previous tick (rising edge)
+        # deadPikis is already reset by the game each day; track the previous
+        # tick's value to detect the reset (new day) and restart DeathLink counting.
         self._dead_pikis_last: Optional[int] = None
-        self._dead_pikis_sent: int = 0       # nb de DeathLink deja envoyes cette journee
-        # #3 Lien Olimar/Pikmin : PV perdus par Pikmin mort.
+        self._dead_pikis_sent: int = 0       # number of DeathLinks already sent this day
+        # Olimar/Pikmin bond: HP lost per dead Pikmin.
         self.pikmin_bond: bool = False
         self.pikmin_bond_damage: float = 5.0
-        self._bond_dead_last: Optional[int] = None  # reference deadPikis (par journee)
-        # Reception : un DeathLink recu demande de tuer Olimar au prochain tick en jeu.
+        self._bond_dead_last: Optional[int] = None  # deadPikis reference (per day)
+        # Receive side: a received DeathLink kills Olimar on the next in-game tick.
         self.pending_kill: bool = False
-        # Empeche l'echo : une mort d'Olimar provoquee par un DeathLink recu ne
-        # doit pas re-emettre un DeathLink (mode classic).
+        # Prevents echo: an Olimar death caused by a received DeathLink must not
+        # emit another DeathLink (classic mode).
         self._suppress_orima_send: bool = False
-        # Timestamps de nos propres DeathLink envoyes, pour filtrer nos morts qui
-        # reviennent du serveur (le filtre de CommonClient ne garde que le dernier).
+        # Timestamps of our own sent DeathLinks, to filter our deaths coming back
+        # from the server (CommonClient's filter only keeps the last one).
         self._sent_death_times: set = set()
-        # Securite : un seul evenement DeathLink (envoi OU reception) par journee.
-        # Verrouille apres le 1er evenement, rearme au debut de la journee suivante
-        # (front montant de "dans un niveau"). Empeche toute cascade residuelle.
+        # Safety: only one DeathLink event (send OR receive) per day.
+        # Locked after the first event, re-armed at the start of the next day
+        # (rising edge of "in a level"). Prevents any residual cascade.
         self._deathlink_locked_this_day: bool = False
         self._in_level_prev: bool = False
-        # Mode both : auto-mort d'Olimar en attente si non resolvable a l'envoi.
+        # Both mode: pending Olimar self-kill if it could not be resolved at send time.
         self._pending_self_kill: bool = False
-        # Traps recus via TrapLink (transitoires), en attente d'application en jeu.
+        # Traps received via TrapLink (transient), waiting to be applied in game.
         self.pending_trap_links: list = []
-        self.pending_trap_link_sources: list = []  # #43 : parallele a pending_trap_links
-        self._trap_source: Optional[str] = None     # #43 : joueur a l'origine du trap en cours
-        # Traps recus en tant qu'items AP, deja appliques : {item_id: nb}.
+        self.pending_trap_link_sources: list = []  # parallel to pending_trap_links
+        self._trap_source: Optional[str] = None     # player who originated the current trap
+        # Traps received as AP items and already applied: {item_id: count}.
         self.traps_applied: dict[int, int] = {}
-        # Apres un End Day Trap : on suspend TOUTE application de trap jusqu'au
-        # debut de la prochaine journee. Deux End Day Trap enchaines renvoyaient
-        # le jeu au menu principal sans sauvegarde ; ce verrou l'empeche.
+        # After an End Day Trap: suspend ALL trap application until the start of
+        # the next day (chained End Day Traps would send the game to the main menu
+        # without saving).
         self._traps_suspended_until_next_day: bool = False
-        # Delai de grace en debut de journee : on saute quelques ticks de gameplay
-        # actif avant d'appliquer un trap, pour ne pas en gaspiller un juste apres
-        # l'atterrissage (Olimar pas encore vraiment operationnel).
+        # Grace period at day start: skip a few active gameplay ticks before
+        # applying a trap, so none is wasted right after landing (Olimar not yet
+        # fully operational).
         self._trap_grace_ticks: int = 0
-        self._trap_free_since: Optional[float] = None  # #48
-        self._dl_free_since: Optional[float] = None    # #54
+        self._trap_free_since: Optional[float] = None
+        self._dl_free_since: Optional[float] = None  
         self._bond_kill_pending: bool = False
-        self.death_cause_ring: Optional[int] = None     # #57
-        self.tracker_stage_name: Optional[str] = None   # #56
-        self.visited_stage_names: Optional[set] = None  # #56
-        # #5 : vrai tant qu'un ecran (pause, carte, texte...) couvre le gameplay ;
-        # sert a rearmer le delai de grace a la fermeture du menu.
+        self.death_cause_ring: Optional[int] = None   
+        self.tracker_stage_name: Optional[str] = None 
+        self.visited_stage_names: Optional[set] = None
+        # True while a screen (pause, map, text...) covers gameplay; used to
+        # re-arm the grace period when the menu closes.
         self._trap_overlay_was_active: bool = False
-        # Suivi de transition pour reinitialiser l'etat DeathLink par journee.
+        # Transition tracking to reset the DeathLink state per day.
         self._save_was_loaded_prev_death: bool = False
 
     def _save_key(self) -> str:
@@ -2123,13 +2084,13 @@ class P1Context(SuperContext):
                 logger.info(f"[DEBUG] Loaded {len(self.pikmin_items_applied)} applied Pikmin items")
         except Exception as e:
             logger.debug(f"Could not load applied items: {e}")
-        # #4 : etat "deja applique" de chaque sauvegarde du jeu.
+        # "Already applied" state of each game save.
         try:
             self.game_saves = dict(Utils.persistent_load().get("pikmin_saves", {}).get(key, {}) or {})
         except Exception as e:
             self.game_saves = {}
             logger.debug(f"Could not load game saves: {e}")
-        # Traps deja appliques (pour ne pas rejouer un trap au redemarrage).
+        # Already-applied traps (so a trap is not replayed on restart).
         try:
             tdata = Utils.persistent_load().get("pikmin_traps", {}).get(self._save_key(), {})
             self.traps_applied = {int(k): v for k, v in tdata.items()}
@@ -2137,8 +2098,8 @@ class P1Context(SuperContext):
             logger.debug(f"Could not load applied traps: {e}")
 
     def save_applied(self) -> None:
-        # Apres une deconnexion, reset_server_state() remet self.auth a None :
-        # ecrire a ce moment creerait une entree parasite "applied_None_...".
+        # After a disconnect, reset_server_state() sets self.auth to None:
+        # writing then would create a stray "applied_None_..." entry.
         if not self.auth:
             return
         try:
@@ -2153,7 +2114,7 @@ class P1Context(SuperContext):
             logger.debug(f"Could not save applied traps: {e}")
 
     def store_game_saves(self) -> None:
-        """#4 : persiste l'etat par sauvegarde du jeu (borne a MAX_TRACKED_SAVES)."""
+        """Persist per-game-save state (capped at MAX_TRACKED_SAVES)."""
         if not self.auth:
             return
         while len(self.game_saves) > MAX_TRACKED_SAVES:
@@ -2164,11 +2125,11 @@ class P1Context(SuperContext):
             logger.debug(f"Could not store game saves: {e}")
 
     def reset_server_state(self) -> None:
-        """Repart d'un etat propre a chaque deconnexion.
+        """Start from a clean state on every disconnect.
 
-        Sans ca, une reconnexion reutilisait le slot_data, les scouts et les
-        hints de la session precedente, et la boucle de retry LocationScouts
-        continuait d'emettre sur un socket ferme.
+        Otherwise a reconnection would reuse the previous session's slot_data,
+        scouts and hints, and the LocationScouts retry loop would keep sending
+        on a closed socket.
         """
         super().reset_server_state()
         self.slot_data = {}
@@ -2185,16 +2146,16 @@ class P1Context(SuperContext):
         self.last_hint_bytes = b""
 
     def make_gui(self) -> "type[kvui.GameManager]":
-        # #37 : on construit l'UI Pikmin au-dessus de celle du parent (UI de
-        # Universal Tracker avec son onglet si installe, sinon l'UI standard).
+        # Build the Pikmin UI on top of the parent's (Universal Tracker UI with its
+        # tab if installed, otherwise the standard UI).
         from .P1UI import build_p1_ui
         return build_p1_ui(super().make_gui())
 
-    # --- #38 : connexion seulement une fois le jeu detecte ---------------------
+    # --- Connect only once the game is detected ---------------------------------
     async def connect(self, address: Optional[str] = None) -> None:
-        """Ne lance la connexion qu'une fois Pikmin (ISO patchee) detecte dans
-        Dolphin ; sinon l'adresse est mise en attente et dolphin_loop relance la
-        connexion des la detection."""
+        """Connect only once Pikmin (patched ISO) is detected in Dolphin;
+        otherwise the address is kept pending and dolphin_loop retries the
+        connection as soon as the game is detected."""
         if not self.game_detected:
             self._pending_connect = address if address is not None else (self.server_address or "")
             lang = getattr(self, "detected_language", "en")
@@ -2203,13 +2164,13 @@ class P1Context(SuperContext):
         await super().connect(address)
 
     async def server_auth(self, password_requested: bool = False) -> None:
-        # Pattern standard des clients Archipelago : on ne delegue au parent que
-        # pour la saisie du mot de passe, sinon il n'y a rien a faire.
+        # Standard Archipelago client pattern: only delegate to the parent for
+        # password entry, otherwise there is nothing to do.
         if password_requested and not self.password:
-            # CommonContext directement : la version de UT enchaine elle-meme
-            # get_username/send_connect, ce qui connecterait deux fois.
+            # Call CommonContext directly: UT's version chains get_username/send_connect
+            # itself, which would connect twice.
             await CommonContext.server_auth(self, password_requested)
-        # #38 : nom du slot lu dans l'ISO patchee (sinon saisie manuelle).
+        # Slot name read from the patched ISO (otherwise manual entry).
         if not self.auth and not self.username and self.iso_slot_name:
             self.username = self.iso_slot_name
             lang = getattr(self, "detected_language", "en")
@@ -2223,16 +2184,12 @@ class P1Context(SuperContext):
             logger.info(f"[DEBUG] on_package cmd={cmd}")
         super().on_package(cmd, args)
         if cmd == "RoomInfo":
-            # Le seed_name AUTHENTIQUE ne figure que dans RoomInfo. On le stocke
-            # ici, apres la garde de reconnexion de CommonClient (qui s'execute
-            # avant on_package). L'ancien code le mettait a "unknown" depuis le
-            # paquet Connected (qui n'a pas ce champ), donc la garde comparait
-            # "unknown" au vrai seed a chaque reconnexion et bloquait tout.
-            # En stockant la vraie valeur, la reconnexion compare seed==seed (OK)
-            # et le dump de debug affiche enfin le bon seed.
+            # The real seed_name is only present in RoomInfo. Store it here, after
+            # CommonClient's reconnection guard (which runs before on_package),
+            # so reconnection compares seed == seed and debug dumps show the right seed.
             self.seed_name = args.get("seed_name") or self.seed_name
         elif cmd == "Retrieved":
-            # #56 : ensemble des zones deja visitees (dict utilise comme set).
+            # Set of already visited zones (dict used as a set).
             key = AP_VISITED_STAGE_NAMES_KEY_FORMAT % self.slot if self.slot is not None else None
             keys = args.get("keys", {})
             if key and key in keys:
@@ -2248,25 +2205,25 @@ class P1Context(SuperContext):
             self.needs_location_scout = True
             # Register for hints notifications
             self.stored_data_notification_keys.add(f"_read_hints_{self.team}_{self.slot}")
-            # #56 : zones deja visitees (PopTracker), comme le client TWW.
+            # Already visited zones (PopTracker), like the TWW client.
             async_start(self.send_msgs([{"cmd": "Get", "keys": [AP_VISITED_STAGE_NAMES_KEY_FORMAT % self.slot]}]))
-            self.tracker_stage_name = None  # renvoyer la zone courante apres (re)connexion
+            self.tracker_stage_name = None  # resend the current zone after (re)connection
 
-            # --- DeathLink / TrapLink : configurer les tags depuis slot_data ---
+            # --- DeathLink / TrapLink: configure tags from slot_data ---
             self.death_link_mode = int(self.slot_data.get("death_link", 0))
             self.pikmin_death_amount = max(1, int(self.slot_data.get("pikmin_death_amount", 10)))
             self.trap_link_enabled = bool(self.slot_data.get("trap_link", 0))
-            # Conversion des traps inter-jeux inconnus (defaut : activee).
+            # Conversion of unknown cross-game traps (default: enabled).
             self.trap_link_conversion = bool(self.slot_data.get("trap_link_conversion", 1))
-            # Pool de traps autorises pour la conversion : on ne garde que des
-            # noms de traps Pikmin valides ; vide -> tous.
+            # Pool of traps allowed for conversion: keep only valid Pikmin trap
+            # names; empty -> all.
             allowed = self.slot_data.get("trap_link_conversion_traps", []) or []
             self.trap_link_conversion_traps = [n for n in allowed if n in TRAP_KINDS]
             self._orima_was_dead = False
             self._dead_pikis_baseline = None
             self._dead_pikis_sent = 0
             self.pending_kill = False
-            # #3 Lien Olimar/Pikmin
+            # Olimar/Pikmin bond
             self.pikmin_bond = bool(self.slot_data.get("pikmin_bond", 0))
             self.pikmin_bond_damage = float(max(1, int(self.slot_data.get("pikmin_bond_damage", 5))))
             self._bond_dead_last = None
@@ -2332,8 +2289,8 @@ class P1Context(SuperContext):
                 logger.info(f"[DEBUG] Server hints total: {len(self.server_hints)}")
 
         elif cmd == "Bounced":
-            # TrapLink : un autre joueur a recu un trap et le diffuse. On applique
-            # le meme trap chez nous. (DeathLink est deja gere par CommonClient.)
+            # TrapLink: another player received a trap and broadcasts it. Apply the
+            # same trap here. (DeathLink is already handled by CommonClient.)
             tags = args.get("tags", [])
             if "TrapLink" in tags:
                 data = args.get("data", {}) or {}
@@ -2349,19 +2306,19 @@ class P1Context(SuperContext):
                     if self.debug_trap:
                         logger.info("[TrapLink] Ignored: this is our own broadcast.")
                 elif trap_name not in TRAP_KINDS or (trap_name == "Trip Trap" and _trip_mode(self) == 1):
-                    # TrapLink est INTER-JEUX : le nom vient du jeu emetteur. Si on
-                    # ne le connait pas (ex. un trap de Hollow Knight), soit on le
-                    # convertit en trap Pikmin aleatoire (convention TrapLink), soit
-                    # on l'ignore selon l'option `trap_link_conversion`.
+                    # TrapLink is CROSS-GAME: the name comes from the sending game. If
+                    # unknown (e.g. a Hollow Knight trap), either convert it to a random
+                    # Pikmin trap (TrapLink convention) or ignore it, depending on the
+                    # `trap_link_conversion` option.
                     if not self.trap_link_conversion:
                         if self.debug_trap:
                             logger.info(f"[TrapLink] Unknown trap '{trap_name}' ignored "
                                         "(conversion disabled).")
                     else:
-                        # Pool restreint par l'option (vide -> tous les traps Pikmin).
+                        # Pool restricted by the option (empty -> all Pikmin traps).
                         pool = self.trap_link_conversion_traps or [
                             n for n in TRAP_KINDS
-                            # #7 : pas de Trip Trap si le trebuchement est retire du jeu.
+                            # No Trip Trap if tripping is removed from the game.
                             if not (n == "Trip Trap" and _trip_mode(self) == 1)
                         ]
                         converted = random.choice(pool)
@@ -2372,46 +2329,46 @@ class P1Context(SuperContext):
                         if self.debug_trap:
                             logger.info(f"[TrapLink] Trap '{converted}' queued for application.")
                 else:
-                    # Nom deja connu (trap Pikmin) : applique tel quel, pas de conversion.
+                    # Already known name (Pikmin trap): apply as-is, no conversion.
                     self.queue_trap_link(trap_name, source)
                     if self.debug_trap:
                         logger.info(f"[TrapLink] Trap '{trap_name}' queued for application.")
 
     async def send_death(self, death_text: str = "") -> None:
-        """Envoie un DeathLink et memorise son timestamp.
+        """Send a DeathLink and remember its timestamp.
 
-        Le filtre anti-echo de CommonClient ne retient que le DERNIER timestamp
-        envoye (last_death_link). Si on envoie plusieurs morts rapprochees, les
-        precedentes reviennent du serveur et sont prises pour des morts recues
-        -> re-declenchement en boucle (surtout en mode both). On memorise donc
-        TOUS nos timestamps pour filtrer nos propres morts dans on_deathlink.
+        CommonClient's anti-echo filter only keeps the LAST sent timestamp
+        (last_death_link). If several deaths are sent in quick succession, the
+        earlier ones come back from the server and are mistaken for received
+        deaths (retrigger loop, especially in both mode). So we remember ALL our
+        timestamps to filter our own deaths in on_deathlink.
         """
         await super().send_death(death_text)
         self._sent_death_times.add(self.last_death_link)
-        # Le message generique d'Archipelago ("Sending death to your friends...")
-        # n'affiche pas la cause envoyee aux autres joueurs : on l'affiche aussi.
+        # Archipelago's generic message ("Sending death to your friends...") does
+        # not show the cause sent to other players: show it too.
         if death_text and self.server and self.server.socket:
             logger.info(f"DeathLink: {death_text}")
-        # Borne la memoire (les vieux timestamps ne reviendront plus).
+        # Bound memory (old timestamps will not come back).
         if len(self._sent_death_times) > 64:
             self._sent_death_times = set(sorted(self._sent_death_times)[-32:])
 
     def on_deathlink(self, data: dict) -> None:
-        """DeathLink recu : planifie la mort d'Olimar, en ignorant nos propres morts."""
+        """Received DeathLink: schedule Olimar's death, ignoring our own deaths."""
         if data.get("time") in self._sent_death_times:
-            # C'est une de nos propres morts renvoyee par le serveur : ignorer.
+            # One of our own deaths echoed back by the server: ignore.
             self.last_death_link = max(data["time"], self.last_death_link)
             return
         super().on_deathlink(data)
         self.pending_kill = True
 
     def queue_trap_link(self, trap_name: str, source: Optional[str] = None) -> None:
-        """Place un trap recu via TrapLink dans la file d'application (surchargeable)."""
+        """Queue a trap received via TrapLink for application (overridable)."""
         self.pending_trap_links.append(trap_name)
-        self.pending_trap_link_sources.append(source)  # #43 : joueur source
+        self.pending_trap_link_sources.append(source)  # source player
 
     async def send_trap_link(self, trap_name: str) -> None:
-        """Diffuse aux autres joueurs TrapLink le trap qu'on vient de subir."""
+        """Broadcast the trap we just suffered to other TrapLink players."""
         if not self.trap_link_enabled:
             if self.debug_trap:
                 logger.info("[TrapLink] Send skipped: TrapLink disabled.")
@@ -2437,21 +2394,20 @@ class P1Context(SuperContext):
 COLOR_BY_INDEX = {0: "blue", 1: "red", 2: "yellow"}  # GlobalGameOptions.h
 
 
-# --- #56 : PopTracker (changement d'onglet automatique) ------------------------
-# Meme principe que le client The Wind Waker :
-#  - Bounce {"pikmin_stage_name": <zone>} a chaque changement de zone ;
-#  - stockage serveur "pikmin_visited_stages_<slot>" = {zone: True} (zones vues).
+# --- PopTracker (automatic tab switching) --------------------------------------
+#  - Bounce {"pikmin_stage_name": <zone>} on every zone change;
+#  - server storage "pikmin_visited_stages_<slot>" = {zone: True} (visited zones).
 AP_STAGE_NAME_BOUNCE_KEY = "pikmin_stage_name"
 AP_VISITED_STAGE_NAMES_KEY_FORMAT = "pikmin_visited_stages_%i"
 TRACKER_STAGE_NAMES = {0: "The Impact Site", 1: "The Forest of Hope", 2: "The Forest Navel",
                        3: "The Distant Spring", 4: "The Final Trial"}
 TRACKER_WORLD_MAP = "World Map"
 TRACKER_ONION_NAMES = {"red": "Red Onion", "yellow": "Yellow Onion", "blue": "Blue Onion"}
-NAVISTATE_CONTAINER = 12  # menu de l'oignon ouvert (include/NaviState.h)
+NAVISTATE_CONTAINER = 12  # onion menu open (include/NaviState.h)
 
 
 def _open_onion_color(game: Game) -> Optional[str]:
-    """Couleur de l'oignon dont le menu est ouvert, ou None."""
+    """Return the color of the onion whose menu is open, or None."""
     navi = _resolve_olimar(game)
     if navi is None:
         return None
@@ -2470,7 +2426,7 @@ def _open_onion_color(game: Game) -> Optional[str]:
 
 
 def current_tracker_stage(game: Game) -> Optional[str]:
-    """Nom de "zone" pour PopTracker : oignon ouvert, zone, carte du monde, ou None."""
+    """Return the PopTracker "zone" name (open onion, stage, world map), or None."""
     sub = _oneplayer_subsection(game)
     if sub == ONEPLAYER_MAP_SELECT:
         return TRACKER_WORLD_MAP
@@ -2489,7 +2445,7 @@ def current_tracker_stage(game: Game) -> Optional[str]:
 
 
 async def handle_tracker_stage(ctx: "P1Context", game: Game) -> None:
-    """#56 : informe PopTracker de la zone courante (Bounce) et des zones vues."""
+    """Tell PopTracker the current zone (Bounce) and the visited zones."""
     if not ctx.slot or not getattr(ctx, "auth", None):
         return
     name = current_tracker_stage(game)
@@ -2507,17 +2463,16 @@ async def handle_tracker_stage(ctx: "P1Context", game: Game) -> None:
 
 
 def find_onion_containers(game: Game) -> dict[str, int]:
-    """Localise les oignons vivants (GoalItem) par couleur.
+    """Locate the live onions (GoalItem) by color.
 
-    Remplace l'ancien scan RAM de 2 Mo. Reproduit `ItemMgr::getContainer()`
-    de la decomp : on suit une chaine de pointeurs et on parcourt la liste
-    chainee des creatures en filtrant sur mObjType == OBJTYPE_Goal.
+    Mirrors `ItemMgr::getContainer()` from the decomp: follow a pointer chain and
+    walk the linked list of creatures, filtering on mObjType == OBJTYPE_Goal.
 
         itemMgr -> mMeltingPotMgr -> mRootNode.mChild -> ... -> mNext
                 -> mCreature (Creature*) -> GoalItem
 
-    Retourne {couleur: adresse_du_GoalItem}. Dict vide si rien n'est charge
-    (menu, transition), ce qui est un etat normal et non une erreur.
+    Returns {color: GoalItem address}. Empty dict if nothing is loaded
+    (menu, transition), which is a normal state and not an error.
     """
     base_ptr = SYM_ITEM_MGR_PTR.get(game)
     if base_ptr is None:
@@ -2526,12 +2481,12 @@ def find_onion_containers(game: Game) -> dict[str, int]:
     C = ONION_CHAIN
 
     def deref(addr: int) -> int:
-        """Lit un pointeur 32 bits et rejette tout ce qui n'est pas en MEM1/MEM2."""
+        """Read a 32-bit pointer and reject anything outside MEM1/MEM2."""
         try:
             val = int.from_bytes(dme.read_bytes(addr, 4), "big")
         except Exception:
             return 0
-        # Adresses GameCube/Wii valides uniquement -> evite de suivre du bruit.
+        # Only valid GameCube/Wii addresses, to avoid following garbage.
         if _RAM_MIN <= val < _RAM_MAX:
             return val
         return 0
@@ -2549,8 +2504,8 @@ def find_onion_containers(game: Game) -> dict[str, int]:
     found: dict[str, int] = {}
     seen: set[int] = set()
 
-    # Garde-fou : liste chainee bornee, immunise contre un cycle ou de la
-    # memoire a moitie initialisee pendant un chargement.
+    # Safety guard: bounded linked-list walk, protects against cycles or
+    # half-initialized memory during a load.
     for _ in range(4096):
         if not node or node in seen:
             break
@@ -2584,18 +2539,18 @@ def find_onion_containers(game: Game) -> dict[str, int]:
     return found
 
 
-# fourCC (model ID) -> ap_id de la piece, pour identifier un Pellet in-game.
+# fourCC (model ID) -> part ap_id, to identify an in-game Pellet.
 _MODELID_TO_AP_ID = {
     PART_MODEL_ID[name]: ALL_PARTS[name].ap_id
     for name in PART_MODEL_ID if name in ALL_PARTS
 }
 
-# ap_id -> zone/stage, pour reconstituer les compteurs PlayerState.
+# ap_id -> stage, to rebuild the PlayerState counters.
 _APID_TO_STAGE = {
     data.ap_id: AREA_STAGE_ID[data.area]
     for data in ALL_PARTS.values() if data.area in AREA_STAGE_ID
 }
-# ap_id -> bit d'effet vaisseau (radar, jets).
+# ap_id -> ship effect bit (radar, jets).
 _APID_TO_EFFECT = {
     ALL_PARTS[name].ap_id: bit
     for name, bit in SHIP_EFFECT_PARTS.items() if name in ALL_PARTS
@@ -2603,12 +2558,11 @@ _APID_TO_EFFECT = {
 
 
 def sync_playerstate_parts(ctx: P1Context, game: Game) -> None:
-    """Reconcilie les compteurs de pieces de PlayerState avec les locations
-    validees cote serveur, pour que les capacites (radar, jets) et les etoiles
-    par niveau soient correctes meme pour des pieces collectees hors du jeu.
+    """Reconcile the PlayerState part counters with the server-checked locations.
 
-    Idempotent et jamais decroissant : on ne fait qu'ajouter des bits d'effet et
-    remonter les compteurs au max, on n'ecrase jamais un total du jeu plus eleve.
+    Keeps abilities (radar, jets) and per-stage stars correct even for parts
+    collected outside the game. Idempotent and never decreasing: only adds effect
+    bits and raises counters to the max, never overwrites a higher in-game total.
     """
     ptr = SYM_PLAYER_STATE_PTR.get(game)
     if ptr is None:
@@ -2626,7 +2580,7 @@ def sync_playerstate_parts(ctx: P1Context, game: Game) -> None:
     checked_parts = [ap for ap in ship_ids if ap in checked]
 
     try:
-        # Capacites du vaisseau (radar / jets) : OR des bits, idempotent.
+        # Ship abilities (radar / jets): OR the bits, idempotent.
         want_flag = 0
         for ap in checked_parts:
             want_flag |= _APID_TO_EFFECT.get(ap, 0)
@@ -2636,7 +2590,7 @@ def sync_playerstate_parts(ctx: P1Context, game: Game) -> None:
             if (cur | want_flag) != cur:
                 dme.write_byte(addr, cur | want_flag)
 
-        # Etoiles par niveau : nb de pieces validees par stage, sans decroitre.
+        # Stars per stage: number of checked parts per stage, never decreasing.
         per_stage: dict[int, int] = {}
         for ap in checked_parts:
             st = _APID_TO_STAGE.get(ap)
@@ -2644,11 +2598,11 @@ def sync_playerstate_parts(ctx: P1Context, game: Game) -> None:
                 per_stage[st] = per_stage.get(st, 0) + 1
         base = ps + O["mStagePartsCollected"]
         for st, count in per_stage.items():
-            a = base + st  # u8 par stage
+            a = base + st  # u8 per stage
             if dme.read_byte(a) < count:
                 dme.write_byte(a, count)
 
-        # Total de pieces (upgrade vaisseau, affichage) : au max.
+        # Total parts (ship upgrade, display): take the max.
         total = len(checked_parts)
         caddr = ps + O["mCurrParts"]
         cur_total = struct.unpack(">i", dme.read_bytes(caddr, 4))[0]
@@ -2659,11 +2613,11 @@ def sync_playerstate_parts(ctx: P1Context, game: Game) -> None:
 
 
 def _detach_part_from_radar(game: Game, pellet: int) -> None:
-    """Retire du radar l'icone d'une piece (replique RadarInfo::detachParts).
+    """Remove a part's icon from the radar (replicates RadarInfo::detachParts).
 
-    Delie le noeud de mAlivePartsList dont mPart == pellet : sinon le radar
-    continue d'afficher une icone pour une piece qu'on a fait disparaitre
-    (MonoObjectMgr::kill ne declenche pas Creature::kill -> pas de detachParts).
+    Unlinks the mAlivePartsList node whose mPart == pellet; otherwise the radar
+    keeps showing an icon for a despawned part
+    (MonoObjectMgr::kill does not call Creature::kill, so no detachParts).
     """
     ptr = SYM_RADAR_INFO_PTR.get(game)
     if ptr is None:
@@ -2689,13 +2643,13 @@ def _detach_part_from_radar(game: Game, pellet: int) -> None:
         part = u32(node + R["NODE_PART"])
         nxt = u32(node + R["NODE_NEXT"])
         if part == pellet:
-            # Delier : relier le precedent (ou le slot de tete) au suivant.
+            # Unlink: point the previous node (or the head slot) at the next one.
             try:
                 if prev:
                     dme.write_bytes(prev + R["NODE_NEXT"], struct.pack(">I", nxt))
                 else:
                     dme.write_bytes(head_slot, struct.pack(">I", nxt))
-                # Detacher le noeud + nettoyer son mPart.
+                # Detach the node and clear its mPart.
                 dme.write_bytes(node + R["NODE_NEXT"], struct.pack(">I", 0))
                 dme.write_bytes(node + R["NODE_PART"], struct.pack(">I", 0))
             except Exception:
@@ -2706,16 +2660,16 @@ def _detach_part_from_radar(game: Game, pellet: int) -> None:
 
 
 def despawn_collected_part_pellets(ctx: P1Context, game: Game) -> int:
-    """Fait disparaitre les Pellets des pieces validees cote serveur.
+    """Despawn the Pellets of parts already checked on the server.
 
-    Les pellets sont geres par pelletMgr (un MonoObjectMgr), PAS par itemMgr.
-    On enumere ses slots actifs (mEntryStatus[i] == 0), on repere les pellets de
-    pieces de vaisseau (mObjType == OBJTYPE_Pellet et mConfig->mModelId connu),
-    et si la location est deja validee cote serveur on les retire :
-      - mIsAlive = 0 (invisible tout de suite) ;
-      - mEntryStatus[i] = -2 -> MonoObjectMgr::update appelle kill() (retrait
-        propre par le jeu au prochain update).
-    Renvoie le nombre de pieces retirees.
+    Pellets are managed by pelletMgr (a MonoObjectMgr), NOT by itemMgr.
+    Enumerates its active slots (mEntryStatus[i] == 0), finds ship-part pellets
+    (mObjType == OBJTYPE_Pellet and known mConfig->mModelId) and removes them if
+    the location is already checked:
+      - mIsAlive = 0 (invisible immediately);
+      - mEntryStatus[i] = -2 -> MonoObjectMgr::update calls kill() (clean removal
+        by the game on the next update).
+    Returns the number of parts removed.
     """
     mgr_ptr = SYM_PELLET_MGR_PTR.get(game)
     if mgr_ptr is None:
@@ -2749,7 +2703,7 @@ def despawn_collected_part_pellets(ctx: P1Context, game: Game) -> int:
             status = int.from_bytes(dme.read_bytes(entry_status + i * 4, 4), "big", signed=True)
         except Exception:
             continue
-        if status != 0:  # slot inactif
+        if status != 0:  # inactive slot
             continue
         creature = u32(obj_list + i * 4)
         if not creature:
@@ -2772,15 +2726,15 @@ def despawn_collected_part_pellets(ctx: P1Context, game: Game) -> int:
         ap_id = _MODELID_TO_AP_ID.get(model_id)
         if ap_id is None or ap_id not in ctx.checked_locations:
             continue
-        # Piece validee cote serveur, encore presente : la retirer.
+        # Part already checked on the server but still present: remove it.
         try:
-            # Retirer l'icone du radar (le kill du manager ne le fait pas).
+            # Remove the radar icon (the manager kill does not do it).
             _detach_part_from_radar(game, creature)
             dme.write_byte(creature + P["PELLET_ISALIVE"], 0)
             dme.write_bytes(entry_status + i * 4, struct.pack(">i", ENTRYSTATUS_KILL))
             removed += 1
             if ctx.debug_hint:
-                logger.info(f"[DEBUG] Pellet de pièce retiré "
+                logger.info(f"[DEBUG] Part pellet removed "
                             f"(slot={i}, model={model_id!r}, ap_id={ap_id})")
         except Exception:
             pass
@@ -2788,19 +2742,19 @@ def despawn_collected_part_pellets(ctx: P1Context, game: Game) -> int:
     return removed
 
 
-# Taille de la zone objet balayee pour retrouver le fourCC de la piece qu'une
-# creature contient. Verifie en jeu via /debugparts : l'UfoPartID n'est PAS au
-# meme offset selon la classe (OBJTYPE_Snake : +0x31C ; OBJTYPE_Teki : +0x5D0),
-# donc on balaye au lieu de coder un offset en dur. Lecture seule (identification).
+# Size of the object region scanned to find the fourCC of the part a creature
+# holds. The UfoPartID is NOT at the same offset for every class
+# (OBJTYPE_Snake: +0x31C; OBJTYPE_Teki: +0x5D0), so we scan instead of
+# hardcoding an offset. Read-only (identification).
 _CREATURE_SCAN_LEN = 0x600
 
 
 def _held_ufo_part_ap(obj: int) -> "Optional[int]":
-    """ap_id de la piece CONTENUE par une creature affichee sur le radar, ou None.
+    """Return the ap_id of the part HELD by a creature shown on the radar, or None.
 
-    On balaye l'objet a la recherche du fourCC (ex. b'uf06') de la piece. Une
-    creature ne contient qu'une piece : on ne renvoie un ap_id que si UN SEUL
-    identifiant de piece connu est trouve (sinon ambigu -> None, par prudence).
+    Scans the object for the part's fourCC (e.g. b'uf06'). A creature holds only
+    one part, so an ap_id is returned only if exactly ONE known part id is found
+    (otherwise ambiguous -> None, to be safe).
     """
     try:
         blob = dme.read_bytes(obj, _CREATURE_SCAN_LEN)
@@ -2817,23 +2771,22 @@ def _held_ufo_part_ap(obj: int) -> "Optional[int]":
 
 
 def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
-    """Retire du radar les pieces validees cote serveur qui restent affichees
-    parce qu'elles sont tenues A L'INTERIEUR d'un monstre/boss (issue #11).
+    """Remove from the radar server-checked parts still shown because they are
+    held INSIDE a monster/boss.
 
-    despawn_collected_part_pellets() ne traite que les slots ACTIFS du pelletMgr
-    (mEntryStatus == 0). Quand une piece est contenue dans une creature, il n'y a
-    meme PAS de Pellet dans le pelletMgr : le noeud radar pointe vers la CREATURE
-    (mPart = OBJTYPE_Snake, etc.), qui memorise l'UfoPartID de la piece a
-    +0x31C. Son icone restait donc sur le radar malgre la validation serveur.
+    despawn_collected_part_pellets() only handles ACTIVE pelletMgr slots
+    (mEntryStatus == 0). When a part is held by a creature there is no Pellet in
+    the pelletMgr at all: the radar node points to the CREATURE
+    (mPart = OBJTYPE_Snake, etc.), which stores the part's UfoPartID (e.g. at
+    +0x31C).
 
-    On part de la liste radar (mAlivePartsList) et on distingue deux cas :
-      - noeud -> Pellet (piece libre encore listee) : on la tue proprement
-        (mIsAlive = 0 + mEntryStatus = -2 via son slot) puis on delie le noeud ;
-      - noeud -> Creature contenant une piece validee : on delie seulement le
-        noeud radar (l'icone disparait). On NE touche PAS a la creature : si elle
-        est tuee plus tard, elle lache un pellet deja collecte que la boucle
-        classique retirera a son tour. Lecture seule pour l'identification.
-    Renvoie le nombre d'icones retirees.
+    Walks the radar list (mAlivePartsList) and distinguishes two cases:
+      - node -> Pellet (free part still listed): kill it cleanly
+        (mIsAlive = 0 + mEntryStatus = -2 via its slot), then unlink the node;
+      - node -> Creature holding a checked part: only unlink the radar node (the
+        icon disappears). The creature is NOT touched: if killed later it drops an
+        already-collected pellet that the regular loop will remove.
+    Returns the number of icons removed.
     """
     ptr = SYM_RADAR_INFO_PTR.get(game)
     if ptr is None:
@@ -2854,11 +2807,11 @@ def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
 
     known_models = _MODELID_TO_AP_ID
 
-    # 1) Parcours LECTURE SEULE de la liste radar (sans la modifier ici).
-    pellets_to_kill: list[int] = []   # pellets libres : kill + detach
-    creatures_to_detach: list[int] = []  # creatures contenant une piece : detach seul
+    # 1) Read-only walk of the radar list (not modified here).
+    pellets_to_kill: list[int] = []   # free pellets: kill + detach
+    creatures_to_detach: list[int] = []  # creatures holding a part: detach only
     node = u32(radar + R["ALIVE_CHILD"])
-    for _ in range(128):  # garde-fou anti-boucle
+    for _ in range(128):  # loop guard
         if not node:
             break
         obj = u32(node + R["NODE_PART"])
@@ -2884,9 +2837,8 @@ def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
                 if ap_id is not None and ap_id in ctx.checked_locations and obj not in pellets_to_kill:
                     pellets_to_kill.append(obj)
             else:
-                # Creature affichee sur le radar des pieces => elle contient une
-                # piece. Son UfoPartID (fourCC) est memorise a un offset variable
-                # selon la classe : on le retrouve en balayant l'objet.
+                # A creature shown on the parts radar holds a part. Its UfoPartID
+                # (fourCC) sits at a class-dependent offset, so scan the object.
                 ap_id = _held_ufo_part_ap(obj)
                 if ap_id is not None and ap_id in ctx.checked_locations and obj not in creatures_to_detach:
                     creatures_to_detach.append(obj)
@@ -2895,8 +2847,8 @@ def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
     if not pellets_to_kill and not creatures_to_detach:
         return 0
 
-    # 2) Pour les pellets libres : localise chaque cible dans le pelletMgr (par
-    #    pointeur) pour le tuer proprement via son slot, comme la boucle classique.
+    # 2) For free pellets: locate each target in the pelletMgr (by pointer) to
+    #    kill it cleanly via its slot, like the regular loop.
     slot_of: dict[int, int] = {}
     entry_status = 0
     if pellets_to_kill:
@@ -2921,7 +2873,7 @@ def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
 
     removed = 0
 
-    # 3a) Pellets libres : icone radar + kill du pellet.
+    # 3a) Free pellets: radar icon + pellet kill.
     for pellet in pellets_to_kill:
         try:
             _detach_part_from_radar(game, pellet)
@@ -2931,19 +2883,19 @@ def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
                 dme.write_bytes(entry_status + idx * 4, struct.pack(">i", ENTRYSTATUS_KILL))
             removed += 1
             if ctx.debug_hint:
-                logger.info(f"[DEBUG] Pièce (pellet libre) retirée du radar "
+                logger.info(f"[DEBUG] Part (free pellet) removed from radar "
                             f"pellet=0x{pellet:08X}, slot={idx}")
         except Exception:
             pass
 
-    # 3b) Pieces contenues dans une creature : on delie seulement le noeud radar.
+    # 3b) Parts held by a creature: only unlink the radar node.
     for creature in creatures_to_detach:
         try:
             _detach_part_from_radar(game, creature)
             removed += 1
             if ctx.debug_hint:
-                logger.info(f"[DEBUG] Icône de pièce retirée du radar (contenue dans "
-                            f"un ennemi) creature=0x{creature:08X}")
+                logger.info(f"[DEBUG] Part icon removed from radar (held inside "
+                            f"an enemy) creature=0x{creature:08X}")
         except Exception:
             pass
 
@@ -2951,8 +2903,7 @@ def despawn_collected_parts_on_radar(ctx: P1Context, game: Game) -> int:
 
 
 def _fix_zombie_olimar(game: Game) -> None:
-    """#54 : Olimar a <= 1 PV, pas mort (orimaDead = 0) et en etat normal :
-    une mort amorcee a ete perdue -> on la reamorce."""
+    """Re-trigger a lost death: Olimar has <= 1 HP, orimaDead is 0 and he is in a normal state."""
     if read_orima_dead(game):
         return
     navi = _resolve_olimar(game)
@@ -2963,14 +2914,14 @@ def _fix_zombie_olimar(game: Game) -> None:
     except Exception:
         return
     if hp <= 1.0:
-        kill_olimar(game)  # ne fait rien tant qu'Olimar n'est pas en NaviWalkState
+        kill_olimar(game)  # does nothing unless Olimar is in NaviWalkState
 
 
 def _free_play_elapsed(ctx, game: Game, attr: str) -> bool:
-    """#54 : vrai apres CONE_START_DELAY s de jeu libre (ni cinematique ni menu).
+    """Return True after CONE_START_DELAY seconds of free play (no cutscene, no menu).
 
-    `attr` : attribut de ctx memorisant le debut de la periode libre (remis a
-    None des qu'une cinematique ou un menu interrompt le jeu)."""
+    `attr`: ctx attribute storing the start of the free-play period (reset to
+    None whenever a cutscene or menu interrupts the game)."""
     if is_movie_playing(game) or is_overlay_active(game):
         setattr(ctx, attr, None)
         return False
@@ -2983,82 +2934,79 @@ def _free_play_elapsed(ctx, game: Game, attr: str) -> bool:
 
 
 async def detect_olimar_death(ctx: "P1Context", game: Game) -> None:
-    """DeathLink classic/both : envoi sur front montant de orimaDead.
+    """DeathLink classic/both: send on the rising edge of orimaDead.
 
-    #57 : des qu'un monstre tue Olimar, le jeu se met en pause et enchaine la
-    sequence de mort / fin de journee (mIsPauseAllowed = FALSE) : les handlers
-    "en jeu" ne tournent plus et le front montant n'etait jamais vu -> aucun
-    DeathLink. Cette detection tourne donc a chaque tick tant qu'on est dans un
-    niveau, journee active ou non. Lecture seule (+ envoi reseau).
+    Once a monster kills Olimar the game pauses and chains into the death /
+    end-of-day sequence (mIsPauseAllowed = FALSE), so the in-game handlers stop
+    running. This detection therefore runs every tick while in a level, whether
+    or not the day is active. Read-only (plus network send).
     """
     if ctx.death_link_mode not in (1, 3):
         return
     is_dead = read_orima_dead(game)
     if is_dead and not ctx._orima_was_dead:
         if ctx._suppress_orima_send:
-            # Mort provoquee par un DeathLink recu (ou par le seuil pikmin en
-            # mode both, ou par le client) : on la consomme sans re-emettre.
+            # Death caused by a received DeathLink (or by the pikmin threshold in
+            # both mode, or by the client): consume it without re-sending.
             ctx._suppress_orima_send = False
         elif not ctx._deathlink_locked_this_day:
-            await ctx.send_death(olimar_death_message(ctx, game))  # #57
+            await ctx.send_death(olimar_death_message(ctx, game))
             ctx._deathlink_locked_this_day = True
     ctx._orima_was_dead = is_dead
 
 
 async def handle_death_link(ctx: P1Context, game: Game) -> None:
-    """DeathLink : detection (envoi) et application (reception).
+    """DeathLink: detection (send) and application (receive).
 
-    Modes (ctx.death_link_mode) :
+    Modes (ctx.death_link_mode):
       0 off, 1 classic, 2 pikmin, 3 both.
-    Envoi :
-      - classic / both : front montant de orimaDead (Olimar vient de mourir).
-      - pikmin  / both : tous les X Pikmin morts dans la journee (deadPikis,
-        deja remis a zero par journee).
-      - both : en plus, quand le seuil de Pikmin est franchi, Olimar est aussi
-        tue localement.
-    Reception :
-      - un DeathLink recu (ctx.pending_kill) tue Olimar au prochain tick en jeu.
+    Send:
+      - classic / both: rising edge of orimaDead (Olimar just died).
+      - pikmin  / both: every X Pikmin deaths in the day (deadPikis, already
+        reset each day).
+      - both: additionally, when the Pikmin threshold is reached, Olimar is
+        also killed locally.
+    Receive:
+      - a received DeathLink (ctx.pending_kill) kills Olimar on the next in-game tick.
     """
-    # --- Auto-mort (mode both) : consequence de notre propre envoi, non soumise
-    # au verrou. Retente si Olimar n'etait pas resolvable au moment de l'envoi.
+    # --- Self-kill (both mode): consequence of our own send, not subject to the
+    # lock. Retried if Olimar could not be resolved when the send happened.
     if ctx._pending_self_kill:
         if kill_olimar(game):
             ctx._pending_self_kill = False
             ctx._suppress_orima_send = True
 
-    # #54 : filet de securite "Olimar zombie" (0 PV mais pas mort : la mort
-    # amorcee a ete annulee par le jeu). On la reamorce des qu'il redevient
-    # controlable.
+    # Safety net for a "zombie Olimar" (0 HP but not dead: the game cancelled the
+    # started death). Re-trigger it as soon as he is controllable again.
     _fix_zombie_olimar(game)
 
-    # --- Reception : tuer Olimar ---
-    # #54 : meme delai que les cones / traps : rien pendant une cinematique ou
-    # un menu, puis CONE_START_DELAY secondes de jeu libre.
+    # --- Receive: kill Olimar ---
+    # Same delay as cones / traps: nothing during a cutscene or a menu, then
+    # CONE_START_DELAY seconds of free play.
     if ctx.pending_kill and not ctx._deathlink_locked_this_day \
             and not _free_play_elapsed(ctx, game, "_dl_free_since"):
         pass
     elif ctx.pending_kill:
         if ctx._deathlink_locked_this_day:
-            # Un evenement DeathLink a deja eu lieu cette journee : on ignore les
-            # morts recues jusqu'au reset de debut de journee.
+            # A DeathLink event already happened today: ignore received deaths
+            # until the start-of-day reset.
             ctx.pending_kill = False
         elif kill_olimar(game):
             ctx.pending_kill = False
-            # La mort qui va suivre vient d'un DeathLink recu : ne pas la
-            # renvoyer via la detection classic.
+            # The upcoming death comes from a received DeathLink: do not send it
+            # back through the classic detection.
             ctx._suppress_orima_send = True
             ctx._deathlink_locked_this_day = True
             _lang = getattr(ctx, "detected_language", "en")
             logger.info(f"[Pikmin] {DEATHLINK_RECEIVED_MSG.get(_lang, DEATHLINK_RECEIVED_MSG['en'])}")
-        # sinon : Olimar pas encore resolvable, on retente au prochain tick.
+        # otherwise: Olimar not resolvable yet, retry on the next tick.
 
     if ctx.death_link_mode == 0:
         return
 
-    # Verrou de securite : plus aucun envoi/reception tant que la journee n'a pas
-    # ete reinitialisee (front montant "dans un niveau", voir dolphin_loop). On
-    # continue de suivre l'etat de detection pour ne pas declencher un envoi
-    # differe une fois le verrou leve.
+    # Safety lock: no send/receive until the day has been reset (rising edge of
+    # "in a level", see dolphin_loop). Detection state keeps being tracked so no
+    # deferred send fires once the lock is released.
     if ctx._deathlink_locked_this_day:
         ctx._orima_was_dead = read_orima_dead(game)
         dt = read_dead_pikis_total(game)
@@ -3070,22 +3018,21 @@ async def handle_death_link(ctx: P1Context, game: Game) -> None:
     send_on_pikmin = ctx.death_link_mode in (2, 3)   # pikmin, both
     pikmin_kills_olimar = ctx.death_link_mode == 3    # both
 
-    # --- Envoi sur mort d'Olimar : voir detect_olimar_death() (#57), appele
-    # meme hors gameplay interactif, car la mort coupe aussitot le jeu. ---
+    # --- Send on Olimar's death: see detect_olimar_death(), which is called even
+    # outside interactive gameplay because the death immediately stops the game. ---
     if send_on_olimar and ctx._deathlink_locked_this_day:
         return
 
-    # --- Envoi sur morts de Pikmin (tous les X, par journee) ---
+    # --- Send on Pikmin deaths (every X, per day) ---
     if send_on_pikmin:
         dead_total = read_dead_pikis_total(game)
         if dead_total is None:
             return
-        # deadPikis est deja par journee, mais au tout debut de la journee il
-        # peut encore etre RESIDUEL (pas remis a zero). A la 1re lecture (last
-        # None), on prend la valeur courante comme reference deja comptee : sinon
-        # un compte residuel serait pris pour des morts nouvelles et enverrait un
-        # DeathLink en debut de journee. Une decroissance ulterieure = remise a
-        # zero par le jeu -> on repart le comptage.
+        # deadPikis is per day, but at the very start of the day it may still be
+        # residual (not yet reset). On the first read (last is None), take the
+        # current value as an already-counted reference; otherwise a residual
+        # count would be taken for new deaths and send a DeathLink at day start.
+        # A later decrease means the game reset it, so counting restarts.
         if ctx._dead_pikis_last is None:
             ctx._dead_pikis_last = dead_total
             ctx._dead_pikis_sent = dead_total // ctx.pikmin_death_amount
@@ -3097,36 +3044,34 @@ async def handle_death_link(ctx: P1Context, game: Game) -> None:
         should_have_sent = dead_total // ctx.pikmin_death_amount
         if ctx._dead_pikis_sent < should_have_sent:
             ctx._dead_pikis_sent += 1
-            await ctx.send_death(death_message(ctx, "grief"))  # #57
+            await ctx.send_death(death_message(ctx, "grief"))
             ctx._deathlink_locked_this_day = True
-            # Mode both : franchir le seuil tue aussi Olimar localement. C'est une
-            # consequence de NOTRE envoi (pas une reception), donc on tue en ligne
-            # meme si le verrou vient d'etre pose. Pas d'echo : _suppress_orima_send.
+            # Both mode: reaching the threshold also kills Olimar locally. This is
+            # a consequence of OUR send (not a receive), so we kill even though the
+            # lock was just set. No echo: _suppress_orima_send.
             if pikmin_kills_olimar:
                 if kill_olimar(game):
                     ctx._suppress_orima_send = True
                 else:
-                    ctx._pending_self_kill = True  # Olimar pas resolvable, on reessaie
+                    ctx._pending_self_kill = True  # Olimar not resolvable, retry
 
 
 async def handle_pikmin_bond(ctx: P1Context, game: Game) -> None:
-    """#3 Lien Olimar/Pikmin : chaque Pikmin mort retire des PV a Olimar.
+    """Olimar/Pikmin bond: each dead Pikmin removes HP from Olimar.
 
-    Source : GameStat::deadPikis (somme des 3 couleurs, remis a zero par
-    journee). Comme pour le DeathLink "pikmin", la 1re lecture de la journee
-    sert de reference (valeur residuelle possible) ; une baisse = remise a
-    zero par le jeu -> nouvelle reference.
+    Source: GameStat::deadPikis (sum of the 3 colors, reset each day). As with
+    the "pikmin" DeathLink, the first read of the day is the reference (it may
+    be residual); a decrease means the game reset it -> new reference.
 
-    A 0 PV (seuil de mort du jeu : <= 1.0), on passe par kill_olimar() pour
-    declencher la VRAIE sequence de mort (ecrire mHealth seul ne suffit pas).
-    La detection DeathLink classic enverra alors un DeathLink si active.
-    Ne tourne que pendant le gameplay interactif (in_level_handlers).
+    At 0 HP (the game's death threshold: <= 1.0), kill_olimar() is used to
+    trigger the REAL death sequence (writing mHealth alone is not enough).
+    Classic DeathLink detection then sends a DeathLink if enabled.
+    Only runs during interactive gameplay (in_level_handlers).
     """
     if not ctx.pikmin_bond:
         return
-    # Mort par le lien en attente : Olimar n'etait pas controlable (projete,
-    # ecrase, en train de siffler...) -> kill_olimar() refusait (#54) et les
-    # degats etaient perdus. On retente a chaque tick.
+    # Pending bond death: Olimar was not controllable (thrown, crushed,
+    # whistling...) so kill_olimar() refused. Retry every tick.
     if ctx._bond_kill_pending:
         if read_orima_dead(game):
             ctx._bond_kill_pending = False
@@ -3140,14 +3085,14 @@ async def handle_pikmin_bond(ctx: P1Context, game: Game) -> None:
     last = ctx._bond_dead_last
     ctx._bond_dead_last = dead_total
     if last is None or dead_total <= last:
-        return  # reference / remise a zero / rien de nouveau
+        return  # reference / reset / nothing new
     if read_orima_dead(game):
-        return  # deja a terre : rien a retirer
+        return  # already down: nothing to remove
 
     navi = _resolve_olimar(game)
     if navi is None:
-        # Olimar pas resolvable : on garde l'ancienne reference pour
-        # appliquer ces morts au prochain tick.
+        # Olimar not resolvable: keep the old reference so these deaths are
+        # applied on the next tick.
         ctx._bond_dead_last = last
         return
     deaths = dead_total - last
@@ -3160,10 +3105,10 @@ async def handle_pikmin_bond(ctx: P1Context, game: Game) -> None:
         return
     new = h - loss
     if ctx.debug_trap:
-        logger.info(f"[DEBUG BOND] {deaths} Pikmin mort(s) : PV {h:.1f} -> {max(new, 0.0):.1f}")
+        logger.info(f"[DEBUG BOND] {deaths} Pikmin death(s): HP {h:.1f} -> {max(new, 0.0):.1f}")
     if new <= 1.0:
-        # Mort d'Olimar par le lien : sequence de mort reelle du jeu. Si Olimar
-        # n'est pas controlable a cet instant, la mort reste en attente.
+        # Olimar dies through the bond: real in-game death sequence. If Olimar is
+        # not controllable right now, the death stays pending.
         if kill_olimar(game):
             ctx._client_kill_reason = "Pikmin Bond"
             await report_client_kill(ctx)
@@ -3180,14 +3125,13 @@ OLIMAR_MAX_HEALTH = 100.0
 
 
 async def handle_olimar_bond(ctx: P1Context, game: Game) -> None:
-    """#44 Olimar Bond : chaque Pikmin ne soigne Olimar (olimar_bond_heal % de
-    sa sante max, plafonnee a 100).
+    """Olimar Bond: each newly born Pikmin heals Olimar (olimar_bond_heal % of
+    his max health, capped at 100).
 
-    Source : GameStat::bornPikis ("germes aujourd'hui"), qui compte les graines
-    sorties des oignons ET, depuis #33, les bonus Pikmin recus (en journee, ou
-    au debut de la journee suivante s'ils arrivent sur la carte). Comme pour le
-    lien Olimar/Pikmin : 1re lecture de la journee = reference, une baisse =
-    remise a zero par le jeu.
+    Source: GameStat::bornPikis ("sprouts today"), which counts seeds coming out
+    of the onions AND received Pikmin bonuses (during the day, or at the start
+    of the next day if they arrive on the map). As with the Olimar/Pikmin bond:
+    first read of the day = reference, a decrease = reset by the game.
     """
     slot_data = getattr(ctx, "slot_data", None) or {}
     if not slot_data.get("olimar_bond", 0):
@@ -3207,59 +3151,56 @@ async def handle_olimar_bond(ctx: P1Context, game: Game) -> None:
         return
     navi = _resolve_olimar(game)
     if navi is None:
-        ctx._olimar_bond_last = last  # on reessaie au prochain tick
+        ctx._olimar_bond_last = last  # retry on the next tick
         return
     heal = OLIMAR_MAX_HEALTH * float(slot_data.get("olimar_bond_heal", 1)) / 100.0 * (born - last)
     addr = navi + NAVI_CHAIN["CREATURE_HEALTH"]
     try:
         h = struct.unpack(">f", dme.read_bytes(addr, 4))[0]
         if h <= 1.0:
-            return  # deja a terre : pas de resurrection
+            return  # already down: no resurrection
         new = min(OLIMAR_MAX_HEALTH, h + heal)
         if new > h:
             dme.write_bytes(addr, struct.pack(">f", new))
             if ctx.debug_trap:
-                logger.info(f"[DEBUG BOND] {born - last} Pikmin ne(s) : PV {h:.1f} -> {new:.1f}")
+                logger.info(f"[DEBUG BOND] {born - last} Pikmin born: HP {h:.1f} -> {new:.1f}")
     except Exception as e:
         logger.debug(f"olimar bond: {e}")
 
 
-# id d'item de trap -> type interne, construit une fois.
+# Trap item id -> internal kind, built once.
 _TRAP_ID_TO_KIND = {TRAP_ITEMS[name]: TRAP_KINDS[name] for name in TRAP_ITEMS}
 _TRAP_KIND_TO_NAME = {TRAP_KINDS[name]: name for name in TRAP_ITEMS}
 
 
 async def handle_traps(ctx: P1Context, game: Game) -> None:
-    """Applique les traps recus (items AP) et ceux recus via TrapLink.
+    """Apply received traps (AP items) and those received via TrapLink.
 
-    Un trap a la fois par tick. Les traps-items sont persistes (traps_applied)
-    pour ne pas etre rejoues au redemarrage ; les traps TrapLink sont
-    transitoires (file pending_trap_links).
+    One trap per tick. Item traps are persisted (traps_applied) so they are not
+    replayed on restart; TrapLink traps are transient (pending_trap_links queue).
     """
-    # On n'applique AUCUN trap tant que la journee n'a pas vraiment commence :
-    # au choix du niveau, pendant le chargement et pendant la cinematique d'intro,
-    # le joueur ne controle pas Olimar (mIsPauseAllowed FALSE). On exige aussi
-    # qu'Olimar soit resolvable. Les traps recus a ce moment restent en attente
-    # (items_received / pending_trap_links) et s'appliqueront une fois la journee
-    # reellement en cours.
+    # Apply NO trap until the day has really started: during level select,
+    # loading and the intro cutscene the player does not control Olimar
+    # (mIsPauseAllowed FALSE). Olimar must also be resolvable. Traps received in
+    # the meantime stay pending (items_received / pending_trap_links) and are
+    # applied once the day is really running.
     if not is_day_active(game) or _resolve_olimar(game) is None:
         return
 
-    # Verrou post-End-Day-Trap : aucun trap tant que la prochaine journee n'a pas
-    # commence (leve au front montant de "dans un niveau", cf. dolphin_loop).
+    # Post End-Day-Trap lock: no trap until the next day has started (released on
+    # the rising edge of "in a level", see dolphin_loop).
     if ctx._traps_suspended_until_next_day:
         return
 
-    # #5 : menu Pause / carte / fenetre de texte / menu d'oignon ouvert -> on
-    # suspend tout (traps AP et TrapLink restent en file). A la fermeture, on
-    # rearme un delai de grace (~3 s) avant d'appliquer le trap en attente.
+    # Pause menu / map / text window / onion menu open: suspend everything (AP
+    # and TrapLink traps stay queued). On close, re-arm a grace delay (~3 s)
+    # before applying the pending trap.
     if is_overlay_active(game):
         ctx._trap_overlay_was_active = True
         ctx._trap_free_since = None
         return
-    # #48 : comme les cones (#46), aucun trap pendant une cinematique, puis
-    # CONE_START_DELAY secondes de jeu libre (fin de la cinematique de debut de
-    # journee comprise) avant d'appliquer le premier trap.
+    # Like cones: no trap during a cutscene, then CONE_START_DELAY seconds of free
+    # play (including after the start-of-day cutscene) before the first trap.
     if is_movie_playing(game):
         ctx._trap_free_since = None
         return
@@ -3272,15 +3213,15 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
         ctx._trap_overlay_was_active = False
         ctx._trap_grace_ticks = max(ctx._trap_grace_ticks, 3)
         if ctx.debug_trap:
-            logger.info("[DEBUG TRAP] Menu ferme : traps reprennent apres le delai de grace.")
+            logger.info("[DEBUG TRAP] Menu closed: traps resume after the grace delay.")
 
-    # Delai de grace en tout debut de journee (gameplay actif) : evite de gaspiller
-    # un trap juste apres l'atterrissage.
+    # Grace delay at the very start of the day (active gameplay): avoids wasting
+    # a trap right after landing.
     if ctx._trap_grace_ticks > 0:
         ctx._trap_grace_ticks -= 1
         return
 
-    # 1) Traps recus comme items AP.
+    # 1) Traps received as AP items.
     for item in ctx.items_received:
         item_id = item.item
         kind = _TRAP_ID_TO_KIND.get(item_id)
@@ -3290,27 +3231,27 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
         already = ctx.traps_applied.get(item_id, 0)
         if total <= already:
             continue
-        # #43 : joueur qui a envoye CE trap (la (already+1)-ieme occurrence).
+        # Player who sent THIS trap (the (already+1)-th occurrence).
         occ = [i for i in ctx.items_received if i.item == item_id][already]
         ctx._trap_source = (ctx.player_names.get(occ.player)
                             if getattr(occ, "player", ctx.slot) != ctx.slot else None)
         if await apply_trap(game, kind, ctx):
-            ctx.traps_applied[item_id] = already + 1  # un a la fois
+            ctx.traps_applied[item_id] = already + 1  # one at a time
             ctx.save_applied()
             name = _TRAP_KIND_TO_NAME.get(kind, kind)
             if ctx.debug_trap:
                 logger.info(f"[DEBUG TRAP] Trap applied: {name}")
-            # TrapLink : diffuser le trap qu'on vient de subir aux autres.
+            # TrapLink: broadcast the trap we just suffered to the others.
             if ctx.trap_link_enabled:
                 await ctx.send_trap_link(name)
-            # End Day Trap : la journee va se terminer ; on gele les traps
-            # jusqu'a la prochaine pour ne pas en appliquer un 2e dans la fenetre
-            # de fin de journee (ce qui renvoyait au menu sans sauvegarde).
+            # End Day Trap: the day is about to end; freeze traps until the next
+            # one so a second trap is not applied during the end-of-day window
+            # (which would send the player back to the menu without saving).
             if kind == "end_day":
                 ctx._traps_suspended_until_next_day = True
-            return  # un seul trap par tick
+            return  # only one trap per tick
 
-    # 2) Traps recus via TrapLink (transitoires).
+    # 2) Traps received via TrapLink (transient).
     if ctx.pending_trap_links:
         name = ctx.pending_trap_links[0]
         kind = TRAP_KINDS.get(name)
@@ -3328,39 +3269,37 @@ async def handle_traps(ctx: P1Context, game: Game) -> None:
                 logger.info(f"[DEBUG TRAP] TrapLink trap applied: {name}")
             if kind == "end_day":
                 ctx._traps_suspended_until_next_day = True
-        # sinon : pas applicable maintenant, on retentera au prochain tick.
+        # otherwise: not applicable now, retry on the next tick.
 
 
-# --- #4 Custom Save -----------------------------------------------------------
+# --- Custom Save --------------------------------------------------------------
 #
-# Probleme : l'etat "bonus Pikmin deja appliques" etait stocke uniquement cote
-# client (_persistent_storage.yaml, par slot AP). Nouvelle partie, autre slot de
-# sauvegarde du jeu (A/B/C) ou rechargement d'une sauvegarde anterieure : les
-# bonus n'etaient jamais reappliques (ou l'etat ne correspondait plus au jeu).
+# The "Pikmin bonuses already applied" state is stored client-side only
+# (_persistent_storage.yaml, per AP slot). On a new game, another game save slot
+# (A/B/C) or after reloading an older save, bonuses would not be re-applied (or
+# the state would no longer match the game).
 #
-# La sauvegarde du jeu n'a pas de place libre exploitable (seul PlayerState::_186
-# est sauvegarde sans etre utilise, et c'est un bool normalise a 0/1 au
-# chargement). On identifie donc chaque sauvegarde par son checksum
-# (gameflow.mSaveGameCrc) : il est lu depuis la carte au choix du fichier et
-# recalcule a chaque sauvegarde. Le client memorise, pour chaque checksum,
-# les bonus appliques AU MOMENT de cette sauvegarde :
-#   - chargement d'un fichier (CardSelect -> jeu) :
-#       * nouvelle partie (mSavedDay == 1)   -> rien d'applique : tout est reapplique ;
-#       * checksum connu                    -> etat de cette sauvegarde (les bonus
-#                                               appliques puis non sauvegardes seront
-#                                               reappliques) ;
-#       * checksum inconnu (save anterieure a cette version) -> etat actuel conserve.
-#   - sauvegarde (checksum qui change en jeu) -> on enregistre l'etat courant.
-# Copier un fichier vers un autre slot donne le meme checksum : l'etat suit.
+# The game save has no usable free space (only PlayerState::_186 is saved
+# without being used, and it is normalized to 0/1 on load). So each save is
+# identified by its checksum (gameflow.mSaveGameCrc): read from the card when a
+# file is chosen and recomputed on every save. For each checksum the client
+# remembers the bonuses applied AT THE TIME of that save:
+#   - loading a file (CardSelect -> game):
+#       * new game (mSavedDay == 1)  -> nothing applied: everything is re-applied;
+#       * known checksum             -> state of that save (bonuses applied but
+#                                       not saved will be re-applied);
+#       * unknown checksum (save older than this feature) -> current state kept.
+#   - saving (checksum changes in game) -> the current state is recorded.
+# Copying a file to another slot gives the same checksum: the state follows.
 
 _ONEPLAYER_CARD_SELECT = 1
 _ONEPLAYER_INTRO_GAME = 5
 _SAVE_TRACK_SUBSECTIONS = (_ONEPLAYER_INTRO_GAME, ONEPLAYER_MAP_SELECT, ONEPLAYER_NEW_PIKI_GAME)
-# #32 : sous-sections ou les handlers "always" peuvent ecrire en RAM.
+# Sub-sections where the "always" handlers may write to RAM.
 _STORY_SUBSECTIONS = (_ONEPLAYER_CARD_SELECT, _ONEPLAYER_INTRO_GAME, ONEPLAYER_MAP_SELECT, ONEPLAYER_NEW_PIKI_GAME)
 MAX_TRACKED_SAVES = 60
 
-# Messages par langue du jeu detectee (comme SYNC_ACTIVE_MSG).
+# Messages per detected game language (like SYNC_ACTIVE_MSG).
 SAVE_LOADED_MSG = {
     "new": {
         "en": "New game (file {slot}): every Pikmin bonus received will be applied.",
@@ -3394,7 +3333,7 @@ def _read_u32_opt(addr: int) -> Optional[int]:
 
 
 def track_game_save(ctx: P1Context, game: Game) -> None:
-    """#4 : suit chargements et sauvegardes du jeu (voir bloc ci-dessus)."""
+    """Track game loads and saves (see block above)."""
     gf = SYM_GAMEFLOW.get(game)
     if not gf:
         return
@@ -3407,37 +3346,37 @@ def track_game_save(ctx: P1Context, game: Game) -> None:
         crc = _read_u32_opt(gf["SAVE_GAME_CRC"])
         if crc is not None:
             if prev == _ONEPLAYER_CARD_SELECT:
-                # Un fichier vient d'etre choisi (nouvelle partie ou chargement).
-                # Nouvelle partie = PlayState.mSavedDay == 1 : un fichier vierge
-                # garde le jour 1 de PlayState::Initialise, alors que toute
-                # sauvegarde a lieu apres le passage au jour suivant (>= 2).
-                # (mSaveStatus n'est PAS fiable : CardSelect le passe a
-                # ReadyToSave des qu'un fichier vierge est choisi.)
+                # A file was just chosen (new game or load).
+                # New game = PlayState.mSavedDay == 1: a blank file keeps day 1
+                # from PlayState::Initialise, while any save happens after moving
+                # to the next day (>= 2).
+                # (mSaveStatus is NOT reliable: CardSelect sets it to ReadyToSave
+                # as soon as a blank file is chosen.)
                 try:
                     saved_day = dme.read_byte(gf["PLAYSTATE_SAVED_DAY"])
                 except Exception:
                     saved_day = None
                 slot = _read_u32_opt(gf["FILE_SLOT"])
                 if ctx.debug_pbonus:
-                    logger.info(f"[DEBUG] Fichier choisi : crc={crc:08X} savedDay={saved_day} slot={slot}")
+                    logger.info(f"[DEBUG] File chosen: crc={crc:08X} savedDay={saved_day} slot={slot}")
                 ctx._pending_save_load = (crc, saved_day == 1,
                                           (slot + 1) if slot is not None and slot < 3 else "?")
                 ctx._save_crc = crc
             elif ctx._save_crc is None:
-                # Client demarre (ou reconnecte) en cours de partie : continuation.
+                # Client started (or reconnected) mid-game: continuation.
                 ctx._save_crc = crc
             elif crc != ctx._save_crc:
-                # Le jeu vient de sauvegarder : on fige l'etat pour ce checksum.
+                # The game just saved: freeze the state for this checksum.
                 ctx._save_crc = crc
                 if connected and ctx._pending_save_load is None:
                     key = f"{crc:08X}"
-                    ctx.game_saves.pop(key, None)  # re-insere en fin (plus recent)
+                    ctx.game_saves.pop(key, None)  # re-insert at the end (most recent)
                     ctx.game_saves[key] = {str(k): v for k, v in ctx.pikmin_items_applied.items()}
                     ctx.store_game_saves()
                     if ctx.debug_pbonus:
-                        logger.info(f"[DEBUG] Sauvegarde du jeu {key} : etat des bonus enregistre.")
+                        logger.info(f"[DEBUG] Game save {key}: bonus state recorded.")
 
-    # Resolution du chargement (attend la connexion au serveur si besoin).
+    # Resolve the load (waits for the server connection if needed).
     if ctx._pending_save_load is not None and connected:
         crc, fresh, slot = ctx._pending_save_load
         ctx._pending_save_load = None
@@ -3456,16 +3395,16 @@ def track_game_save(ctx: P1Context, game: Game) -> None:
         ctx.save_applied()
 
 
-# --- #33 : bonus Pikmin comptes comme "germes" --------------------------------
+# --- Pikmin bonus items counted as "sprouts" -----------------------------------
 _BORN_COLOR_INDEX = {"blue": 0, "red": 1, "yellow": 2}  # ColCounter / PikiNum
 
 
 def _add_born_pikis(game: Game, color: str, amount: int) -> bool:
-    """GameStat::bornPikis[color] += amount ("germes aujourd'hui").
+    """GameStat::bornPikis[color] += amount ("sprouts today").
 
-    A la fin de la journee, le jeu ajoute lui-meme bornPikis a
-    PlayerState::mSproutedNum ("total germes") et au record global
-    (updateFinalResult) : pas besoin d'ecrire ces cumuls nous-memes.
+    At the end of the day the game adds bornPikis to PlayerState::mSproutedNum
+    (total sprouts) and to the global record (updateFinalResult) by itself, so
+    those totals do not need to be written here.
     """
     base = SYM_BORN_PIKIS.get(game)
     if base is None:
@@ -3480,11 +3419,9 @@ def _add_born_pikis(game: Game, color: str, amount: int) -> bool:
 
 
 def _update_population_graph(game: Game) -> None:
-    """Met a jour le point de l'heure courante du graphique de population
-    (PlayerState::mPerHourGraph) avec GameStat::allPikis, comme le fait
-    PlayerState::update() a chaque changement d'heure. Sans ca, un bonus recu
-    n'apparaissait qu'a l'heure suivante (ou jamais, si la journee se
-    terminait dans la meme heure)."""
+    """Update the current hour's point of the population graph
+    (PlayerState::mPerHourGraph) with GameStat::allPikis, as
+    PlayerState::update() does on each hour change."""
     ps_ptr = SYM_PLAYER_STATE_PTR.get(game)
     gf = SYM_GAMEFLOW.get(game)
     allp = GAMESTAT_ALLPIKIS_ADDRS.get(game, {})
@@ -3514,9 +3451,9 @@ def _update_population_graph(game: Game) -> None:
 
 
 def flush_pending_born(ctx: P1Context, game: Game) -> None:
-    """Compte comme germes du jour les bonus recus hors journee (carte du monde,
-    entre deux journees), une fois la nouvelle journee reellement commencee
-    (GameStat est remis a zero au chargement du niveau)."""
+    """Count bonuses received outside a day (world map, between days) as the
+    day's sprouts once the new day has actually started (GameStat is reset
+    when the level loads)."""
     if not any(ctx._pending_born.values()):
         return
     if not (is_in_level(game) and is_day_active(game)):
@@ -3525,7 +3462,7 @@ def flush_pending_born(ctx: P1Context, game: Game) -> None:
         if n and _add_born_pikis(game, color, n):
             ctx._pending_born[color] = 0
             if ctx.debug_pbonus:
-                logger.info(f"[DEBUG] bornPikis {color} +{n} (bonus recu hors journee)")
+                logger.info(f"[DEBUG] bornPikis {color} +{n} (bonus received outside a day)")
 
 
 async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
@@ -3540,10 +3477,10 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
     """
     if game not in ONION_STAGE_ADDRS_CLIENT:
         return
-    # #4 : fichier juste charge, etat pas encore resolu -> on attend.
+    # Save just loaded, state not resolved yet: wait.
     if ctx._pending_save_load is not None:
         return
-    # #33 : bonus recus hors journee -> "germes" de la journee en cours.
+    # Bonuses received outside a day become sprouts of the current day.
     flush_pending_born(ctx, game)
 
     stage_addrs   = ONION_STAGE_ADDRS_CLIENT[game]
@@ -3581,17 +3518,14 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                 )
         ctx._onion_dyn_was_zero = sentinel_zero
 
-    # Offsets reels dans GoalItem : mHeldPikis[Leaf/Bud/Flower] a _0x42C.
-    # (L'ancien code utilisait +0x10/+0x14/+0x18, un point d'ancrage arbitraire
-    #  issu du scan ; la decomp donne l'offset exact du membre.)
+    # GoalItem::mHeldPikis[Leaf/Bud/Flower] at _0x42C.
     _HELD = ONION_CHAIN["GOAL_HELDPIKIS"]
     DYN_OFFSETS = {"leaf": _HELD + 0x0, "bud": _HELD + 0x4, "flower": _HELD + 0x8}
     DYN_BASE_CACHE = {"red": "_dyn_base_red", "yellow": "_dyn_base_yellow", "blue": "_dyn_base_blue"}
 
-    # Resolution des oignons par chaine de pointeurs (ex-scan RAM de 2 Mo).
-    # Assez peu couteux pour etre refait a chaque debut de journee ; les objets
-    # sont realloues a chaque chargement, donc on ne conserve jamais un cache
-    # d'un jour sur l'autre.
+    # Resolve onions through a pointer chain. Cheap enough to redo at every day
+    # start; objects are reallocated on each load, so never keep a cache
+    # across days.
     if day_start_detected:
         containers = find_onion_containers(game)
         for color in ("red", "yellow", "blue"):
@@ -3608,37 +3542,26 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         current_day = dme.read_byte(DAY_NUMBER[game])
     except Exception:
         current_day = 0
-    # #32 : n'ecrire dans l'oignon VIVANT (objet de tas, DYN) que pendant le
-    # gameplay interactif. Pendant une cinematique EN NIVEAU (intro de journee,
-    # et surtout la sequence de fin declenchee par le goal) l'objet est demonte
-    # / reutilise par le rendu : y ecrire corrompait le flux GPU (Dolphin :
-    # "GFX FIFO opcode inconnu 0xf6"). La persistance passe de toute facon par
-    # STAGE (source de verite), inchangee.
-    # #52 : le "sentinel" (gameflow+0x2EC) est WorldClock.mRealSecsIntoHour :
-    # il retombe a 0 a chaque changement d'heure et reste a 0 tant que
-    # l'horloge est figee (debut du jour 1). S'en servir comme verrou faisait
-    # sauter l'ajout live dans l'oignon -> Pikmin visibles le lendemain. On se
-    # base desormais sur l'etat reel du jeu (niveau charge + gameplay actif).
+    # Only write into the LIVE onion (heap object, DYN) during interactive
+    # gameplay. During in-level cutscenes (day intro, goal ending sequence) the
+    # object is torn down / reused by rendering, and writing to it corrupts the
+    # GPU stream. Persistence goes through STAGE (source of truth) anyway.
+    # The "sentinel" (gameflow+0x2EC) is WorldClock.mRealSecsIntoHour: it drops
+    # to 0 on every hour change and stays 0 while the clock is frozen (start of
+    # day 1), so it is not usable as a gate. Use the real game state instead
+    # (level loaded + day active).
     in_game = (current_day != 0) and is_in_level(game) and is_day_active(game)
 
     def add_pikmin(color: str, stage: str, amount: int) -> bool:
-        """Applique un bonus. Renvoie toujours True : le compteur persistant
-        (STAGE) est la source de verite et doit toujours etre incremente
-        immediatement, que l'oignon de cette couleur soit ou non charge en
-        memoire en ce moment (il ne l'est que si on est physiquement dans la
-        zone qui le contient — jamais sur la carte du monde, par exemple).
+        """Apply a bonus. Always returns True.
 
-        Avant ce fix, tant que l'oignon n'etait pas resolu, l'ecriture STAGE
-        elle-meme etait sautee (pas seulement la sync visuelle DYN) : le
-        bonus restait en attente indefiniment, sans jamais apparaitre dans le
-        total tant que le jeu ne le resynchronisait pas lui-meme au
-        changement de journee suivant. Le compteur affiche (HUD bas-droite,
-        ecran de resultats) semblait alors "en retard d'un jour".
+        The persistent counter (STAGE) is the source of truth and is always
+        incremented immediately, whether or not this color's onion is loaded
+        in memory (it only is when the player is in the area containing it,
+        never on the world map for example).
 
-        La synchronisation live dans l'oignon vivant (DYN, mHeldPikis) reste
-        tentee en best-effort quand on est en jeu et que l'oignon est
-        resolu, pour un rendu instantane sans attendre le jour suivant, mais
-        son echec ne doit plus jamais empecher ni retarder l'ecriture STAGE.
+        The live sync into the onion (DYN, mHeldPikis) is best-effort when in
+        game and the onion is resolved; its failure never blocks the STAGE write.
         """
         s_addr = stage_addrs[color][stage]
         old_s = read_u32(s_addr)
@@ -3648,12 +3571,9 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                 f"[DEBUG] STAGE 0x{s_addr:08X} {color}/{stage} : {old_s} -> {old_s + amount} (+{amount})"
             )
 
-        # GameStat::containerPikis et GameStat::allPikis (par couleur, tous
-        # stades confondus) : ce sont EUX qui alimentent le total HUD affiche
-        # en temps reel (mTotalPikiNum) et l'ecran de resultats. Sans cette
-        # ecriture, le total visible n'augmente jamais sur le coup : il fallait
-        # attendre que le jeu refasse lui-meme ce calcul, ce qui n'arrive
-        # qu'au chargement du jour suivant.
+        # GameStat::containerPikis and GameStat::allPikis (per color, all
+        # stages) feed the real-time HUD total (mTotalPikiNum) and the results
+        # screen.
         container_addr = ONION_DYN_ADDRS.get(game, {}).get(color)
         if container_addr is not None:
             old_c = read_u32(container_addr)
@@ -3667,11 +3587,10 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                 f"[DEBUG] LIVE TOTAL {color} : containerPikis +{amount}, allPikis +{amount}"
             )
 
-        # #33 : le bonus compte comme des Pikmin "germes" (ecran de fin de
-        # journee : germes aujourd'hui + total germes) et apparait tout de suite
-        # dans le graphique de population. Hors journee (carte du monde...),
-        # GameStat sera remis a zero au prochain chargement : on met en attente
-        # et flush_pending_born() l'ajoute au debut de la journee suivante.
+        # The bonus counts as sprouted Pikmin (end-of-day screen) and shows up
+        # in the population graph immediately. Outside a day (world map...)
+        # GameStat is reset on the next load, so queue it and let
+        # flush_pending_born() add it at the start of the next day.
         if in_game and is_in_level(game):
             if not _add_born_pikis(game, color, amount):
                 ctx._pending_born[color] += amount
@@ -3680,13 +3599,10 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             ctx._pending_born[color] += amount
 
         if in_game and stage in DYN_OFFSETS:
-            # #52 : on ne se fie plus a l'adresse mise en cache au "debut de
-            # journee". Au jour 1 (IntroGame puis NewPikiGame) et lors de
-            # certains rechargements, le sentinel ne repasse pas par 0 : le cache
-            # gardait l'oignon de l'ANCIEN chargement (objet libere) et l'ajout
-            # "live" partait dans le vide -> Pikmin visibles seulement le
-            # lendemain (via STAGE). On resout donc l'oignon VIVANT a chaque
-            # application (evenement rare, parcours peu couteux).
+            # Do not trust the address cached at day start (the sentinel may
+            # not go through 0 on day 1 or some reloads, leaving a stale freed
+            # onion). Resolve the LIVE onion on every application (rare event,
+            # cheap lookup).
             base = find_onion_containers(game).get(color)
             setattr(ctx, DYN_BASE_CACHE[color], base)
             if base:
@@ -3704,7 +3620,7 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
                 )
 
         if not in_game and ctx.debug_pbonus:
-            # #52 : expliquer pourquoi l'ajout live dans l'oignon est saute.
+            # Explain why the live onion write is skipped.
             logger.info(
                 f"[DEBUG] {color}/{stage} +{amount} : live onion sync skipped "
                 f"(day={current_day} in_level={is_in_level(game)} "
@@ -3727,9 +3643,8 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
         bonus = count * to_apply
         if ctx.debug_pbonus:
             logger.info(f"[DEBUG] Item  {color}/{stage} +{bonus} (item_id={item_id})")
-        # On ne marque l'item applique QUE si l'ecriture a durablement abouti.
-        # Sinon on le laisse en attente : il sera re-tente au prochain tick, une
-        # fois l'oignon resolu. Evite de perdre des Pikmin recus.
+        # Only mark the item as applied if the write durably succeeded;
+        # otherwise retry on the next tick so received Pikmin are not lost.
         if add_pikmin(color, stage, bonus):
             ctx.pikmin_items_applied[item_id] = total_received
 
@@ -3737,10 +3652,10 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
 
 
 async def _create_super_radar_hint(ctx: P1Context, part_name: str) -> None:
-    """Cree le hint Super Radar (emplacement de la piece du joueur) pour part_name.
+    """Create the Super Radar hint (location of the player's part) for part_name.
 
-    Reutilise les hints de slot_data (comme handle_ship_part_hints). Sans effet si
-    aucun hint n'est disponible ou s'il a deja ete cree.
+    Reuses the slot_data hints (like handle_ship_part_hints). No-op if no hint
+    is available or it was already created.
     """
     slot_hints: dict = (ctx.slot_data or {}).get("hints", {})
     hint_data = slot_hints.get(f"{part_name}_radar") or slot_hints.get(part_name)
@@ -3763,23 +3678,23 @@ async def _create_super_radar_hint(ctx: P1Context, part_name: str) -> None:
         "player": target_player,
     }])
     if ctx.debug_hint:
-        logger.info(f"[DEBUG] Super Radar hint créé pour {part_name} "
-                    f"(pièce collectée côté serveur)")
+        logger.info(f"[DEBUG] Super Radar hint created for {part_name} "
+                    f"(part collected server-side)")
 
 
 async def handle_parts(ctx: P1Context, game: Game):
     slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
     hint_mode = slot_data.get("ship_part_hint_mode", 0)
 
-    # Fait disparaitre physiquement du niveau les pieces validees cote serveur
-    # (ex. autre jeu termine) et non ramassees en jeu. Un seul parcours par tick.
+    # Physically despawn parts checked server-side (e.g. another game finished)
+    # but not picked up in-game. One pass per tick.
     despawn_collected_part_pellets(ctx, game)
-    # Meme chose pour les pieces tenues A L'INTERIEUR d'un monstre/boss, que la
-    # boucle ci-dessus ignore (slot pelletMgr non actif) : on part de la liste
-    # radar pour retirer leur icone et les tuer (issue #11).
+    # Same for parts held INSIDE a monster/boss, which the loop above skips
+    # (pelletMgr slot not active): use the radar list to remove their icon and
+    # kill them.
     despawn_collected_parts_on_radar(ctx, game)
-    # Met a jour capacites du vaisseau (radar/jets) et etoiles par niveau pour
-    # les pieces validees cote serveur (que le jeu n'a pas enregistrees).
+    # Update ship capabilities (radar/jets) and per-level stars for parts
+    # checked server-side (which the game did not register).
     sync_playerstate_parts(ctx, game)
 
     for name, data in ALL_PARTS.items():
@@ -3789,23 +3704,23 @@ async def handle_parts(ctx: P1Context, game: Game):
         except Exception:
             continue
 
-        # Sens normal : collectee en jeu -> on envoie le check au serveur.
+        # Normal direction: collected in-game -> send the check to the server.
         if read == data.collected_byte and data.ap_id not in ctx.checked_locations:
             ctx.locations_checked.add(data.ap_id)
             await ctx.check_locations([data.ap_id])
 
-        # Sens inverse : la location est validee cote serveur (ex. !collect,
-        # release) mais la piece n'est pas collectee en jeu. Le pellet est deja
-        # retire du niveau (despawn ci-dessus) ; l'octet "collectee" (c'est
-        # UfoParts.mPartVisType = Visible) n'est ecrit QU'HORS niveau par
-        # sync_server_collected_parts() (#55). Ici : seulement le hint.
+        # Reverse direction: the location is checked server-side (e.g. !collect,
+        # release) but the part was not collected in-game. The pellet is already
+        # despawned above; the "collected" byte (UfoParts.mPartVisType = Visible)
+        # is only written out of level by sync_server_collected_parts().
+        # Here: only the hint.
         elif data.ap_id in ctx.checked_locations and read != data.collected_byte:
             if hint_mode in (2, 3):
                 await _create_super_radar_hint(ctx, name)
 
 
-# #58 : PlayerState.mUfoParts (_178, UfoParts*, indexe par l'enum UfoPartIndex =
-# ordre de ALL_PARTS), UfoParts de 0xE0 octets, mPartVisType a _DC.
+# PlayerState.mUfoParts (_178, UfoParts*, indexed by the UfoPartIndex enum =
+# ALL_PARTS order); UfoParts is 0xE0 bytes, mPartVisType at _DC.
 PLAYERSTATE_UFOPARTS = 0x178
 UFOPARTS_STRIDE = 0xE0
 UFOPART_VISTYPE_OFF = 0xDC
@@ -3813,11 +3728,11 @@ _PART_INDEX = {data.ap_id: i for i, data in enumerate(ALL_PARTS.values())}
 
 
 def part_vis_addr(game: Game, data) -> int:
-    """Adresse de UfoParts.mPartVisType de la piece (octet "collectee").
+    """Address of the part's UfoParts.mPartVisType (the "collected" byte).
 
-    Resolue via playerState->mUfoParts plutot que par l'adresse de tas codee en
-    dur de P1Data : avec "Emulated Memory Size Override" (#58), la disposition
-    du tas peut changer. Repli sur l'adresse codee en dur si la chaine echoue.
+    Resolved via playerState->mUfoParts rather than the hardcoded heap address
+    from P1Data, since the heap layout can change with "Emulated Memory Size
+    Override". Falls back to the hardcoded address if the chain fails.
     """
     ptr = SYM_PLAYER_STATE_PTR.get(game)
     idx = _PART_INDEX.get(data.ap_id)
@@ -3834,9 +3749,9 @@ def part_vis_addr(game: Game, data) -> int:
 
 
 def _ufo_part_drawable(vis_addr: int) -> bool:
-    """UfoParts chargee et dessinable : mRepairAnimJointIndex (_04) != -1 et
-    mPelletShape (_D4) valide. Sinon, l'afficher / l'animer ferait planter
-    renderParts() ou startUfoPartsMotion() (pointeur de forme nul)."""
+    """UfoParts loaded and drawable: mRepairAnimJointIndex (_04) != -1 and
+    mPelletShape (_D4) valid. Otherwise showing / animating it would crash
+    renderParts() or startUfoPartsMotion() (null shape pointer)."""
     part = vis_addr - UFOPART_VISTYPE_OFF
     try:
         joint = struct.unpack(">i", dme.read_bytes(part + 0x04, 4))[0]
@@ -3846,27 +3761,36 @@ def _ufo_part_drawable(vis_addr: int) -> bool:
     return joint != -1 and _RAM_MIN <= shape < _RAM_MAX
 
 
-async def sync_server_collected_parts(ctx: P1Context, game: Game) -> None:
-    """#55 : affiche sur le S.S. Dolphin les pieces validees cote serveur.
+def _clear_part_anim_mailbox(ctx) -> None:
+    mailbox = getattr(ctx, "part_anim_mailbox", None)
+    if mailbox is None:
+        return
+    try:
+        if dme.read_bytes(mailbox, 4) != b"\x00\x00\x00\x00":
+            dme.write_bytes(mailbox, b"\x00\x00\x00\x00")
+    except Exception:
+        pass
 
-    L'octet "collectee" de ShipPartData est PlayerState::UfoParts.mPartVisType.
-    Avec une ISO patchee recente (boite aux lettres #55), la piece est affichee
-    tout de suite et le jeu lance lui-meme son animation finale. Sinon :
-    Le passer a Visible en pleine journee affichait la piece sans que son
-    animation n'ait ete demarree (getUfoParts / ufoAssignStart jamais appeles) :
-    pose par defaut, a l'envers pour le Chronos Reactor, jusqu'au lendemain.
-    On ne l'ecrit donc que hors niveau (carte du monde, menus) : au debut de la
-    journee suivante, PlayerState::startAfterMotions() pose la piece correctement.
+
+async def sync_server_collected_parts(ctx: P1Context, game: Game) -> None:
+    """Show server-checked parts on the S.S. Dolphin.
+
+    ShipPartData's "collected" byte is PlayerState::UfoParts.mPartVisType.
+    With a recently patched ISO (mailbox), the part is shown right away and the
+    game runs its own final animation. Otherwise, setting it to Visible mid-day
+    would show the part without its animation started (getUfoParts /
+    ufoAssignStart never called), so it is only written out of level (world
+    map, menus): at the next day start PlayerState::startAfterMotions() places
+    the part correctly.
     """
     in_level = _oneplayer_subsection(game) == ONEPLAYER_NEW_PIKI_GAME
     mailbox = getattr(ctx, "part_anim_mailbox", None)
     if in_level:
-        # En journee : seulement avec la boite aux lettres du patch ISO, une
-        # piece a la fois (le jeu la vide apres avoir lance l'animation), et
-        # seulement en gameplay actif : pendant la mort d'Olimar / la fin de
-        # journee, PlayerState::exitCourse() remet les mPelletShape a nullptr
-        # et startUfoPartsMotion() lirait 0x28(nullptr) ("Invalid read from
-        # 0x00000028" dans startUfoPartsMotion).
+        # In a day: only with the ISO patch mailbox, one part at a time (the
+        # game clears it after starting the animation), and only during active
+        # gameplay: on Olimar's death / day end, PlayerState::exitCourse()
+        # resets mPelletShape to nullptr and startUfoPartsMotion() would read
+        # 0x28(nullptr).
         if mailbox is None or not is_day_active(game):
             return
         try:
@@ -3882,12 +3806,12 @@ async def sync_server_collected_parts(ctx: P1Context, game: Game) -> None:
             if dme.read_byte(addr) == data.collected_byte:
                 continue
             if in_level and not _ufo_part_drawable(addr):
-                continue  # piece pas (encore) chargee sur le vaisseau : plus tard
+                continue  # part not (yet) loaded on the ship: later
             dme.write_byte(addr, data.collected_byte)
             if ctx.debug_hint:
-                logger.info(f"[DEBUG] Pièce {name} auto-collectée (validée côté serveur)")
+                logger.info(f"[DEBUG] Part {name} auto-collected (checked server-side)")
             if in_level:
-                # Le stub du jeu appellera startUfoPartsMotion(id, After, false).
+                # The game stub will call startUfoPartsMotion(id, After, false).
                 dme.write_bytes(mailbox, PART_MODEL_ID[name])
                 return
         except Exception:
@@ -3951,38 +3875,38 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
 
 
 # ---------------------------------------------------------------------------
-# Issue #12 : rafraichissement EN PLACE de la carte du monde (story mode).
+# In-place refresh of the world map (story mode).
 #
-# Adresses/offsets verifies dans la decomp projectPiki/pikmin :
+# Offsets verified against the projectPiki/pikmin decomp:
 #   src/plugPikiColin/mapSelect.cpp       -> static zen::DrawWorldMap* mapWindow
-#   include/zen/DrawWorldMap.h            -> offsets DrawWorldMap
+#   include/zen/DrawWorldMap.h            -> DrawWorldMap offsets
 #   src/plugPikiYamashita/drawWorldMap.cpp-> WorldMapCoursePointMgr / CoursePoint
 #
-# La carte fige la visibilite des zones et le compteur de pieces a l'ouverture
-# (constructeur de DrawWorldMap ; WorldMapCoursePointMgr::init lit courseOpen()).
-# Rien ne les reevalue tant qu'on reste dessus -> si une piece/zone arrive
-# pendant qu'on est sur la carte, la zone reste invisible et le compteur fige.
+# The map freezes area visibility and the part counter when it opens
+# (DrawWorldMap constructor; WorldMapCoursePointMgr::init reads courseOpen()).
+# Nothing re-evaluates them while the map stays open, so a part/area received
+# meanwhile leaves the area hidden and the counter stale.
 #
-# On corrige sans patch DOL, via le static mapWindow :
-#   - compteur : mCurrentPartsNum est relu chaque frame par un NumberPicCallBack,
-#     le reecrire met le compteur a jour immediatement ;
-#   - zones : pour une zone debloquee dont le course point n'est pas encore
-#     visible, on met mIsVisible = 1 (selectionnable) et on declenche l'animation
-#     de revelation (mMode=Appear + point.mAppearState=RocketIncoming), exactement
-#     comme le jeu lors d'un vrai deblocage (DrawWorldMap::start -> appear()).
-# Adresses/offsets : cf. SYM_MAP_WINDOW_PTR / MAP_GAME2SCR / WORLDMAP_CHAIN dans
-# P1Symbols.py (generes et maintenus par gen_symbols.py depuis la decomp).
-# #40 : WorldMapCoursePoint.mLinkPoints (_2C), indexe par linkFlag
-# (src/plugPikiYamashita/drawWorldMap.cpp : Up 0, Down 1, Left 2, Right 3).
+# Fixed without a DOL patch, through the static mapWindow:
+#   - counter: mCurrentPartsNum is re-read every frame by a NumberPicCallBack,
+#     so rewriting it updates the counter immediately;
+#   - areas: for an unlocked area whose course point is not visible yet, set
+#     mIsVisible = 1 (selectable) and trigger the reveal animation
+#     (mMode=Appear + point.mAppearState=RocketIncoming), like the game does on
+#     a real unlock (DrawWorldMap::start -> appear()).
+# Addresses/offsets: see SYM_MAP_WINDOW_PTR / MAP_GAME2SCR / WORLDMAP_CHAIN in
+# P1Symbols.py (generated by gen_symbols.py from the decomp).
+# WorldMapCoursePoint.mLinkPoints (_2C), indexed by linkFlag
+# (src/plugPikiYamashita/drawWorldMap.cpp: Up 0, Down 1, Left 2, Right 3).
 CP_LINKPOINTS = 0x2C
-# #45 : DrawWorldMap.mTotalPikiCounts[3] (Blue, Red, Yellow).
+# DrawWorldMap.mTotalPikiCounts[3] (Blue, Red, Yellow).
 DWM_PIKI_COUNTS = 0x44
 
 
-# #40 : liens du curseur quand TOUTES les zones sont ouvertes (index ecran),
-# repris de WorldMapCoursePointMgr::init (branche courseOpen(Distant Spring)).
-# scr : 0 Distant Spring, 1 Forest of Hope, 2 Impact Site, 3 Forest Navel,
-# 4 Final Trial. Ordre des liens : Up, Down, Left, Right.
+# Cursor links when ALL areas are open (screen index), taken from
+# WorldMapCoursePointMgr::init (courseOpen(Distant Spring) branch).
+# scr: 0 Distant Spring, 1 Forest of Hope, 2 Impact Site, 3 Forest Navel,
+# 4 Final Trial. Link order: Up, Down, Left, Right.
 WORLDMAP_FULL_LINKS = (
     (4, 1, None, 3),       # 0 Distant Spring
     (0, None, None, 2),    # 1 Forest of Hope
@@ -3992,8 +3916,8 @@ WORLDMAP_FULL_LINKS = (
 )
 
 
-# Variante du jeu quand Distant Spring (scr 0) est ferme : Forest of Hope
-# monte vers Forest Navel et Forest Navel va a gauche vers Forest of Hope.
+# Game variant when Distant Spring (scr 0) is closed: Forest of Hope goes up
+# to Forest Navel and Forest Navel goes left to Forest of Hope.
 WORLDMAP_DS_CLOSED_LINKS = (
     WORLDMAP_FULL_LINKS[0],
     (3, None, None, 2),
@@ -4013,8 +3937,7 @@ def _worldmap_reach_from(links, open_pts: set, start: int) -> set:
 
 
 def _worldmap_nearest_open(p: int, t: int, open_pts: set):
-    """Zone ouverte la plus proche au-dela de t (t ferme), en traversant les
-    zones fermees de la carte complete."""
+    """Nearest open area beyond t (t closed), walking through closed areas of the full map."""
     seen, queue = {p, t}, [t]
     while queue:
         cur = queue.pop(0)
@@ -4029,14 +3952,14 @@ def _worldmap_nearest_open(p: int, t: int, open_pts: set):
 
 
 def compute_worldmap_links(open_pts: set) -> list:
-    """Liens du curseur pour un ensemble quelconque de zones ouvertes.
+    """Cursor links for an arbitrary set of open areas.
 
-    1. Base = exactement la table du jeu (variante selon Distant Spring ouvert),
-       donc aucun changement dans les cas d'origine.
-    2. Tant qu'une zone ouverte ne peut pas atteindre une autre zone ouverte
-       (deblocage dans un ordre inhabituel, ex. Impact Site + Distant Spring),
-       une direction qui mene a une zone FERMEE est redirigee vers la zone
-       ouverte la plus proche au-dela. Les liens valides ne sont jamais touches.
+    1. Base = the game's own table (variant depends on Distant Spring being
+       open), so the original cases are unchanged.
+    2. While an open area cannot reach another open area (unusual unlock
+       order, e.g. Impact Site + Distant Spring), a direction leading to a
+       CLOSED area is redirected to the nearest open area beyond it. Valid
+       links are never touched.
     """
     base = WORLDMAP_FULL_LINKS if 0 in open_pts else WORLDMAP_DS_CLOSED_LINKS
     links = [list(row) for row in base]
@@ -4061,7 +3984,7 @@ def compute_worldmap_links(open_pts: set) -> list:
 
 
 def _relink_worldmap(wm: int) -> None:
-    """Reecrit mLinkPoints des 5 zones selon les zones visibles (#40)."""
+    """Rewrite mLinkPoints of the 5 areas according to the visible areas."""
     W = WORLDMAP_CHAIN
     mgr = struct.unpack(">I", dme.read_bytes(wm + W["DWM_COURSEPOINTMGR"], 4))[0]
     if not (_RAM_MIN <= mgr < _RAM_MAX):
@@ -4079,13 +4002,13 @@ def _relink_worldmap(wm: int) -> None:
 
 
 def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) -> None:
-    """Rafraichit la carte du monde en place quand une piece/zone arrive alors
-    que le joueur y est deja (issue #12). Sans effet hors carte du monde."""
+    """Refresh the world map in place when a part/area arrives while the player
+    is already on it. No effect outside the world map."""
     ptr_addr = SYM_MAP_WINDOW_PTR.get(game)
     if ptr_addr is None:
         return
-    # Uniquement sur la carte du monde : sinon mapWindow (static jamais remis a
-    # zero) peut pointer un objet libere.
+    # Only on the world map: mapWindow (a static never reset to zero) may
+    # otherwise point to a freed object.
     if _oneplayer_subsection(game) != ONEPLAYER_MAP_SELECT:
         return
     try:
@@ -4093,20 +4016,20 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
     except Exception:
         return
     if not (_RAM_MIN <= wm < _RAM_MAX):
-        return  # pas de carte du monde (mode challenge, ou pas encore construite)
+        return  # no world map (challenge mode, or not built yet)
 
     W = WORLDMAP_CHAIN
     try:
-        # --- compteur de pieces (bas-gauche) : relu chaque frame ---
+        # --- part counter (bottom-left): re-read every frame ---
         cur_addr = wm + W["DWM_CURRPARTS"]
         if struct.unpack(">i", dme.read_bytes(cur_addr, 4))[0] != ship_parts_count:
             dme.write_bytes(cur_addr, struct.pack(">i", ship_parts_count))
 
-        # --- #45 : compteurs de Pikmin par couleur (haut de la carte) ----------
-        # DrawWorldMap.mTotalPikiCounts[Blue/Red/Yellow] (_44) : rempli une seule
-        # fois a l'ouverture de la carte (PlayerState::getTotalPikiCount =
-        # pikiInfMgr, total des stades) mais relu a chaque frame par l'affichage.
-        # On le recalcule depuis les compteurs STAGE (ou arrivent les bonus).
+        # --- per-colour Pikmin counters (top of the map) ----------
+        # DrawWorldMap.mTotalPikiCounts[Blue/Red/Yellow] (_44) is filled once
+        # when the map opens (PlayerState::getTotalPikiCount = pikiInfMgr,
+        # total over all stages) but re-read every frame by the display.
+        # Recompute it from the STAGE counters (where bonuses land).
         stage_addrs = ONION_STAGE_ADDRS_CLIENT.get(game, {})
         for color, idx in (("blue", 0), ("red", 1), ("yellow", 2)):
             stages = stage_addrs.get(color)
@@ -4117,25 +4040,24 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
             if struct.unpack(">i", dme.read_bytes(cnt_addr, 4))[0] != total:
                 dme.write_bytes(cnt_addr, struct.pack(">i", total))
 
-        # --- #40 : liens de navigation du curseur ---------------------------
-        # WorldMapCoursePointMgr::init() calcule les liens haut/bas/gauche/droite
-        # UNE fois, a l'ouverture de la carte, et ne gere qu'un cas : Distant
-        # Spring ouvert ou non. Une zone revelee en direct (#12) restait donc
-        # inaccessible au curseur, et un futur ordre de deblocage melange (ex.
-        # Impact Site + Distant Spring seulement) ne serait pas navigable du
-        # tout. On recalcule donc les liens a partir des zones REELLEMENT
-        # visibles (mIsVisible), independamment de l'ordre de deblocage.
+        # --- cursor navigation links ---------------------------
+        # WorldMapCoursePointMgr::init() computes the up/down/left/right links
+        # ONCE, when the map opens, and only handles one case: Distant Spring
+        # open or not. An area revealed live would be unreachable by the
+        # cursor, and a mixed unlock order (e.g. only Impact Site + Distant
+        # Spring) would not be navigable at all. So the links are recomputed
+        # from the ACTUALLY visible areas (mIsVisible), whatever the unlock order.
         _relink_worldmap(wm)
 
-        # --- zones : on ne revele que si la carte est en mode Operation (idle),
-        #     pour ne pas perturber un dialogue de confirmation / le journal.
+        # --- areas: only reveal when the map is in Operation (idle) mode,
+        #     so a confirmation dialog / the journal is not disturbed.
         if struct.unpack(">i", dme.read_bytes(wm + W["DWM_CURRENTMODE"], 4))[0] != DWM_MODE_OPERATION:
             return
         mgr = struct.unpack(">I", dme.read_bytes(wm + W["DWM_COURSEPOINTMGR"], 4))[0]
         if not (_RAM_MIN <= mgr < _RAM_MAX):
             return
 
-        # Memes seuils que les bits UNLOCKED_AREAS ci-dessus.
+        # Same thresholds as the UNLOCKED_AREAS bits above.
         unlocked = (
             True,                    # 0 Impact Site
             ship_parts_count >= 1,   # 1 Forest of Hope
@@ -4150,16 +4072,16 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
             point = mgr + W["CPM_POINTS"] + MAP_GAME2SCR[game_area] * W["CP_STRIDE"]
             try:
                 if dme.read_byte(point + W["CP_ISVISIBLE"]):
-                    continue  # deja visible -> idempotent
+                    continue  # already visible -> idempotent
             except Exception:
                 continue
-            # Rendre selectionnable + jouer l'animation de revelation.
+            # Make selectable + play the reveal animation.
             dme.write_byte(point + W["CP_ISVISIBLE"], 1)
             dme.write_bytes(point + W["CP_APPEARSTATE"], struct.pack(">i", CP_APPEAR_START))
             dme.write_bytes(point + W["CP_APPEARTIMER"], struct.pack(">f", 0.0))
             triggered = True
             if getattr(ctx, "debug_hint", False):
-                logger.info(f"[DEBUG] Carte : zone {game_area} revelee en place "
+                logger.info(f"[DEBUG] Map: area {game_area} revealed in place "
                             f"(scr={MAP_GAME2SCR[game_area]})")
         if triggered:
             dme.write_bytes(mgr + W["CPM_MODE"], struct.pack(">i", CPM_MODE_APPEAR))
@@ -4168,10 +4090,8 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
 
 
 def _write_playerstate_part_counts(game: Game, total: int, required: int) -> None:
-    """#32 : ecrit l'octet de poids faible de PlayerState.mCurrParts (_17C) et
-    mRequiredUfoPartCount (_180). Les anciennes adresses fixes (PAL 0x812427FF /
-    0x81242803, NTSC 0x81249DE7 / 0x81249DEB) etaient ces memes champs, mais
-    supposaient playerState toujours a la meme adresse de tas."""
+    """Write the low byte of PlayerState.mCurrParts (_17C) and
+    mRequiredUfoPartCount (_180) through the playerState pointer."""
     ptr = SYM_PLAYER_STATE_PTR.get(game)
     if ptr is None:
         return
@@ -4188,19 +4108,19 @@ def _write_playerstate_part_counts(game: Game, total: int, required: int) -> Non
 
 
 def _sync_stage_unlock_anim(game: Game, ap_areas: int, game_areas: int) -> None:
-    """#53 : animation de deblocage de zone de la carte du monde.
+    """Sync the world map area-unlock animation.
 
-    gameflow.mPendingStageUnlockID (-1 = aucune) est pose par
-    PlayState::openStage() : quand Olimar ramasse une piece EN JEU (un check
-    AP), PlayerState::registerPart() debloque la Forest of Hope (>= 1 piece)
-    et programme son animation. Meme si le client remet ensuite les zones a
-    l'etat AP, DrawWorldMap::start() fait APPARAITRE la zone de l'animation et
-    y place le curseur -> Forest of Hope accessible avec 0 piece AP.
+    gameflow.mPendingStageUnlockID (-1 = none) is set by
+    PlayState::openStage(): when Olimar picks up a part IN-GAME (an AP check),
+    PlayerState::registerPart() unlocks Forest of Hope (>= 1 part) and
+    schedules its animation. Even if the client then resets the areas to the
+    AP state, DrawWorldMap::start() makes the animated area APPEAR and puts the
+    cursor there, making Forest of Hope reachable with 0 AP parts.
 
-    - animation visant une zone NON debloquee par l'AP -> annulee (-1) ;
-    - zone nouvellement debloquee par l'AP (bit absent du jeu) -> on programme
-      la vraie animation du jeu pour le prochain passage sur la carte (hors
-      carte du monde : la, #12 rafraichit l'ecran en place).
+    - animation targeting an area NOT unlocked by AP -> cancelled (-1);
+    - area newly unlocked by AP (bit absent in game) -> schedule the game's
+      real animation for the next visit to the map (while on the world map,
+      the in-place refresh updates the screen instead).
     """
     addr = SYM_GAMEFLOW.get(game, {}).get("PENDING_STAGE_UNLOCK")
     if addr is None:
@@ -4210,9 +4130,9 @@ def _sync_stage_unlock_anim(game: Game, ap_areas: int, game_areas: int) -> None:
         want = pending
         if pending >= 0 and not (ap_areas >> pending) & 1:
             want = -1
-        new_bits = ap_areas & ~game_areas & 0b11110  # Impact Site (bit 0) exclu
+        new_bits = ap_areas & ~game_areas & 0b11110  # Impact Site (bit 0) excluded
         if new_bits and _oneplayer_subsection(game) != ONEPLAYER_MAP_SELECT:
-            want = new_bits.bit_length() - 1  # zone la plus avancee
+            want = new_bits.bit_length() - 1  # most advanced area
         if want != pending:
             dme.write_bytes(addr, struct.pack(">i", want))
     except Exception as e:
@@ -4220,9 +4140,9 @@ def _sync_stage_unlock_anim(game: Game, ap_areas: int, game_areas: int) -> None:
 
 
 def is_final_ending(game: Game) -> bool:
-    """#32 : vrai pendant la sequence de fin (fin de la derniere journee avec
-    30 pieces : decollage, oignons, Olimar dans l'espace). Le jeu y reinitialise
-    les tas Teki/Movie pour les cinematiques ; le client ne doit plus rien ecrire."""
+    """True during the ending sequence (end of the last day with 30 parts:
+    liftoff, onions, Olimar in space). The game reinitialises the Teki/Movie
+    heaps for the cutscenes; the client must not write anything then."""
     if _oneplayer_subsection(game) != ONEPLAYER_NEW_PIKI_GAME or is_day_active(game):
         return False
     ptr = SYM_PLAYER_STATE_PTR.get(game)
@@ -4263,22 +4183,19 @@ async def handle_areas(ctx: P1Context, game: Game):
     if ship_parts_count >= 29:
         areas += 0b10000
 
-    # #32 : mCurrParts / mRequiredUfoPartCount ecrits via le pointeur
-    # playerState (et non plus a une adresse de tas codee en dur), et seulement
-    # si la valeur change.
+    # mCurrParts / mRequiredUfoPartCount are written through the playerState
+    # pointer, and only when the value changes.
     _write_playerstate_part_counts(game, ship_parts_count, total_required)
     game_areas = dme.read_byte(UNLOCKED_AREAS[game])
     _sync_stage_unlock_anim(game, areas, game_areas)
     if game_areas != areas:
         dme.write_byte(UNLOCKED_AREAS[game], areas)
 
-    # Stage visuel du S.S. Dolphin (issue #8). Le jeu ne recalcule
-    # mShipUpgradeLevel qu'a l'interieur de PlayerState::registerPart(),
-    # jamais automatiquement a partir du nombre de pieces : comme les checks
-    # AP contournent cette fonction (pieces marquees collectees directement
-    # en memoire), le vaisseau ne changeait jamais visuellement de stage.
-    # Memes seuils que le jeu (verifies dans la decomp, et deja utilises
-    # ci-dessus pour debloquer les zones).
+    # Visual stage of the S.S. Dolphin. The game only recomputes
+    # mShipUpgradeLevel inside PlayerState::registerPart(), never from the
+    # part count; AP checks bypass that function (parts are marked collected
+    # directly in memory), so the ship stage must be set here.
+    # Same thresholds as the game (see the area unlocks above).
     if ship_parts_count >= 30:
         ship_upgrade_level = 5   # PERFECT
     elif ship_parts_count >= 29:
@@ -4298,15 +4215,15 @@ async def handle_areas(ctx: P1Context, game: Game):
             ps = struct.unpack(">I", dme.read_bytes(ps_ptr, 4))[0]
             if _RAM_MIN <= ps < _RAM_MAX:
                 addr = ps + PLAYERSTATE_OFFSETS["mShipUpgradeLevel"]
-                # Jamais decroissant : ne pas retrograder le visuel si, pour
-                # une raison quelconque, ship_parts_count redescend un tick.
+                # Never decreasing: do not downgrade the visual if
+                # ship_parts_count drops for a tick.
                 if dme.read_byte(addr) < ship_upgrade_level:
                     dme.write_byte(addr, ship_upgrade_level)
         except Exception as e:
             logger.debug(f"Error writing mShipUpgradeLevel: {e}")
 
-    # Issue #12 : si on est deja sur la carte du monde, rafraichir les zones
-    # debloquees et le compteur de pieces sans avoir a ressortir/relancer un jour.
+    # If already on the world map, refresh unlocked areas and the part counter
+    # without having to leave/restart a day.
     _refresh_worldmap_screen(ctx, game, ship_parts_count)
 
 
@@ -4358,14 +4275,14 @@ async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
 
 
 async def handle_qol_first_day(ctx: P1Context, game: Game) -> None:
-    """QOL 'Normal First Day' : efface PlayerState.mIsTutorialMode.
+    """QOL 'Normal First Day': clear PlayerState.mIsTutorialMode.
 
-    Tant que ce flag vaut 1, le jeu traite le jour 1 comme un tutoriel : intro du
-    crash (DEMOID_OlimarWakeUp au lieu de l'atterrissage normal), horloge figee et
-    pop-ups scriptes. Le forcer a 0 des qu'une sauvegarde est chargee rend le jour 1
-    classique. Le jour 1 charge le niveau sans passer par la carte du monde, donc on
-    l'efface a chaque tick (tres tot) et on continue de le corriger si l'intro est
-    passee avant notre premier tick.
+    While this flag is 1, the game treats day 1 as a tutorial: crash intro
+    (DEMOID_OlimarWakeUp instead of the normal landing), frozen clock and
+    scripted pop-ups. Forcing it to 0 once a save is loaded makes day 1
+    behave normally. Day 1 loads the level without going through the world
+    map, so it is cleared every tick (very early) and kept corrected even if
+    the intro played before our first tick.
     """
     slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
     if not slot_data.get("normal_first_day", 1):
@@ -4390,7 +4307,7 @@ async def handle_qol_first_day(ctx: P1Context, game: Game) -> None:
 
 
 def _set_demo_flags(stored: int, indices) -> None:
-    """Marque une liste d'index EDemoFlags comme deja vus dans le bitset RAM."""
+    """Mark a list of EDemoFlags indices as already seen in the RAM bitset."""
     for idx in indices:
         byte_addr = stored + (idx >> 3)
         cur = dme.read_byte(byte_addr)
@@ -4400,17 +4317,17 @@ def _set_demo_flags(stored: int, indices) -> None:
 
 
 async def handle_qol_skip_cutscenes(ctx: P1Context, game: Game) -> None:
-    """QOL : saute les cinematiques/textes listes dans l'OptionSet 'skip_events',
-    en marquant leurs DemoFlags comme deja vus (mStoredFlags = u8[32] pointe par
-    PlayerState+0x5C ; bit du flag i = mStoredFlags[i>>3] & (1 << (i & 7))).
+    """QOL: skip the cutscenes/texts listed in the 'skip_events' OptionSet by
+    marking their DemoFlags as already seen (mStoredFlags = u8[32] pointed to by
+    PlayerState+0x5C; bit of flag i = mStoredFlags[i>>3] & (1 << (i & 7))).
 
-    Cas special "Onion Discovery" : sauter la decouverte prive aussi le jeu de
-    l'activation (boot) et de l'enregistrement (suivi + affichage) de l'oignon.
-    On repare via mContainerFlag + mDisplayPikiFlag :
-      * bits boot (y) actives pour toutes les couleurs (oignon actif au spawn) ;
-      * bit suivi (x) + bit affichage active pour l'oignon reellement accede par
-        Olimar (navi->mGoalItem), pas a la simple arrivee dans la zone.
-    ("Part Collection" et "Ship Upgrade" sont des patches DOL, appliques au patch.)
+    Special case "Onion Discovery": skipping the discovery also deprives the
+    game of the onion's activation (boot) and registration (tracking + display).
+    This is repaired via mContainerFlag + mDisplayPikiFlag:
+      * boot bits (y) set for all colours (onion active at spawn);
+      * tracking bit (x) + display bit set for the onion Olimar actually
+        reached (navi->mGoalItem), not merely for entering the area.
+    ("Part Collection" and "Ship Upgrade" are DOL patches, applied at patch time.)
     """
     slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
     skips = set(slot_data.get("skip_events", []))
@@ -4428,27 +4345,27 @@ async def handle_qol_skip_cutscenes(ctx: P1Context, game: Game) -> None:
         if not (_RAM_MIN <= stored < _RAM_MAX):
             return
 
-        # Pre-marque les DemoFlags de toutes les entrees selectionnees.
+        # Pre-mark the DemoFlags of all selected entries.
         flags = []
         for key in skips:
             flags.extend(SKIP_EVENT_DEMOFLAGS.get(key, ()))
         if flags:
             _set_demo_flags(stored, flags)
 
-        # Reparation onion (suivi + affichage) si sa decouverte est sautee.
+        # Onion repair (tracking + display) if its discovery is skipped.
         if "Onion Discovery" in skips:
             cf_addr = ps + PLAYERSTATE_OFFSETS["mContainerFlag"]
             cf = dme.read_byte(cf_addr)
             new_cf = cf | CONTAINER_BOOT_ALL
-            if (new_cf & 0x07) != 0x07:  # un bit de suivi manque encore
+            if (new_cf & 0x07) != 0x07:  # a tracking bit is still missing
                 navi = _resolve_olimar(game)
                 if navi:
                     goal = struct.unpack(">I", dme.read_bytes(navi + NAVI_CHAIN["NAVI_GOALITEM"], 4))[0]
-                    # On NE pose hasContainer QUE si mGoalItem pointe vraiment sur
-                    # un onion vivant (mObjType == OBJTYPE_Goal). Un pointeur
-                    # perime donnerait une couleur erronee -> hasContainer d'une
-                    # couleur sans onion present -> null->refresh() a la fin de
-                    # journee (cinematique d'envol d'onion) -> crash.
+                    # Only set hasContainer if mGoalItem really points to a live
+                    # onion (mObjType == OBJTYPE_Goal). A stale pointer would give
+                    # a wrong colour -> hasContainer for a colour with no onion
+                    # present -> null->refresh() at end of day (onion liftoff
+                    # cutscene) -> crash.
                     if _RAM_MIN <= goal < _RAM_MAX:
                         objtype = int.from_bytes(
                             dme.read_bytes(goal + ONION_CHAIN["CREATURE_OBJTYPE"], 4), "big", signed=True
@@ -4461,9 +4378,9 @@ async def handle_qol_skip_cutscenes(ctx: P1Context, game: Game) -> None:
             if new_cf != cf:
                 dme.write_byte(cf_addr, new_cf)
 
-            # mDisplayPikiFlag doit couvrir les memes couleurs que le suivi (x),
-            # sinon les onions possedes/compteurs manquent dans la carte du monde
-            # et le resume de fin de journee. Bits identiques (1<<couleur).
+            # mDisplayPikiFlag must cover the same colours as tracking (x),
+            # otherwise owned onions/counters are missing on the world map and
+            # the end-of-day summary. Identical bits (1 << colour).
             owned = new_cf & 0x07
             df_addr = ps + PLAYERSTATE_OFFSETS["mDisplayPikiFlag"]
             df = dme.read_byte(df_addr)
@@ -4473,14 +4390,14 @@ async def handle_qol_skip_cutscenes(ctx: P1Context, game: Game) -> None:
         pass
 
 
-# --- #34 : rayon de lumiere (cone) sous l'oignon ------------------------------
-# GoalItem (include/GoalItem.h) :
+# --- Onion light beam (cone) ---------------------------------------------------
+# GoalItem (include/GoalItem.h):
 #   _3F6 bool mIsClosing         _3F8 f32 mConeSizeTimer
-#   _3FC Vector3f echelle pleine du cone
+#   _3FC Vector3f full cone scale
 #   _408 bool mIsConeEmit        _40C EffShpInst* mSpotModelEff (mSRT.s @ +0x14)
-# Un oignon pas encore decouvert est charge avec un cone (et une echelle de
-# reference) a 0 ; seule la cinematique de decouverte le fait apparaitre. Avec
-# "Onion Discovery" sautee, le rayon manquait donc jusqu'au lendemain.
+# An undiscovered onion is loaded with a cone (and reference scale) of 0; only
+# the discovery cutscene makes it appear. With "Onion Discovery" skipped, the
+# beam would therefore be missing until the next day.
 GOAL_IS_CLOSING = 0x3F6
 GOAL_CONE_TIMER = 0x3F8
 GOAL_CONE_FULL_SCALE = 0x3FC
@@ -4488,14 +4405,14 @@ GOAL_IS_CONE_EMIT = 0x408
 GOAL_SPOT_MODEL_EFF = 0x40C
 EFFSHPINST_SCALE = 0x14
 _BOOT_BIT = {"blue": 0x08, "red": 0x10, "yellow": 0x20}  # hasBootContainer (y)
-CONE_DEFAULT_SCALE = 0.1   # echelle pleine du cone observee sur tous les oignons
-CONE_MAX_TRIES = 5         # corrections max par oignon et par journee
-CONE_START_DELAY = 2.0     # #46 : secondes de jeu libre avant de toucher aux cones
+CONE_DEFAULT_SCALE = 0.1   # full cone scale observed on all onions
+CONE_MAX_TRIES = 5         # max fixes per onion per day
+CONE_START_DELAY = 2.0     # seconds of free gameplay before touching cones
 MOVIE_IS_ACTIVE = 0x124    # MoviePlayer.mIsActive (bool)
 
 
 def is_movie_playing(game: Game) -> bool:
-    """#46 : vrai si une cinematique (MoviePlayer) est en cours."""
+    """Return True if a cutscene (MoviePlayer) is currently playing."""
     gf = SYM_GAMEFLOW.get(game)
     if not gf or "MOVIE_PLAYER_PTR" not in gf:
         return False
@@ -4509,21 +4426,19 @@ def is_movie_playing(game: Game) -> bool:
 
 
 async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
-    """#34 : avec "Onion Discovery" sautee, force le rayon de tous les oignons
-    presents des le debut de la journee.
+    """With "Onion Discovery" skipped, force the beam of all present onions from the start of the day.
 
-    Un cone a 0 recoit l'echelle d'un oignon normal (sinon 0.1), ecrite
-    directement dans son modele (pas de startConeEmit : il forcerait l'IA d'un
-    oignon non decouvert en GOAL_Wait). Le jeu pouvant re-reduire le cone juste
-    apres le chargement, on reverifie a chaque tick, au plus CONE_MAX_TRIES fois.
+    A cone at 0 gets the scale of a normal onion (else 0.1), written directly
+    into its model (no startConeEmit: it would force an undiscovered onion's AI
+    into GOAL_Wait). The game may shrink the cone again right after loading, so
+    it is re-checked every tick, at most CONE_MAX_TRIES times.
     """
     slot_data = getattr(ctx, "slot_data", None) or {}
     if "Onion Discovery" not in slot_data.get("skip_events", []):
         return
-    # #46 : pas pendant la cinematique de debut de journee (atterrissage des
-    # oignons, qui ouvre elle-meme les cones) ni sous un menu ; puis on attend
-    # CONE_START_DELAY secondes de jeu libre, sinon le rayon apparaissait avant
-    # la fin de la cinematique.
+    # Not during the start-of-day cutscene (onion landing, which opens the cones
+    # itself) nor under a menu; then wait CONE_START_DELAY seconds of free
+    # gameplay, otherwise the beam would appear before the cutscene ends.
     if is_movie_playing(game) or is_overlay_active(game):
         ctx._cone_free_since = None
         return
@@ -4550,7 +4465,7 @@ async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
     def f32(addr: int) -> float:
         return struct.unpack(">f", dme.read_bytes(addr, 4))[0]
 
-    # Echelle de reference : celle d'un oignon dont le cone est normal.
+    # Reference scale: that of an onion whose cone is normal.
     ref = CONE_DEFAULT_SCALE
     for g in onions.values():
         try:
@@ -4564,38 +4479,39 @@ async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
     for color in todo:
         goal = onions.get(color)
         if not goal:
-            continue  # oignon absent de cette zone
+            continue  # onion not present in this area
         try:
             if dme.read_byte(goal + GOAL_IS_CONE_EMIT) or dme.read_byte(goal + GOAL_IS_CLOSING):
-                continue  # animation du jeu en cours
+                continue  # game animation in progress
             eff = struct.unpack(">I", dme.read_bytes(goal + GOAL_SPOT_MODEL_EFF, 4))[0]
             if not (_RAM_MIN <= eff < _RAM_MAX):
                 continue
             if f32(eff + EFFSHPINST_SCALE) > 0.0:
-                continue  # visible pour l'instant : on reverifiera
+                continue  # currently visible: will re-check
             tries = ctx._cone_tries.get(color, 0)
             if tries >= CONE_MAX_TRIES:
                 ctx._cone_ok.add(color)
                 if ctx.debug_pbonus:
-                    logger.info(f"[DEBUG] Cone de l'oignon {color} : {CONE_MAX_TRIES} essais, abandon.")
+                    logger.info(f"[DEBUG] {color} onion cone: {CONE_MAX_TRIES} tries, giving up.")
                 continue
             ctx._cone_tries[color] = tries + 1
             if f32(goal + GOAL_CONE_FULL_SCALE) <= 0.0:
                 dme.write_bytes(goal + GOAL_CONE_FULL_SCALE, full)
             dme.write_bytes(eff + EFFSHPINST_SCALE, full)
             if ctx.debug_pbonus:
-                logger.info(f"[DEBUG] Cone de l'oignon {color} relance (echelle {ref:.2f}).")
+                logger.info(f"[DEBUG] {color} onion cone re-triggered (scale {ref:.2f}).")
         except Exception as e:
             if ctx.debug_pbonus:
-                logger.info(f"[DEBUG] Cone de l'oignon {color} : erreur {e!r}")
+                logger.info(f"[DEBUG] {color} onion cone: error {e!r}")
 
 
 async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
-    """QOL 'Always Keep One Leaf Pikmin' : garde >=1 Pikmin Leaf, UNIQUEMENT pour
-    les couleurs reellement possedees (hasContainer). Forcer une couleur non
-    possedee creait des Pikmin fantomes sans onion associe -> la sequence de fin
-    de journee (cinematique d'envol par onion + resultats) plantait sur un
-    pointeur nul. Skip la cinematique de nouvelle pousse en debut de journee.
+    """QOL 'Always Keep One Leaf Pikmin': keep at least 1 Leaf Pikmin, ONLY for
+    colors actually owned (hasContainer).
+
+    Forcing an unowned color would create ghost Pikmin with no onion, and the
+    end-of-day sequence (per-onion fly-away cutscene + results) would crash on
+    a null pointer. Also skips the new-sprout cutscene at the start of the day.
     """
     slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
     if not slot_data.get("always_min_one_leaf", 1):
@@ -4617,7 +4533,7 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
 
     for color in ("red", "yellow", "blue"):
         if not (owned & CONTAINER_COLOR_BIT.get(color, 0)):
-            continue  # couleur non possedee -> pas de Pikmin fantome
+            continue  # color not owned -> no ghost Pikmin
         addr = stage.get(color, {}).get("leaf")
         if addr is None:
             continue
@@ -4630,14 +4546,14 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
 
 
 async def handle_qol_trip_item(ctx: P1Context, game: Game) -> None:
-    """QOL Disable Pikmin Trip en mode 'item' : quand l'item 'Trip Immunity' est
-    recu, ecrit 2.0f a la place de la constante 0.9999f du test de trip. getRand
-    renvoie [0,1[ -> la condition n'est jamais vraie -> plus de trip.
+    """QOL Disable Pikmin Trip in 'item' mode: once the 'Trip Immunity' item is
+    received, write 2.0f over the 0.9999f constant used by the trip test.
+    getRand returns [0,1[, so the condition is never true and Pikmin never trip.
 
-    On ecrit une DONNEE (pas du code) : le JIT de Dolphin la relit a chaque
-    execution. Une reecriture de code a chaud (bne->b), elle, restait sans effet
-    car Dolphin ne recompile pas un bloc deja JIT-e. On re-verifie/reapplique
-    chaque tick (bon marche) pour survivre a un rechargement de la .sdata2."""
+    This writes DATA (not code): Dolphin's JIT re-reads it on every execution,
+    whereas patching code (bne->b) has no effect since Dolphin does not
+    recompile an already JIT-ed block. It is re-checked/re-applied every tick
+    (cheap) to survive a .sdata2 reload."""
     slot_data = ctx.slot_data if hasattr(ctx, "slot_data") and ctx.slot_data else {}
     if int(slot_data.get("disable_pikmin_trip", 1)) != 2:  # option_item
         return
@@ -4646,14 +4562,14 @@ async def handle_qol_trip_item(ctx: P1Context, game: Game) -> None:
 
     addr = SYM_TRIP_RAND_CONST.get(game)
     if addr is None:
-        return  # version sans adresse connue (NTSC) : non applique
+        return  # version with no known address (NTSC): not applied
     want = struct.pack(">f", TRIP_DISABLED_FLOAT)
     try:
         if dme.read_bytes(addr, 4) != want:
             dme.write_bytes(addr, want)
             if not getattr(ctx, "_trip_ram_patched", False):
                 ctx._trip_ram_patched = True
-                logger.info(f"[Pikmin] Trip Immunity applique (constante @ 0x{addr:08X}).")
+                logger.info(f"[Pikmin] Trip Immunity applied (constant @ 0x{addr:08X}).")
     except Exception:
         pass
 
@@ -4786,8 +4702,8 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
 
     hint_mode_is_both = hint_mode == 3
 
-    # Adresse resolue dynamiquement a chaque tick : elle depend de l'allocation
-    # courante de la fenetre de texte. PAL et NTSC-U.
+    # Address resolved dynamically every tick: it depends on the current
+    # allocation of the text window. PAL and NTSC-U.
     text_addr = resolve_ship_part_text_addr(game)
     if text_addr is None:
         return
@@ -4802,12 +4718,10 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
         ctx.last_hint_bytes = b""
         return
 
-    # Quelle piece est affichee ? On lit gameflow.mShipTextPartID (s16), qui est
-    # un symbole STATIQUE present en PAL comme en NTSC. L'ancienne methode
-    # cherchait le nom de la piece dans le texte lui-meme : elle dependait de la
-    # langue detectee, echouait des qu'une traduction etait absente ou mal
-    # orthographiee, et cessait de fonctionner une fois notre propre texte ecrit
-    # (le nom d'origine ayant disparu du buffer).
+    # Which part is displayed? Read gameflow.mShipTextPartID (s16), a STATIC
+    # symbol present in both PAL and NTSC, rather than matching the part name in
+    # the text itself (which depends on the language and disappears once our
+    # own text is written).
     detected_part = read_displayed_part(game)
     if detected_part is None:
         return
@@ -4872,12 +4786,9 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
             logger.debug(f"Error writing hint text: {e}")
 
     else:
-        # Meme piece toujours affichee : on reecrit simplement le meme texte.
-        # Le mode 3 affiche un texte combine unique (objet + radar), construit
-        # par build_hint_bytes(). Il existait une bascule alternant toutes les
-        # quelques secondes entre les deux infos, mais elle n'a jamais fonctionne
-        # (constante d'intervalle jamais definie) et le texte combine est plus
-        # lisible : elle est supprimee.
+        # Same part still displayed: simply rewrite the same text.
+        # Mode 3 shows a single combined text (item + radar) built by
+        # build_hint_bytes().
         if ctx.last_hint_bytes:
             try:
                 dme.write_bytes(text_addr, ctx.last_hint_bytes)
@@ -4896,8 +4807,8 @@ async def handle_ship_part_hints(ctx: P1Context, game: Game) -> None:
 
 
 def read_iso_slot_name() -> str:
-    """#38 : cherche le bloc du nom de slot ecrit par le patcher (P1Rom) dans la
-    RAM du jeu (.text du DOL) et renvoie le nom, ou "" (ancienne ISO)."""
+    """Search game RAM (DOL .text) for the slot-name block written by the patcher
+    (P1Rom) and return the name, or "" (older ISO)."""
     from .P1Rom import SLOT_NAME_MAGIC, SLOT_NAME_MAX
     start, end, chunk = 0x80003000, 0x80400000, 0x40000
     overlap = len(SLOT_NAME_MAGIC) + 1 + SLOT_NAME_MAX
@@ -4918,9 +4829,9 @@ def read_iso_slot_name() -> str:
 
 
 def find_part_anim_mailbox() -> Optional[int]:
-    """#55 : adresse de la boite aux lettres d'animation des pieces (patch ISO,
-    P1Rom.apply_part_anim_patch), ou None (ISO patchee avant ce changement).
-    Le bloc est dans une zone libre du .init du DOL (0x80003100-0x80005600)."""
+    """Return the address of the part-animation mailbox (ISO patch,
+    P1Rom.apply_part_anim_patch), or None (ISO patched without it).
+    The block lives in a free area of the DOL .init (0x80003100-0x80005600)."""
     from .P1Rom import PART_ANIM_MAGIC
     try:
         data = dme.read_bytes(0x80003000, 0x3000)
@@ -4931,8 +4842,10 @@ def find_part_anim_mailbox() -> Optional[int]:
 
 
 def find_death_cause_ring() -> Optional[int]:
-    """#57 : adresse du tampon des derniers coups recus par Olimar (patch ISO,
-    P1Rom.apply_death_cause_patch), ou None (ISO patchee avant ce changement)."""
+    """Return the address of the buffer holding Olimar's last received hits.
+
+    The buffer is created by the ISO patch (P1Rom.apply_death_cause_patch).
+    Returns None if the ISO was patched without it."""
     from .P1Rom import DEATH_CAUSE_MAGIC
     try:
         data = dme.read_bytes(0x80003000, 0x3000)
@@ -4945,17 +4858,12 @@ def find_death_cause_ring() -> Optional[int]:
 def _run_in_daemon_thread(func, *args) -> "asyncio.Future":
     """Execute func(*args) in a throwaway daemon thread and return an awaitable.
 
-    Bug fix (#2 - crash/freeze on client close): loop.run_in_executor(None, ...)
-    submits work to asyncio's default ThreadPoolExecutor. If a dolphin_memory_engine
-    call (hook()/read_bytes()) ever blocks (Dolphin unresponsive, OS hiccup, etc.),
-    the worker thread stays stuck running it. concurrent.futures registers an atexit
-    hook that joins EVERY thread it has ever spawned, even ones still blocked inside a
-    call — the asyncio.wait_for() timeout around the call only stops *waiting* for the
-    result, it does not kill the underlying thread. So on process exit (closing the
-    client window), Python can hang forever joining that stuck thread, with no error
-    message: exactly the reported freeze/crash.
-    A plain daemon thread is not tracked by concurrent.futures' shutdown machinery, so
-    the interpreter kills it instead of joining it, letting the client actually close.
+    loop.run_in_executor(None, ...) uses asyncio's default ThreadPoolExecutor, and
+    concurrent.futures registers an atexit hook that joins every thread it spawned,
+    even one stuck in a blocked dolphin_memory_engine call (asyncio.wait_for() only
+    stops waiting, it does not kill the thread). That could hang the process on exit.
+    A plain daemon thread is not tracked by that machinery, so the interpreter kills
+    it on exit and the client can close.
     """
     fut: concurrent.futures.Future = concurrent.futures.Future()
 
@@ -4981,20 +4889,16 @@ async def dolphin_loop(ctx: P1Context):
         except asyncio.TimeoutError:
             pass
 
-        # #2 : ne pas enchainer un tick complet (lectures DME, handlers) quand
-        # la fermeture vient d'etre demandee.
+        # Do not run a full tick (DME reads, handlers) once shutdown was requested.
         if ctx.exit_event.is_set():
             break
 
         ctx.watcher_event.clear()
 
         if ctx.needs_location_scout:
-            # On ne scoute QUE les locations reellement existantes pour ce joueur,
-            # fournies par le serveur (missing | checked). Scouter ALL_LOCATIONS
-            # (la liste complete codee en dur, dont les 300 locations Pikmin
-            # possibles) faisait planter le serveur avec "No location 71500 for
-            # player" des que les locations Pikmin etaient activees avec un
-            # intervalle : seule une fraction est creee, les autres n'existent pas.
+            # Only scout locations that actually exist for this player, as provided
+            # by the server (missing | checked). Scouting the hardcoded ALL_LOCATIONS
+            # would request locations that were never created and error the server.
             server_locs = list(set(ctx.checked_locations) | set(ctx.missing_locations))
             if server_locs:
                 ctx.needs_location_scout = False
@@ -5006,16 +4910,16 @@ async def dolphin_loop(ctx: P1Context):
                     "locations": server_locs,
                     "create_as_hint": 0,
                 }])
-            # Si l'ensemble est encore vide (Connected pas totalement traite),
-            # on laisse needs_location_scout a True : reessai au prochain tick.
+            # If the set is still empty (Connected not fully processed), leave
+            # needs_location_scout True to retry on the next tick.
 
         if ctx.scout_sent and not ctx.scout_received:
             elapsed = time.monotonic() - ctx.scout_sent_time
             if elapsed >= SCOUT_RETRY_INTERVAL:
                 ctx.scout_sent_time = time.monotonic()
                 server_locs = list(set(ctx.checked_locations) | set(ctx.missing_locations))
-                # #41 : message de debug, visible uniquement avec /debughint
-                # (les LocationScouts alimentent les hints de pieces).
+                # Debug message, only visible with /debughint
+                # (LocationScouts feed the part hints).
                 if ctx.debug_hint:
                     logger.info(f"[DEBUG] Retrying LocationScouts (no response after {elapsed:.0f}s, "
                                 f"scouted={len(ctx.scouted_locations)})")
@@ -5060,9 +4964,9 @@ async def dolphin_loop(ctx: P1Context):
             slot_data = getattr(ctx, "slot_data", {}) or {}
             suffix = slot_data.get("game_id_suffix", "")
 
-            # Une fois patchee, l'ISO ne porte plus GPIP01/GPIE01 : c'est le
-            # prefixe du Game ID qui indique la version d'origine, et donc quelles
-            # adresses memoire utiliser. P1P = PAL, P1E = NTSC-U.
+            # A patched ISO no longer has GPIP01/GPIE01: the Game ID prefix tells
+            # the original version, hence which memory addresses to use.
+            # P1P = PAL, P1E = NTSC-U.
             base_version = BASE_ID_BY_PATCHED_PREFIX.get(game[:3])
 
             if base_version is None:
@@ -5070,13 +4974,13 @@ async def dolphin_loop(ctx: P1Context):
                                            f"[{game!r}, {'direct' if dme.uses_direct_access() else 'dme'}]")
                 continue
 
-            # #38 : ISO patchee detectee -> nom du slot + connexion en attente.
-            # Relu si une autre ISO patchee est lancee (Game ID different).
+            # Patched ISO detected: read the slot name and start the pending connection.
+            # Re-read if another patched ISO is launched (different Game ID).
             if game != ctx._detected_game_id:
                 ctx._detected_game_id = game
                 ctx.iso_slot_name = read_iso_slot_name()
-                ctx.part_anim_mailbox = find_part_anim_mailbox()  # #55
-                ctx.death_cause_ring = find_death_cause_ring()     # #57
+                ctx.part_anim_mailbox = find_part_anim_mailbox()
+                ctx.death_cause_ring = find_death_cause_ring()
             if not ctx.game_detected:
                 ctx.game_detected = True
                 if ctx._pending_connect is not None:
@@ -5099,44 +5003,43 @@ async def dolphin_loop(ctx: P1Context):
             dme.un_hook()
             continue
 
-        # Deux niveaux de verrou selon ce que lit/ecrit chaque handler :
-        #   in_level    = Olimar dans un niveau (NewPikiGame)
-        #   save_active = niveau OU carte du monde (choix de niveau)
-        # A l'ecran titre et au menu de sauvegarde, les deux sont faux.
+        # Two gating levels depending on what each handler reads/writes:
+        #   in_level    = Olimar is in a level (NewPikiGame)
+        #   save_active = level OR world map (level select)
+        # On the title screen and save menu, both are false.
         in_level = is_in_level(game_version)
         save_active = is_save_active(game_version)
 
-        # #4 Custom Save : chargements / sauvegardes du jeu.
+        # Custom Save: track game loads / saves.
         try:
             track_game_save(ctx, game_version)
         except Exception:
-            logger.exception("[Pikmin] Erreur dans track_game_save — la boucle continue.")
+            logger.exception("[Pikmin] Error in track_game_save - the loop continues.")
 
-        # Message de synchronisation base sur save_active : passer par la carte
-        # du monde entre deux niveaux ne doit pas afficher "en pause".
+        # Sync message based on save_active: passing through the world map
+        # between levels must not show "paused".
         if save_active != ctx._save_was_loaded:
             lang = getattr(ctx, "detected_language", "en")
             if save_active:
                 msg = SYNC_ACTIVE_MSG.get(lang, SYNC_ACTIVE_MSG["en"])
                 logger.info(f"[Pikmin] {msg}")
-                # Repartir proprement a la reprise : on rescanne les locations et
-                # on laisse handle_pikmin_items re-appliquer les bonus recus.
+                # Restart cleanly on resume: rescan locations and let
+                # handle_pikmin_items re-apply the received bonuses.
                 ctx.needs_location_scout = True
             else:
                 msg = SYNC_PAUSED_MSG.get(lang, SYNC_PAUSED_MSG["en"])
                 logger.info(f"[Pikmin] {msg}")
             ctx._save_was_loaded = save_active
 
-        # Reinitialise l'etat DeathLink au debut de chaque journee : front montant
-        # de "dans un niveau" (entree dans NewPikiGame). Rearme le verrou de
-        # securite et repart le comptage. Independant du day cycle (qui peut figer
-        # DAY_NUMBER), car il se base sur l'entree effective dans un niveau.
+        # Reset DeathLink state at the start of each day: rising edge of "in a
+        # level" (entering NewPikiGame). Re-arms the safety lock and restarts
+        # counting. Independent of the day cycle (which can freeze DAY_NUMBER)
+        # since it relies on actually entering a level.
         if in_level and not ctx._in_level_prev:
-            # IMPORTANT : initialiser _orima_was_dead avec la VRAIE valeur
-            # courante, pas False. Au tout debut de la journee, orimaDead peut
-            # encore valoir True (residuel de la mort de la veille, avant que le
-            # jeu ne le remette a zero). Forcer False creait un faux front montant
-            # True->... et renvoyait un DeathLink au debut de la journee suivante.
+            # Initialize _orima_was_dead with the REAL current value, not False:
+            # at the very start of the day orimaDead may still be True (left over
+            # from the previous death before the game resets it), and forcing False
+            # would create a false edge and send a spurious DeathLink.
             ctx._orima_was_dead = read_orima_dead(game_version)
             ctx._dead_pikis_last = None
             ctx._dead_pikis_sent = 0
@@ -5149,77 +5052,75 @@ async def dolphin_loop(ctx: P1Context):
             ctx._suppress_orima_send = False
             ctx._deathlink_locked_this_day = False
             ctx._pending_self_kill = False
-            # Nouvelle journee : on leve le verrou pose par un End Day Trap et on
-            # arme un court delai de grace avant de reappliquer des traps.
+            # New day: lift the lock set by an End Day Trap and arm a short grace
+            # delay before applying traps again.
             ctx._traps_suspended_until_next_day = False
             ctx._trap_grace_ticks = 0
-            ctx._trap_free_since = None  # #48 : delai commun avec les cones
-            ctx._dl_free_since = None    # #54 : idem pour le DeathLink recu
+            ctx._trap_free_since = None  # shared delay with the cones
+            ctx._dl_free_since = None    # same for received DeathLink
         ctx._in_level_prev = in_level
         ctx._save_was_loaded_prev_death = save_active
 
-        # Handlers qui LISENT de la memoire propre au niveau (collecte de pieces,
-        # compteurs de l'escouade, DeathLink) : uniquement dans un niveau.
+        # Handlers reading level-specific memory (part collection, squad
+        # counters, DeathLink): only run inside a level.
         in_level_handlers = (handle_parts, handle_pikmin_locations, handle_pikmin_bond, handle_olimar_bond,
                              handle_onion_cone,
                              handle_population_graph,
                              handle_death_link, handle_traps)
-        # Handlers actifs aussi sur la carte du monde : reception d'objets
-        # (persistee via STAGE) et deblocage des zones (visible sur la carte).
+        # Handlers also active on the world map: item reception (persisted via
+        # STAGE) and area unlocking (visible on the map).
         save_active_handlers = (handle_pikmin_items, handle_areas, sync_server_collected_parts,
                                 handle_tracker_stage,
                                 handle_qol_skip_cutscenes,
                                 handle_qol_min_leaf)
-        # Handlers cosmetiques/mecaniques : tournent toujours (gardes internes).
+        # Cosmetic/mechanical handlers: always run (they have internal guards).
         always_handlers = (handle_qol_first_day, handle_qol_trip_item, handle_trip_trap_timer,
                            handle_day_cycle, handle_ship_part_hints)
 
-        # #32 (reouvert) : apres le goal, GameExit fait un softReset puis passe en
-        # SECTION_MovSample (generique h4m). Le tas est alors reutilise par le
-        # decodeur video / la FIFO GX, mais les pointeurs statiques (playerState,
-        # tutorialWindow...) gardent leur ancienne valeur. Les handlers "always"
-        # (Normal First Day, hints de pieces...) ecrivaient via ces pointeurs
-        # perimes -> "GFX FIFO : Opcode inconnu". On ne touche donc plus a la RAM
-        # hors du mode histoire (menus de sauvegarde, intro, carte, niveau).
+        # After the goal, GameExit does a softReset then enters SECTION_MovSample
+        # (h4m credits). The heap is then reused by the video decoder / GX FIFO,
+        # but static pointers (playerState, tutorialWindow...) keep their old
+        # value, so writes through them corrupt the GPU stream ("unknown GFX FIFO
+        # opcode"). Therefore RAM is only touched in story mode (save menus,
+        # intro, map, level).
         story_active = _oneplayer_subsection(game_version) in _STORY_SUBSECTIONS
-        # #32 : pendant la sequence de fin (decollage -> espace), le jeu reinitialise
-        # ses tas pour les cinematiques : aucune ecriture, seul le goal est envoye.
+        # During the ending sequence (takeoff -> space) the game reinitializes its
+        # heaps for cutscenes: no writes, only the goal is sent.
         ending = story_active and is_final_ending(game_version)
+        if in_level and not is_day_active(game_version):
+            _clear_part_anim_mailbox(ctx)
         if ending and not ctx.finished_game:
             await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
             ctx.finished_game = True
         handlers = list(always_handlers) if story_active and not ending else []
         if save_active and not ending:
             handlers = list(save_active_handlers) + handlers
-        # #32 : les handlers "en niveau" LISENT/ECRIVENT des objets de niveau
-        # volatils (pelletMgr et radar via handle_parts -> despawn, escouade,
-        # etc.). Pendant une cinematique en niveau, mIsPauseAllowed passe a FALSE
-        # et ces objets sont demontes/reutilises par le rendu : continuer a les
-        # toucher corrompait le flux GPU (Dolphin : "GFX FIFO opcode inconnu 0xf6"
-        # apres le goal, pendant la sequence de fin). On ne les lance donc que
-        # quand le gameplay est reellement interactif.
+        # In-level handlers read/write volatile level objects (pelletMgr and radar
+        # via handle_parts -> despawn, squad, etc.). During an in-level cutscene
+        # mIsPauseAllowed becomes FALSE and these objects are torn down/reused by
+        # rendering; touching them would corrupt the GPU stream. So only run them
+        # while gameplay is actually interactive.
         if in_level and is_day_active(game_version):
             handlers = list(in_level_handlers) + handlers
-        # #57 : detection de la mort d'Olimar, meme pendant sa sequence de mort.
+        # Detect Olimar's death, even during his death sequence.
         if in_level and not ending:
             handlers = [detect_olimar_death] + handlers
 
-        # Chaque handler est isole : une exception dans l'un d'eux ne doit pas
-        # tuer la boucle entiere. Sans ca, une seule erreur (par exemple dans les
-        # hints) arretait definitivement la detection des Pikmin, des locations,
-        # du cycle de jour et des zones, sans que rien ne le signale en jeu.
+        # Each handler is isolated: an exception in one must not kill the whole
+        # loop, which would silently stop Pikmin, location, day cycle and area
+        # detection.
         for handler in handlers:
             if ctx.exit_event.is_set():
-                break  # #2 : fermeture demandee en cours de tick
+                break  # shutdown requested mid-tick
             try:
                 await handler(ctx, game_version)
             except Exception:
-                logger.exception(f"[Pikmin] Erreur dans {handler.__name__} "
-                                 f"— la boucle continue.")
+                logger.exception(f"[Pikmin] Error in {handler.__name__} "
+                                 f"- the loop continues.")
         # TODO if "DeathLink" in ctx.tags: handle that
 
-        # Detection de langue : lecture de gsys->mLanguageID a chaque tick.
-        # Si la lecture echoue, on garde silencieusement la valeur precedente.
+        # Language detection: read gsys->mLanguageID every tick.
+        # If the read fails, silently keep the previous value.
         lang_code = read_game_language(game_version)
         if lang_code and lang_code != ctx.detected_language:
             msg = LANG_MSG_DETECTED.get(lang_code, LANG_MSG_DETECTED["en"])
@@ -5234,7 +5135,7 @@ def run_client(*args) -> None:
     Utils.init_logging("PikminClient")
 
     for problem in _check_translation_tables():
-        logger.warning(f"[Pikmin] Table de traduction : {problem}")
+        logger.warning(f"[Pikmin] Translation table: {problem}")
 
     parser = get_base_parser()
     parser.add_argument("appik1_file", default="", type=str, nargs="?",
@@ -5244,33 +5145,30 @@ def run_client(*args) -> None:
     # Resolve patch path from args or CLI argument
     patch_path = appik1_path or parsed.appik1_file
 
-    # Le patch est fait ici, de maniere synchrone, AVANT toute boucle asyncio et
-    # avant l'ouverture de la GUI. L'ancienne version le lancait dans un thread
-    # executor : le selecteur de fichier et la messagebox partaient alors d'un
-    # thread secondaire sans fenetre parente, ce qui produisait une fenetre
-    # parasite qui plantait.
+    # Patch synchronously here, BEFORE any asyncio loop and before the GUI opens,
+    # so the file picker and messagebox run on the main thread with a parent window.
     if patch_path and os.path.isfile(patch_path):
         _handle_patch(patch_path)
 
     async def main() -> None:
         ctx = P1Context(parsed.connect, parsed.password)
-        # #38 : la connexion (adresse passee en argument / via le .appik1) est
-        # differee jusqu'a la detection de Pikmin dans Dolphin.
+        # The connection (address given as argument / via the .appik1) is deferred
+        # until Pikmin is detected in Dolphin.
         if parsed.connect:
             ctx._pending_connect = parsed.connect
         else:
             logger.info("Please connect to an Archipelago server.")
 
         if tracker_loaded:
-            ctx.run_generator()  # #37 : prepare Universal Tracker
+            ctx.run_generator()  # prepare Universal Tracker
         if gui_enabled:
             ctx.run_gui()
         ctx.run_cli()
 
         loop_task = asyncio.create_task(dolphin_loop(ctx), name="game loop")
 
-        # #2 : la fenetre fermee doit TOUJOURS mener a la sortie, meme si
-        # kvui.on_stop (qui leve exit_event) n'est jamais appele.
+        # Closing the window must ALWAYS lead to exit, even if kvui.on_stop
+        # (which sets exit_event) is never called.
         exit_wait = asyncio.create_task(ctx.exit_event.wait(), name="exit wait")
         waiters = {exit_wait}
         if ctx.ui_task:
@@ -5280,8 +5178,7 @@ def run_client(*args) -> None:
             logger.info("[Pikmin] UI closed without exit event — forcing client exit.")
             ctx.exit_event.set()
         exit_wait.cancel()
-        # #2 : chaque etape de fermeture est bornee dans le temps ; aucune ne
-        # doit pouvoir bloquer indefiniment la sortie du client.
+        # Each shutdown step is time-bounded so none can block client exit forever.
         try:
             await asyncio.wait_for(loop_task, timeout=2.0)
         except BaseException:
@@ -5298,11 +5195,10 @@ def run_client(*args) -> None:
         asyncio.run(main())
     finally:
         colorama.deinit()
-        # #2 : la session AP est fermee et la sauvegarde locale (persistent
-        # storage) est ecrite de maniere synchrone a chaque changement. Sortie
-        # immediate : on ne laisse pas la finalisation de l'interpreteur (join
-        # des threads d'executor, fermeture Kivy/SDL, threads DME) bloquer la
-        # fermeture de la fenetre.
+        # The AP session is closed and local persistent storage is written
+        # synchronously on every change. Exit immediately so interpreter
+        # finalization (executor thread joins, Kivy/SDL teardown, DME threads)
+        # cannot block window close.
         try:
             faulthandler.cancel_dump_traceback_later()
         except Exception:
@@ -5312,10 +5208,10 @@ def run_client(*args) -> None:
 
 
 def _ask_target_version() -> Optional[bytes]:
-    """Fenetre a deux boutons : quelle version de Pikmin patcher ?
+    """Show a two-button window asking which Pikmin version to patch.
 
-    Renvoie le Game ID choisi, ou None si l'utilisateur ferme la fenetre.
-    Appelee depuis le thread principal, avant le demarrage de la GUI.
+    Returns the chosen Game ID, or None if the user closes the window.
+    Called from the main thread, before the GUI starts.
     """
     from .P1Rom import PAL_GAME_ID, NTSC_GAME_ID
 
@@ -5351,7 +5247,7 @@ def _ask_target_version() -> Optional[bytes]:
 
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.update_idletasks()
-    # centre la fenetre
+    # center the window
     w, h = root.winfo_width(), root.winfo_height()
     x = (root.winfo_screenwidth() - w) // 2
     y = (root.winfo_screenheight() - h) // 2
@@ -5365,10 +5261,10 @@ def _ask_target_version() -> Optional[bytes]:
 def _handle_patch(appik1_path: str) -> None:
     """Patch a copy of the user's Pikmin 1 PAL ISO when a .appik1 file is opened.
 
-    Le chemin de l'ISO passe par les settings AP (`pikmin_options.iso_file`).
-    S'il est absent de host.yaml ou invalide, AP ouvre lui-meme un selecteur de
-    fichier natif et enregistre le choix de l'utilisateur dans host.yaml.
-    Appele de maniere synchrone depuis le thread principal, avant la GUI.
+    The ISO path comes from the AP settings (`pikmin_options.iso_file`). If it is
+    missing from host.yaml or invalid, AP opens a native file picker itself and
+    saves the choice to host.yaml.
+    Called synchronously from the main thread, before the GUI.
     """
     from .P1Rom import verify_iso, patch_iso, InvalidISOError, expected_iso_help, make_disc_title
     from . import get_base_rom_path
@@ -5388,7 +5284,7 @@ def _handle_patch(appik1_path: str) -> None:
     try:
         iso_path = get_base_rom_path(target)
     except Exception as e:
-        # L'utilisateur a annule le selecteur, ou le fichier choisi est invalide.
+        # The user cancelled the picker, or the chosen file is invalid.
         msg = (
             f"No valid Pikmin 1 {VERSION_LABELS.get(target, '')} ISO was provided.\n\n"
             f"Details: {e}\n\n"
@@ -5412,8 +5308,8 @@ def _handle_patch(appik1_path: str) -> None:
         Utils.messagebox("Cannot Patch Pikmin 1", msg, error=True)
         return
 
-    # Le chemin retenu est persiste dans host.yaml (utile au premier lancement,
-    # quand il vient d'etre choisi via le selecteur de fichier).
+    # Persist the chosen path in host.yaml (useful on first launch, right after
+    # it was picked via the file picker).
     try:
         get_settings().save()
     except Exception as e:
@@ -5446,14 +5342,14 @@ def _handle_patch(appik1_path: str) -> None:
             with zf.open("patch.appik1") as f:
                 data = json.load(f)
                 seed = str(data.get("Seed", ""))
-                suffix = str(data.get("GameIdSuffix", ""))  # vide = ancien .appik1
+                suffix = str(data.get("GameIdSuffix", ""))  # empty = old .appik1
                 slot_name = str(data.get("Name", ""))
                 opts = data.get("Options", {})
                 # Disable Pikmin Trip : 0=off, 1=patch (DOL), 2=item (runtime).
-                # On ne grave le patch DOL QUE pour le mode "patch".
+                # Only apply the DOL patch for "patch" mode.
                 trip_mode = int(opts.get("disable_pikmin_trip", 1))
                 disable_trip = (trip_mode == 1)
-                # Skips fusionnes dans l'OptionSet skip_events (liste JSON).
+                # Skips are merged into the skip_events OptionSet (JSON list).
                 skips = set(opts.get("skip_events", []))
                 skip_part_collect = "Part Collection" in skips
                 skip_ship_upgrade = "Ship Upgrade" in skips
@@ -5478,7 +5374,7 @@ def _handle_patch(appik1_path: str) -> None:
                               "(trip code not located in this ISO revision).")
         pc_line = ""
         if skip_part_collect:
-            # Succes non affiche (demande utilisateur) ; seul l'echec est signale.
+            # Success is not shown; only failure is reported.
             if not status.get("part_collect_patched"):
                 pc_line = ("\n\nSkip Part Collection Cutscene: could NOT be applied "
                            "(code not located in this ISO revision).")
@@ -5491,14 +5387,14 @@ def _handle_patch(appik1_path: str) -> None:
         if slot_name and not status.get("slot_name_written"):
             sn_line = ("\n\nSlot name could NOT be stored in the ISO "
                        "(the client will ask for it when connecting).")
-        # #55 : animation des pieces validees par le serveur.
+        # Animation of parts validated by the server.
         if status.get("part_anim_patched") is False:
             sn_line += ("\n\nShip part animation hook could NOT be applied: parts collected "
                         "by the server will appear on the ship the next day.")
         if status.get("death_cause_patched") is False:
             sn_line += ("\n\nDeath cause hook could NOT be applied: DeathLink messages "
                         "will not name the cause of death.")
-        # #51 : NTSC uniquement (cle absente en PAL).
+        # NTSC only (key absent on PAL).
         if status.get("card_filename_patched") is False:
             sn_line += ("\n\nSave file name could NOT be patched: saving may not work "
                         "on this NTSC ISO.")
@@ -5512,7 +5408,7 @@ def _handle_patch(appik1_path: str) -> None:
             os.remove(output_iso)
         except Exception:
             pass
-        # #35 : ISO attendues + SHA-1 du fichier fourni, pour aider le joueur.
+        # Show expected ISOs + SHA-1 of the provided file to help the player.
         Utils.messagebox("Cannot Patch Pikmin 1", str(e) + "\n" + expected_iso_help(iso_path), error=True)
     except Exception as e:
         logger.error(f"[Pikmin] Unexpected error during patching: {e}")
@@ -5524,4 +5420,4 @@ def _handle_patch(appik1_path: str) -> None:
 
 
 if __name__ == "__main__":
-    run_client()
+    run_client()

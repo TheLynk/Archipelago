@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _apworld_version() -> str:
-    """Version de l'apworld (archipelago.json), en dossier comme en .apworld."""
+    """Return the apworld version from archipelago.json (works unpacked or as .apworld)."""
     import json
     try:
         from importlib.resources import files
@@ -40,11 +40,9 @@ def _apworld_version() -> str:
 
 def run_client(*args) -> None:
     from .P1Client import run_client as _run_client
-    # `launch` (et non `launch_subprocess`) : quand le Launcher a deja ete relance
-    # en sous-processus pour ouvrir un .appik1, kivy ne tourne pas dans ce
-    # processus, donc le client s'execute en place au lieu de forker un
-    # processus supplementaire. C'est ce fork en trop qui faisait apparaitre
-    # une fenetre Python parasite pendant le patch.
+    # Use `launch` rather than `launch_subprocess`: when the Launcher was already
+    # re-run in a subprocess to open an .appik1, kivy is not running in this
+    # process, so the client runs in place instead of forking another process.
     launch(_run_client, name="PikminClient", args=args)
 
 
@@ -67,11 +65,11 @@ VALID_GAME_IDS = (PAL_GAME_ID, NTSC_GAME_ID)
 
 
 def _validate_iso(path: str, expected: bytes, label: str) -> None:
-    """Valide une ISO par Game ID plutot que par MD5.
+    """Validate an ISO by Game ID rather than MD5.
 
-    Les dumps valides ont des MD5 differents selon la revision/le redump, alors
-    que les 6 premiers octets (Game ID) sont fiables. On refuse aussi une ISO
-    deja patchee (prefixes P1P pour le PAL, P1E pour le NTSC).
+    Valid dumps have different MD5s depending on revision/redump, but the first
+    6 bytes (Game ID) are reliable. Already-patched ISOs (prefix P1P for PAL,
+    P1E for NTSC) are rejected.
     """
     with open(path, "rb") as f:
         game_id = f.read(6)
@@ -91,8 +89,7 @@ class PikminSettings(settings.Group):
     class ISOFile(settings.UserFilePath):
         """Path to your original, unpatched Pikmin 1 PAL ISO (GPIP01)."""
         description = "Pikmin 1 PAL ISO (unpatched)"
-        # On ne copie pas l'ISO dans le dossier Archipelago : on garde un lien
-        # vers le fichier de l'utilisateur.
+        # Do not copy the ISO into the Archipelago folder; keep a link to the user's file.
         copy_to = None
 
         @classmethod
@@ -113,12 +110,11 @@ class PikminSettings(settings.Group):
 
 
 def get_base_rom_path(game_id: bytes = PAL_GAME_ID) -> str:
-    """Renvoie le chemin de l'ISO Pikmin 1 pour la version demandee.
+    """Return the Pikmin 1 ISO path for the requested version.
 
-    Passe par le systeme de settings d'Archipelago : si l'entree correspondante
-    est absente de host.yaml ou pointe vers un fichier inexistant, AP ouvre
-    automatiquement un selecteur de fichier natif et enregistre le choix de
-    l'utilisateur dans host.yaml.
+    Goes through Archipelago's settings system: if the entry is missing from
+    host.yaml or points to a nonexistent file, AP opens a native file picker
+    and saves the choice in host.yaml.
     """
     options = get_settings().pikmin_options
     iso_file = options.iso_file_ntsc if game_id == NTSC_GAME_ID else options.iso_file
@@ -162,12 +158,12 @@ class P1World(World):
         self.pikmin_locations: dict[str, PikminLocationData] = {}
         self.hints: dict = {}
 
-    # --- #37 : Universal Tracker ---------------------------------------------
-    # UT peut regenerer le monde sans YAML, a partir du slot_data du serveur.
+    # --- Universal Tracker ---------------------------------------------------
+    # UT can regenerate the world without a YAML, from the server's slot_data.
     ut_can_gen_without_yaml: ClassVar[bool] = True
 
-    # Options qui changent les locations / la logique : UT doit les reprendre
-    # du slot_data pour recreer exactement les memes locations et regles.
+    # Options that change locations / logic: UT must restore them from slot_data
+    # to recreate exactly the same locations and rules.
     _UT_OPTIONS: ClassVar[tuple[str, ...]] = (
         "enable_pikmin_locations",
         "red_pikmin_locations_enabled", "red_pikmin_interval",
@@ -178,15 +174,15 @@ class P1World(World):
 
     @staticmethod
     def interpret_slot_data(slot_data: dict) -> dict:
-        """Appele par UT a la connexion : renvoie ce qui sera passe a
-        generate_early via multiworld.re_gen_passthrough."""
+        """Called by UT on connect; the result is passed to generate_early
+        via multiworld.re_gen_passthrough."""
         return slot_data
 
     def generate_early(self) -> None:
         passthrough = getattr(self.multiworld, "re_gen_passthrough", None) or {}
         slot_data = passthrough.get(self.game)
         if not slot_data:
-            return  # generation normale
+            return  # normal generation
         for name in self._UT_OPTIONS:
             if name in slot_data:
                 getattr(self.options, name).value = slot_data[name]
@@ -258,9 +254,9 @@ class P1World(World):
         for part in ALL_PARTS:
             items.append(self.create_item(part))
 
-        # Disable Pikmin Trip en mode "item" : ajoute l'upgrade Useful au pool.
-        # On l'ajoute avant le calcul des fillers pour qu'il remplace un filler
-        # (le total d'items reste egal au total de locations).
+        # Disable Pikmin Trip in "item" mode: add the Useful upgrade to the pool.
+        # Added before the filler count is computed so it replaces a filler
+        # (total item count stays equal to the total location count).
         if self.options.disable_pikmin_trip == 2:  # option_item
             items.append(self.create_item("Trip Immunity"))
 
@@ -320,13 +316,13 @@ class P1World(World):
 
         pool: list[str] = []
 
-        # Filler (bonus Pikmin), pondere par les options.
+        # Filler (bonus Pikmin), weighted by options.
         if filler_count > 0:
             names = list(active.keys())
             ws = list(active.values())
             pool += self.multiworld.random.choices(names, weights=ws, k=filler_count)
 
-        # Traps, pondere par les options de poids de trap.
+        # Traps, weighted by the trap weight options.
         if trap_count > 0:
             trap_weights = {
                 "Time Trap":       self.options.weight_time_trap.value,
@@ -336,13 +332,13 @@ class P1World(World):
                 "Disbanding Trap": self.options.weight_disbanding_trap.value,
                 "Trip Trap":       self.options.weight_trip_trap.value,
             }
-            # #7 : Disable Pikmin Trip = always -> le code du trebuchement est
-            # retire de l'ISO, le Trip Trap n'aurait aucun effet : hors du pool.
+            # Disable Pikmin Trip = always removes the tripping code from the ISO,
+            # so a Trip Trap would have no effect: keep it out of the pool.
             if self.options.disable_pikmin_trip.value == 1:
                 trap_weights.pop("Trip Trap")
             active_traps = {k: v for k, v in trap_weights.items() if v > 0}
             if not active_traps:
-                # Aucun poids de trap defini : repartition egale sur les 3 types.
+                # No trap weight set: distribute equally across all trap types.
                 active_traps = {k: 1 for k in trap_weights}
             t_names = list(active_traps.keys())
             t_ws = list(active_traps.values())
@@ -392,7 +388,7 @@ class P1World(World):
             "Seed":    seed_name,
             "Slot":    self.player,
             "Name":    self.player_name,
-            # #35 : suffixe du Game ID propre a la seed + au slot (3 caracteres).
+            # Per-seed/per-slot Game ID suffix (3 characters).
             "GameIdSuffix": make_game_id_suffix(seed_name, self.player),
             "Options": {},
             "Hints":   self.hints,
@@ -402,7 +398,7 @@ class P1World(World):
             if field.name == "plando_items":
                 continue
             val = getattr(self.options, field.name).value
-            # OptionSet -> liste triee (JSON-serialisable).
+            # OptionSet -> sorted list (JSON-serializable).
             if isinstance(val, (set, frozenset)):
                 val = sorted(val)
             output_data["Options"][field.name] = val
@@ -426,13 +422,13 @@ class P1World(World):
         seed_name = self.multiworld.seed_name
         if seed_name.startswith("W"):
             seed_name = seed_name[1:]
-        # #35 : meme suffixe que celui ecrit dans l'ISO (voir generate_output).
+        # Same suffix as the one written into the ISO (see generate_output).
         suffix = make_game_id_suffix(seed_name, self.player)
 
         return {
             "normal_first_day":    self.options.normal_first_day.value,
-            # 0 = off, 1 = always, 2 = item ("Trip Immunity" dans le pool) -- utilise
-            # aussi par PopTracker pour n'afficher l'item qu'en mode 2.
+            # 0 = off, 1 = always, 2 = item ("Trip Immunity" in the pool). Also used
+            # by PopTracker to show the item only in mode 2.
             "disable_pikmin_trip": self.options.disable_pikmin_trip.value,
             "skip_events":         sorted(self.options.skip_events.value),
             "always_min_one_leaf":           self.options.always_min_one_leaf.value,
@@ -447,15 +443,15 @@ class P1World(World):
             "pikmin_death_amount": self.options.pikmin_death_amount.value,
             "pikmin_bond":         self.options.pikmin_bond.value,
             "pikmin_bond_damage":  self.options.pikmin_bond_damage.value,
-            # #44 : Olimar Bond (chaque Pikmin ne soigne Olimar).
+            # Olimar Bond (each Pikmin heals Olimar).
             "olimar_bond":         self.options.olimar_bond.value,
             "olimar_bond_heal":    self.options.olimar_bond_heal.value,
-            # #43 : reglages du Damage Trap.
+            # Damage Trap settings.
             "damage_trap_can_kill": self.options.damage_trap_can_kill.value,
             "damage_trap_amount":   self.options.damage_trap_amount.value,
             "trap_link":           self.options.trap_link.value,
             "trap_link_conversion": self.options.trap_link_conversion.value,
-            # #14 : options de locations Pikmin et version, pour PopTracker.
+            # Pikmin location options and version, for PopTracker.
             "apworld_version":     _apworld_version(),
             "enable_pikmin_locations":         self.options.enable_pikmin_locations.value,
             "red_pikmin_locations_enabled":    self.options.red_pikmin_locations_enabled.value,
@@ -466,7 +462,7 @@ class P1World(World):
             "blue_pikmin_interval":            self.options.blue_pikmin_interval.value,
             "trap_link_conversion_traps": sorted(
                 t for t in self.options.trap_link_conversion_traps.value
-                # #7 : jamais de Trip Trap par conversion si le trebuchement est retire du jeu.
+                # Never convert to Trip Trap if tripping is removed from the game.
                 if not (t == "Trip Trap" and self.options.disable_pikmin_trip.value == 1)
             ),
         }
@@ -480,4 +476,4 @@ class P1Item(Item):
 
 
 class P1Location(Location):
-    game = P1World.game
+    game = P1World.game
