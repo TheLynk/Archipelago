@@ -2071,6 +2071,9 @@ class P1Context(SuperContext):
         self._trap_grace_ticks: int = 0
         self._trap_free_since: Optional[float] = None
         self._dl_free_since: Optional[float] = None  
+        self._pbonus_free_since: Optional[float] = None
+        self._minleaf_free_since: Optional[float] = None
+        self._minleaf_owned_at_entry: Optional[int] = None
         self._bond_kill_pending: bool = False
         self.death_cause_ring: Optional[int] = None   
         self.tracker_stage_name: Optional[str] = None 
@@ -3496,6 +3499,17 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
     # Save just loaded, state not resolved yet: wait.
     if ctx._pending_save_load is not None:
         return
+    # Write on the world map, or in a level after free play (not during load).
+    sub = _oneplayer_subsection(game)
+    if sub == ONEPLAYER_NEW_PIKI_GAME:
+        if not is_day_active(game):
+            ctx._pbonus_free_since = None
+            return
+        if not _free_play_elapsed(ctx, game, "_pbonus_free_since"):
+            return
+    elif sub != ONEPLAYER_MAP_SELECT:
+        ctx._pbonus_free_since = None
+        return
     # Bonuses received outside a day become sprouts of the current day.
     flush_pending_born(ctx, game)
 
@@ -4546,6 +4560,32 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
     except Exception:
         return
 
+    # Same write window as the Pikmin bonuses.
+    sub = _oneplayer_subsection(game)
+    if sub == ONEPLAYER_NEW_PIKI_GAME:
+        # Colours owned when the level loaded are left to the game.
+        if ctx._minleaf_owned_at_entry is None:
+            ctx._minleaf_owned_at_entry = owned
+        if not is_day_active(game):
+            ctx._minleaf_free_since = None
+            return
+        if not _free_play_elapsed(ctx, game, "_minleaf_free_since"):
+            return
+        in_level = True
+    elif sub == ONEPLAYER_MAP_SELECT:
+        ctx._minleaf_owned_at_entry = None
+        in_level = False
+    else:
+        ctx._minleaf_owned_at_entry = None
+        ctx._minleaf_free_since = None
+        return
+
+    def read_u32(addr: int) -> int:
+        return struct.unpack(">I", dme.read_bytes(addr, 4))[0]
+
+    def write_u32(addr: int, value: int) -> None:
+        dme.write_bytes(addr, struct.pack(">I", max(0, value)))
+
     for color in ("red", "yellow", "blue"):
         if not (owned & CONTAINER_COLOR_BIT.get(color, 0)):
             continue  # color not owned -> no ghost Pikmin
@@ -4553,9 +4593,30 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
         if addr is None:
             continue
         try:
-            cur = struct.unpack(">I", dme.read_bytes(addr, 4))[0]
-            if cur == 0:
-                dme.write_bytes(addr, struct.pack(">I", 1))
+            if not in_level:
+                if read_u32(addr) == 0:
+                    write_u32(addr, 1)
+                continue
+            # In a level: only for an onion discovered today, if still empty.
+            bit = CONTAINER_COLOR_BIT.get(color, 0)
+            if ctx._minleaf_owned_at_entry & bit:
+                continue
+            onion = find_onion_containers(game).get(color)
+            if not onion:
+                continue
+            ctx._minleaf_owned_at_entry |= bit
+            allp = GAMESTAT_ALLPIKIS_ADDRS.get(game, {}).get(color)
+            if allp is None or read_u32(allp) != 0:
+                continue
+            write_u32(addr, read_u32(addr) + 1)
+            cont = ONION_DYN_ADDRS.get(game, {}).get(color)
+            if cont is not None:
+                write_u32(cont, read_u32(cont) + 1)
+            write_u32(allp, read_u32(allp) + 1)
+            held = onion + ONION_CHAIN["GOAL_HELDPIKIS"]
+            write_u32(held, read_u32(held) + 1)
+            if ctx.debug_pbonus:
+                logger.info(f"[DEBUG] min leaf {color}: +1 (new onion)")
         except Exception:
             pass
 
@@ -5081,6 +5142,9 @@ async def dolphin_loop(ctx: P1Context):
             ctx._trap_grace_ticks = 0
             ctx._trap_free_since = None  # shared delay with the cones
             ctx._dl_free_since = None    # same for received DeathLink
+            ctx._pbonus_free_since = None
+            ctx._minleaf_free_since = None
+            ctx._minleaf_owned_at_entry = None
         ctx._in_level_prev = in_level
         ctx._save_was_loaded_prev_death = save_active
 
