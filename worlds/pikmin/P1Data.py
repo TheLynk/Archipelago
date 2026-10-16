@@ -169,6 +169,31 @@ USEFUL_ITEMS: dict[str, int] = {
 
 TRIP_IMMUNITY_ITEM_ID = USEFUL_ITEMS["Trip Immunity"]
 
+# ====================================================================
+# AREA ITEMS (Shuffle Unlock Areas)
+# ====================================================================
+PROGRESSIVE_AREA_ITEM = "Progressive Area"
+
+# Areas unlocked by items, in the vanilla order (The Impact Site is always open).
+AREA_UNLOCK_ORDER: tuple[str, ...] = (
+    "The Forest of Hope", "The Forest Navel", "The Distant Spring", "The Final Trial",
+)
+
+# Vanilla unlock: number of ship parts needed per area.
+AREA_PART_THRESHOLDS: dict[str, int] = {
+    "The Forest of Hope": 1, "The Forest Navel": 5, "The Distant Spring": 12, "The Final Trial": 29,
+}
+
+
+def area_unlock_item(area: str) -> str:
+    return f"Unlock {area}"
+
+
+AREA_ITEMS: dict[str, int] = {
+    PROGRESSIVE_AREA_ITEM: 71825,
+    **{area_unlock_item(area): 71826 + i for i, area in enumerate(AREA_UNLOCK_ORDER)},
+}
+
 # Part name -> in-game Pellet model ID (fourCC, enum UfoPartID in include/Pellet.h).
 # Used to find a part's physical Pellet in the level and remove it when the
 # location is checked server-side.

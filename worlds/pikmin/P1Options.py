@@ -23,6 +23,23 @@ class LastPartIsLocal(DefaultOnToggle):
     display_name = "Local Last Part"
 
 
+class ShuffleUnlockAreas(Choice):
+    """
+    Choose how areas are unlocked. The Impact Site is always open.
+
+    off         - Areas unlock with the number of ship parts, like the original game.
+    progressive - 4 "Progressive Area" items unlock the areas in the original order.
+    individual  - Each area has its own "Unlock <Area>" item.
+
+    When enabled, ship parts no longer unlock any area.
+    """
+    display_name = "Shuffle Unlock Areas"
+    option_off         = 0
+    option_progressive = 1
+    option_individual  = 2
+    default = 0
+
+
 # ====================================================================
 # PIKMIN LOCATION
 # ====================================================================
@@ -549,6 +566,7 @@ class P1Options(PerGameCommonOptions):
 # SHIP PART
     first_part_is_local: FirstPartIsLocal
     last_part_is_local: LastPartIsLocal
+    shuffle_unlock_areas: ShuffleUnlockAreas
 # PIKMIN LOCATION
     enable_pikmin_locations: EnablePikminLocations
     red_pikmin_locations_enabled: RedPikminLocationsEnabled
@@ -619,7 +637,7 @@ class P1Options(PerGameCommonOptions):
 # ====================================================================
 P1_OPTION_GROUPS = [
     OptionGroup("Ship Parts", [
-        FirstPartIsLocal, LastPartIsLocal,
+        FirstPartIsLocal, LastPartIsLocal, ShuffleUnlockAreas,
     ]),
     OptionGroup("Pikmin Locations", [
         EnablePikminLocations,

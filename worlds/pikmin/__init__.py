@@ -4,6 +4,7 @@ from dataclasses import fields
 from typing import ClassVar, Callable, Any
 
 from BaseClasses import Item, ItemClassification, Location, Region, CollectionState
+from Options import OptionError
 from worlds.AutoWorld import World
 from worlds.LauncherComponents import launch, Type, components, icon_paths, Component, SuffixIdentifier
 import settings
@@ -141,11 +142,13 @@ class P1World(World):
         **FILLER_ITEMS,
         **TRAP_ITEMS,
         **USEFUL_ITEMS,
+        **AREA_ITEMS,
     }
 
     item_name_groups: ClassVar[dict[str, set[str]]] = {
         "Ship Part": set(ALL_PARTS.keys()),
         "Trap": set(TRAP_ITEMS.keys()),
+        "Area": set(AREA_ITEMS.keys()),
     }
 
     location_name_to_id: ClassVar[dict[str, int]] = {
@@ -170,6 +173,7 @@ class P1World(World):
         "yellow_pikmin_locations_enabled", "yellow_pikmin_interval",
         "blue_pikmin_locations_enabled", "blue_pikmin_interval",
         "disable_pikmin_trip",
+        "shuffle_unlock_areas",
     )
 
     @staticmethod
@@ -194,6 +198,8 @@ class P1World(World):
             return P1Item(name, ItemClassification.filler, FILLER_ITEMS[name], self.player)
         if name in USEFUL_ITEMS:
             return P1Item(name, ItemClassification.useful, USEFUL_ITEMS[name], self.player)
+        if name in AREA_ITEMS:
+            return P1Item(name, ItemClassification.progression, AREA_ITEMS[name], self.player)
         return P1Item(name, ItemClassification.progression, ALL_PARTS[name].ap_id, self.player)
 
     def create_event(self, name: str) -> "P1Item":
@@ -260,18 +266,30 @@ class P1World(World):
         if self.options.disable_pikmin_trip == 2:  # option_item
             items.append(self.create_item("Trip Immunity"))
 
+        locked = 0
         if self.options.first_part_is_local:
             self.get_location(ship_part_location_name("Main Engine")).place_locked_item(
                 items.pop(self.multiworld.random.randint(0, len(items) - 1)))
+            locked += 1
 
         if self.options.last_part_is_local:
             self.get_location(ship_part_location_name("Secret Safe")).place_locked_item(
                 items.pop(self.multiworld.random.randint(0, len(items) - 1)))
+            locked += 1
+
+        if self.options.shuffle_unlock_areas == 1:
+            items += [self.create_item(PROGRESSIVE_AREA_ITEM) for _ in AREA_UNLOCK_ORDER]
+        elif self.options.shuffle_unlock_areas == 2:
+            items += [self.create_item(area_unlock_item(area)) for area in AREA_UNLOCK_ORDER]
 
         ship_part_locations = len(ALL_PARTS)
         pikmin_location_count = len(self.pikmin_locations) if self.options.enable_pikmin_locations else 0
         total_locations = ship_part_locations + pikmin_location_count
         total_items = len(items)
+        if self.options.shuffle_unlock_areas and total_items > total_locations - locked:
+            raise OptionError(
+                f"Pikmin ({self.player_name}): Shuffle Unlock Areas needs more locations, "
+                f"enable Pikmin locations.")
         fillers_needed = max(0, total_locations - total_items)
 
         filler_pool = self._build_filler_pool(fillers_needed)
@@ -364,14 +382,12 @@ class P1World(World):
         for loc_name, loc_data in self.pikmin_locations.items():
             location = self.get_location(loc_name)
 
-            if loc_data.required_ship_parts == 0:
+            if loc_data.color == "yellow":
+                location.access_rule = lambda state: can_obtain_yellows(state, self.player)
+            elif loc_data.color == "blue":
+                location.access_rule = lambda state: can_obtain_blues(state, self.player)
+            else:
                 location.access_rule = lambda state: True
-            elif loc_data.required_ship_parts == 1:
-                location.access_rule = lambda state, parts=1: \
-                    state.has_from_list(ALL_PARTS.keys(), self.player, parts)
-            elif loc_data.required_ship_parts == 5:
-                location.access_rule = lambda state, parts=5: \
-                    state.has_from_list(ALL_PARTS.keys(), self.player, parts)
 
     def generate_output(self, output_directory: str) -> None:
         """Generate the .appik1 patch file for this player.
@@ -430,6 +446,7 @@ class P1World(World):
             # 0 = off, 1 = always, 2 = item ("Trip Immunity" in the pool). Also used
             # by PopTracker to show the item only in mode 2.
             "disable_pikmin_trip": self.options.disable_pikmin_trip.value,
+            "shuffle_unlock_areas": self.options.shuffle_unlock_areas.value,
             "skip_events":         sorted(self.options.skip_events.value),
             "always_min_one_leaf":           self.options.always_min_one_leaf.value,
             "day_cycle_mode":      self.options.day_cycle_mode.value,

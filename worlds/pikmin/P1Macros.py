@@ -1,14 +1,24 @@
 from typing import Callable
 
 from BaseClasses import CollectionState
-from .P1Data import (ALL_PARTS, Area)
+from .P1Data import (ALL_PARTS, Area, AREA_UNLOCK_ORDER, AREA_PART_THRESHOLDS,
+                     PROGRESSIVE_AREA_ITEM, area_unlock_item)
+
+
+def _can_access_area(area: str, state: CollectionState, player: int) -> bool:
+    if area not in AREA_UNLOCK_ORDER:
+        return True
+    mode = state.multiworld.worlds[player].options.shuffle_unlock_areas.value
+    if mode == 1:
+        return state.has(PROGRESSIVE_AREA_ITEM, player, AREA_UNLOCK_ORDER.index(area) + 1)
+    if mode == 2:
+        return state.has(area_unlock_item(area), player)
+    return state.has_from_list(ALL_PARTS.keys(), player, AREA_PART_THRESHOLDS[area])
+
 
 can_access: dict[Area, Callable[[CollectionState, int], bool]] = {
-    "The Impact Site": lambda state, player: True,
-    "The Forest of Hope": lambda state, player: state.has_from_list(ALL_PARTS.keys(), player, 1),
-    "The Forest Navel": lambda state, player: state.has_from_list(ALL_PARTS.keys(), player, 5),
-    "The Distant Spring": lambda state, player: state.has_from_list(ALL_PARTS.keys(), player, 12),
-    "The Final Trial": lambda state, player: state.has_from_list(ALL_PARTS.keys(), player, 29),
+    area: (lambda state, player, area=area: _can_access_area(area, state, player))
+    for area in Area.__args__
 }
 
 def can_obtain_reds(state: CollectionState, player: int) -> bool:

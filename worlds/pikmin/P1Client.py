@@ -2073,7 +2073,9 @@ class P1Context(SuperContext):
         self._dl_free_since: Optional[float] = None  
         self._pbonus_free_since: Optional[float] = None
         self._minleaf_free_since: Optional[float] = None
-        self._minleaf_owned_at_entry: Optional[int] = None
+        self._minleaf_zero_since: dict = {}
+        self._minleaf_seen_alive: set = set()
+        self._minleaf_prev_owned: Optional[int] = None
         self._bond_kill_pending: bool = False
         self.death_cause_ring: Optional[int] = None   
         self.tracker_stage_name: Optional[str] = None 
@@ -3378,6 +3380,7 @@ def track_game_save(ctx: P1Context, game: Game) -> None:
                 slot = _read_u32_opt(gf["FILE_SLOT"])
                 if ctx.debug_pbonus:
                     logger.info(f"[DEBUG] File chosen: crc={crc:08X} savedDay={saved_day} slot={slot}")
+                ctx._minleaf_prev_owned = None
                 ctx._pending_save_load = (crc, saved_day == 1,
                                           (slot + 1) if slot is not None and slot < 3 else "?")
                 ctx._save_crc = crc
@@ -4086,14 +4089,7 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
         if not (_RAM_MIN <= mgr < _RAM_MAX):
             return
 
-        # Same thresholds as the UNLOCKED_AREAS bits above.
-        unlocked = (
-            True,                    # 0 Impact Site
-            ship_parts_count >= 1,   # 1 Forest of Hope
-            ship_parts_count >= 5,   # 2 Forest Navel
-            ship_parts_count >= 12,  # 3 Distant Spring
-            ship_parts_count >= 29,  # 4 Final Trial
-        )
+        unlocked = unlocked_areas(ctx, ship_parts_count)
         triggered = False
         for game_area, is_unlocked in enumerate(unlocked):
             if not is_unlocked:
@@ -4186,6 +4182,21 @@ def is_final_ending(game: Game) -> bool:
         return False
 
 
+def unlocked_areas(ctx: P1Context, ship_parts_count: int) -> tuple[bool, ...]:
+    """Unlock state per game area (0 Impact Site .. 4 Final Trial), per the Shuffle Unlock Areas option."""
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    mode = slot_data.get("shuffle_unlock_areas", 0)
+    received = [i.item for i in ctx.items_received]
+    if mode == 1:
+        count = received.count(AREA_ITEMS[PROGRESSIVE_AREA_ITEM])
+        flags = [count > i for i in range(len(AREA_UNLOCK_ORDER))]
+    elif mode == 2:
+        flags = [AREA_ITEMS[area_unlock_item(a)] in received for a in AREA_UNLOCK_ORDER]
+    else:
+        flags = [ship_parts_count >= AREA_PART_THRESHOLDS[a] for a in AREA_UNLOCK_ORDER]
+    return (True, *flags)
+
+
 async def handle_areas(ctx: P1Context, game: Game):
     # Build set of valid ship part IDs for fast lookup
     ship_part_ids = {data.ap_id for data in ALL_PARTS.values()}
@@ -4202,15 +4213,7 @@ async def handle_areas(ctx: P1Context, game: Game):
             await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
             ctx.finished_game = True
 
-    areas = 0b00001
-    if ship_parts_count >= 1:
-        areas += 0b00010
-    if ship_parts_count >= 5:
-        areas += 0b00100
-    if ship_parts_count >= 12:
-        areas += 0b01000
-    if ship_parts_count >= 29:
-        areas += 0b10000
+    areas = sum(1 << i for i, ok in enumerate(unlocked_areas(ctx, ship_parts_count)) if ok)
 
     # mCurrParts / mRequiredUfoPartCount are written through the playerState
     # pointer, and only when the value changes.
@@ -4534,6 +4537,9 @@ async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
                 logger.info(f"[DEBUG] {color} onion cone: error {e!r}")
 
 
+MINLEAF_EXTINCT_DELAY = 3.0  # seconds at 0 Pikmin before adding one to the onion
+
+
 async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
     """QOL 'Always Keep One Leaf Pikmin': keep at least 1 Leaf Pikmin, ONLY for
     colors actually owned (hasContainer).
@@ -4563,9 +4569,6 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
     # Same write window as the Pikmin bonuses.
     sub = _oneplayer_subsection(game)
     if sub == ONEPLAYER_NEW_PIKI_GAME:
-        # Colours owned when the level loaded are left to the game.
-        if ctx._minleaf_owned_at_entry is None:
-            ctx._minleaf_owned_at_entry = owned
         if not is_day_active(game):
             ctx._minleaf_free_since = None
             return
@@ -4573,10 +4576,11 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
             return
         in_level = True
     elif sub == ONEPLAYER_MAP_SELECT:
-        ctx._minleaf_owned_at_entry = None
+        ctx._minleaf_zero_since = {}
+        ctx._minleaf_seen_alive = set()
+        ctx._minleaf_prev_owned = owned
         in_level = False
     else:
-        ctx._minleaf_owned_at_entry = None
         ctx._minleaf_free_since = None
         return
 
@@ -4586,9 +4590,12 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
     def write_u32(addr: int, value: int) -> None:
         dme.write_bytes(addr, struct.pack(">I", max(0, value)))
 
+    prev_owned = ctx._minleaf_prev_owned
+    ctx._minleaf_prev_owned = owned
     for color in ("red", "yellow", "blue"):
         if not (owned & CONTAINER_COLOR_BIT.get(color, 0)):
             continue  # color not owned -> no ghost Pikmin
+        just_unlocked = prev_owned is not None and not (prev_owned & CONTAINER_COLOR_BIT[color])
         addr = stage.get(color, {}).get("leaf")
         if addr is None:
             continue
@@ -4597,17 +4604,27 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
                 if read_u32(addr) == 0:
                     write_u32(addr, 1)
                 continue
-            # In a level: only for an onion discovered today, if still empty.
-            bit = CONTAINER_COLOR_BIT.get(color, 0)
-            if ctx._minleaf_owned_at_entry & bit:
+            # In a level: +1 in the onion once the colour has 0 Pikmin (onion,
+            # field and seeds) for MINLEAF_EXTINCT_DELAY seconds.
+            allp = GAMESTAT_ALLPIKIS_ADDRS.get(game, {}).get(color)
+            if allp is None:
+                continue
+            if read_u32(allp) != 0:
+                ctx._minleaf_seen_alive.add(color)
+                ctx._minleaf_zero_since.pop(color, None)
+                continue
+            # Day 1: the red onion gives its own seed.
+            if color == "red" and color not in ctx._minleaf_seen_alive \
+                    and dme.read_byte(DAY_NUMBER[game]) <= 1:
                 continue
             onion = find_onion_containers(game).get(color)
             if not onion:
                 continue
-            ctx._minleaf_owned_at_entry |= bit
-            allp = GAMESTAT_ALLPIKIS_ADDRS.get(game, {}).get(color)
-            if allp is None or read_u32(allp) != 0:
+            # Onion just unlocked: apply now, otherwise wait for the delay.
+            since = ctx._minleaf_zero_since.setdefault(color, time.monotonic())
+            if not just_unlocked and time.monotonic() - since < MINLEAF_EXTINCT_DELAY:
                 continue
+            ctx._minleaf_zero_since.pop(color, None)
             write_u32(addr, read_u32(addr) + 1)
             cont = ONION_DYN_ADDRS.get(game, {}).get(color)
             if cont is not None:
@@ -4616,7 +4633,7 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
             held = onion + ONION_CHAIN["GOAL_HELDPIKIS"]
             write_u32(held, read_u32(held) + 1)
             if ctx.debug_pbonus:
-                logger.info(f"[DEBUG] min leaf {color}: +1 (new onion)")
+                logger.info(f"[DEBUG] min leaf {color}: +1 (0 Pikmin left)")
         except Exception:
             pass
 
@@ -5144,7 +5161,8 @@ async def dolphin_loop(ctx: P1Context):
             ctx._dl_free_since = None    # same for received DeathLink
             ctx._pbonus_free_since = None
             ctx._minleaf_free_since = None
-            ctx._minleaf_owned_at_entry = None
+            ctx._minleaf_zero_since = {}
+            ctx._minleaf_seen_alive = set()
         ctx._in_level_prev = in_level
         ctx._save_was_loaded_prev_death = save_active
 
