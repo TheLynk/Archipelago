@@ -51,6 +51,8 @@ from .P1Symbols import (
     TRIP_FORCED_FLOAT,
     CONTAINER_COLOR_BIT,
     CONTAINER_BOOT_ALL,
+    DEMOFLAG_DISCOVER_ONION,
+    DEMOFLAG_PLUCK_PIKMIN,
     SECTION_ONE_PLAYER,
     ONEPLAYER_NEW_PIKI_GAME,
     ONEPLAYER_MAP_SELECT,
@@ -2076,6 +2078,7 @@ class P1Context(SuperContext):
         self._minleaf_zero_since: dict = {}
         self._minleaf_seen_alive: set = set()
         self._minleaf_prev_owned: Optional[int] = None
+        self._onion_unlocked_prev: Optional[set] = None
         self._bond_kill_pending: bool = False
         self.death_cause_ring: Optional[int] = None   
         self.tracker_stage_name: Optional[str] = None 
@@ -3667,6 +3670,9 @@ async def handle_pikmin_items(ctx: P1Context, game: Game) -> None:
             continue
 
         color, stage, count = id_to_pikmin[item_id]
+        # Bonus of a locked colour: kept until its onion is unlocked.
+        if not onion_unlocked(ctx, color):
+            continue
         total_received = sum(1 for i in ctx.items_received if i.item == item_id)
         already_applied = ctx.pikmin_items_applied.get(item_id, 0)
         to_apply = total_received - already_applied
@@ -3739,6 +3745,10 @@ async def handle_parts(ctx: P1Context, game: Game):
 
         # Normal direction: collected in-game -> send the check to the server.
         if read == data.collected_byte and data.ap_id not in ctx.checked_locations:
+            # Not sent while a colour it needs is locked (Shuffle Unlock Onion).
+            needed = [c for c in ("red", "yellow", "blue") if getattr(data.required_types, c)]
+            if not all(onion_unlocked(ctx, c) for c in needed):
+                continue
             ctx.locations_checked.add(data.ap_id)
             await ctx.check_locations([data.ap_id])
 
@@ -3863,11 +3873,14 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
         yellow_count = dme.read_byte(addresses["yellow"])
         blue_count   = dme.read_byte(addresses["blue"])
 
-        # Only act if counts have changed since last tick
+        # Only act if counts or unlocked onions have changed since last tick
+        unlocked = tuple(c for c in ("red", "yellow", "blue") if onion_unlocked(ctx, c))
         if (red_count == ctx.last_red_count
                 and yellow_count == ctx.last_yellow_count
-                and blue_count == ctx.last_blue_count):
+                and blue_count == ctx.last_blue_count
+                and unlocked == getattr(ctx, "_pikloc_unlocked", None)):
             return
+        ctx._pikloc_unlocked = unlocked
 
         ctx.last_red_count    = red_count
         ctx.last_yellow_count = yellow_count
@@ -3892,7 +3905,7 @@ async def handle_pikmin_locations(ctx: P1Context, game: Game):
             if loc_id not in id_to_pikmin:
                 continue
             color, threshold = id_to_pikmin[loc_id]
-            if current_counts[color] >= threshold:
+            if color in unlocked and current_counts[color] >= threshold:
                 locations_to_check.append(loc_id)
 
         if locations_to_check:
@@ -4338,6 +4351,78 @@ async def handle_qol_first_day(ctx: P1Context, game: Game) -> None:
         pass
 
 
+ONION_NEXT_LANDING_MSG = {
+    "en": "{item} unlocked: it will land with you from the next landing.",
+    "fr": "{item} débloqué : il atterrira avec vous dès le prochain atterrissage.",
+    "de": "{item} freigeschaltet: sie landet ab der nächsten Landung mit dir.",
+    "it": "{item} sbloccata: atterrerà con te dal prossimo atterraggio.",
+    "es": "{item} desbloqueada: aterrizará contigo desde el próximo aterrizaje.",
+}
+
+
+def onion_unlocked(ctx: P1Context, color: str) -> bool:
+    """True if the onion of this colour may be used (Shuffle Unlock Onion)."""
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    mode = slot_data.get("shuffle_unlock_onion", 0)
+    if not mode or color not in ONION_UNLOCK_ORDER:
+        return True
+    received = [i.item for i in ctx.items_received]
+    if mode == 1:
+        return received.count(ONION_ITEMS[PROGRESSIVE_ONION_ITEM]) > ONION_UNLOCK_ORDER.index(color)
+    return ONION_ITEMS[onion_unlock_item(color)] in received
+
+
+async def handle_onion_unlock(ctx: P1Context, game: Game) -> None:
+    """Shuffle Unlock Onion: keep locked onions dormant, give unlocked ones on the world map."""
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    if not slot_data.get("shuffle_unlock_onion", 0):
+        return
+    ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ptr is None:
+        return
+    unlocked = {c for c in ONION_UNLOCK_ORDER if onion_unlocked(ctx, c)}
+    locked = [c for c in ONION_UNLOCK_ORDER if c not in unlocked]
+    sub = _oneplayer_subsection(game)
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
+        if not (_RAM_MIN <= ps < _RAM_MAX):
+            return
+        stored = struct.unpack(">I", dme.read_bytes(ps + PLAYERSTATE_OFFSETS["mDemoFlagsStoredPtr"], 4))[0]
+        # No discovery cutscene and no first-pluck unlock for a locked colour.
+        if locked and _RAM_MIN <= stored < _RAM_MAX:
+            _set_demo_flags(stored, [f for c in locked
+                                     for f in (DEMOFLAG_DISCOVER_ONION[c], DEMOFLAG_PLUCK_PIKMIN[c])])
+        cf_addr = ps + PLAYERSTATE_OFFSETS["mContainerFlag"]
+        df_addr = ps + PLAYERSTATE_OFFSETS["mDisplayPikiFlag"]
+        cf = dme.read_byte(cf_addr)
+        df = dme.read_byte(df_addr)
+        new_cf, new_df = cf, df
+        for c in locked:
+            new_cf &= ~(CONTAINER_COLOR_BIT[c] | _BOOT_BIT[c]) & 0xFF
+            new_df &= ~CONTAINER_COLOR_BIT[c] & 0xFF
+        # Owned onions are only given outside a level: the level then spawns
+        # them at the landing site (an owned onion missing from a level crashes
+        # the end-of-day cutscene).
+        if sub == ONEPLAYER_MAP_SELECT:
+            for c in unlocked:
+                new_cf |= CONTAINER_COLOR_BIT[c] | _BOOT_BIT[c]
+                new_df |= CONTAINER_COLOR_BIT[c]
+        if new_cf != cf:
+            dme.write_byte(cf_addr, new_cf)
+        if new_df != df:
+            dme.write_byte(df_addr, new_df)
+    except Exception:
+        return
+
+    prev = ctx._onion_unlocked_prev
+    ctx._onion_unlocked_prev = unlocked
+    if prev is not None and sub == ONEPLAYER_NEW_PIKI_GAME:
+        lang = getattr(ctx, "detected_language", "en")
+        for c in sorted(unlocked - prev):
+            msg = ONION_NEXT_LANDING_MSG.get(lang, ONION_NEXT_LANDING_MSG["en"])
+            logger.info("[Pikmin] " + msg.format(item=onion_unlock_item(c)))
+
+
 def _set_demo_flags(stored: int, indices) -> None:
     """Mark a list of EDemoFlags indices as already seen in the RAM bitset."""
     for idx in indices:
@@ -4388,7 +4473,9 @@ async def handle_qol_skip_cutscenes(ctx: P1Context, game: Game) -> None:
         if "Onion Discovery" in skips:
             cf_addr = ps + PLAYERSTATE_OFFSETS["mContainerFlag"]
             cf = dme.read_byte(cf_addr)
-            new_cf = cf | CONTAINER_BOOT_ALL
+            # Shuffle Unlock Onion: never boot or track a locked onion.
+            allowed = [c for c in ("red", "yellow", "blue") if onion_unlocked(ctx, c)]
+            new_cf = cf | sum(_BOOT_BIT[c] for c in allowed)
             if (new_cf & 0x07) != 0x07:  # a tracking bit is still missing
                 navi = _resolve_olimar(game)
                 if navi:
@@ -4405,7 +4492,7 @@ async def handle_qol_skip_cutscenes(ctx: P1Context, game: Game) -> None:
                         if objtype == OBJTYPE_GOAL:
                             colour = int.from_bytes(dme.read_bytes(goal + ONION_CHAIN["GOAL_COLOUR"], 2), "big")
                             name = COLOR_BY_INDEX.get(colour)
-                            if name:
+                            if name in allowed:
                                 new_cf |= CONTAINER_COLOR_BIT.get(name, 0)
             if new_cf != cf:
                 dme.write_byte(cf_addr, new_cf)
@@ -5176,6 +5263,7 @@ async def dolphin_loop(ctx: P1Context):
         # STAGE) and area unlocking (visible on the map).
         save_active_handlers = (handle_pikmin_items, handle_areas, sync_server_collected_parts,
                                 handle_tracker_stage,
+                                handle_onion_unlock,
                                 handle_qol_skip_cutscenes,
                                 handle_qol_min_leaf)
         # Cosmetic/mechanical handlers: always run (they have internal guards).

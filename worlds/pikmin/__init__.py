@@ -143,12 +143,14 @@ class P1World(World):
         **TRAP_ITEMS,
         **USEFUL_ITEMS,
         **AREA_ITEMS,
+        **ONION_ITEMS,
     }
 
     item_name_groups: ClassVar[dict[str, set[str]]] = {
         "Ship Part": set(ALL_PARTS.keys()),
         "Trap": set(TRAP_ITEMS.keys()),
         "Area": set(AREA_ITEMS.keys()),
+        "Onion": set(ONION_ITEMS.keys()),
     }
 
     location_name_to_id: ClassVar[dict[str, int]] = {
@@ -174,6 +176,7 @@ class P1World(World):
         "blue_pikmin_locations_enabled", "blue_pikmin_interval",
         "disable_pikmin_trip",
         "shuffle_unlock_areas",
+        "shuffle_unlock_onion",
     )
 
     @staticmethod
@@ -200,6 +203,8 @@ class P1World(World):
             return P1Item(name, ItemClassification.useful, USEFUL_ITEMS[name], self.player)
         if name in AREA_ITEMS:
             return P1Item(name, ItemClassification.progression, AREA_ITEMS[name], self.player)
+        if name in ONION_ITEMS:
+            return P1Item(name, ItemClassification.progression, ONION_ITEMS[name], self.player)
         return P1Item(name, ItemClassification.progression, ALL_PARTS[name].ap_id, self.player)
 
     def create_event(self, name: str) -> "P1Item":
@@ -282,13 +287,19 @@ class P1World(World):
         elif self.options.shuffle_unlock_areas == 2:
             items += [self.create_item(area_unlock_item(area)) for area in AREA_UNLOCK_ORDER]
 
+        if self.options.shuffle_unlock_onion == 1:
+            items += [self.create_item(PROGRESSIVE_ONION_ITEM) for _ in ONION_UNLOCK_ORDER]
+        elif self.options.shuffle_unlock_onion == 2:
+            items += [self.create_item(onion_unlock_item(color)) for color in ONION_UNLOCK_ORDER]
+
         ship_part_locations = len(ALL_PARTS)
         pikmin_location_count = len(self.pikmin_locations) if self.options.enable_pikmin_locations else 0
         total_locations = ship_part_locations + pikmin_location_count
         total_items = len(items)
-        if self.options.shuffle_unlock_areas and total_items > total_locations - locked:
+        if (self.options.shuffle_unlock_areas or self.options.shuffle_unlock_onion) \
+                and total_items > total_locations - locked:
             raise OptionError(
-                f"Pikmin ({self.player_name}): Shuffle Unlock Areas needs more locations, "
+                f"Pikmin ({self.player_name}): Shuffle Unlock Areas / Onion needs more locations, "
                 f"enable Pikmin locations.")
         fillers_needed = max(0, total_locations - total_items)
 
@@ -447,6 +458,7 @@ class P1World(World):
             # by PopTracker to show the item only in mode 2.
             "disable_pikmin_trip": self.options.disable_pikmin_trip.value,
             "shuffle_unlock_areas": self.options.shuffle_unlock_areas.value,
+            "shuffle_unlock_onion": self.options.shuffle_unlock_onion.value,
             "skip_events":         sorted(self.options.skip_events.value),
             "always_min_one_leaf":           self.options.always_min_one_leaf.value,
             "day_cycle_mode":      self.options.day_cycle_mode.value,

@@ -194,6 +194,24 @@ AREA_ITEMS: dict[str, int] = {
     **{area_unlock_item(area): 71826 + i for i, area in enumerate(AREA_UNLOCK_ORDER)},
 }
 
+# ====================================================================
+# ONION ITEMS (Shuffle Unlock Onion)
+# ====================================================================
+PROGRESSIVE_ONION_ITEM = "Progressive Onion"
+
+# Onions unlocked by items, in order (the Red Onion is not shuffled).
+ONION_UNLOCK_ORDER: tuple[str, ...] = ("yellow", "blue")
+
+
+def onion_unlock_item(color: str) -> str:
+    return f"{color.capitalize()} Onion"
+
+
+ONION_ITEMS: dict[str, int] = {
+    PROGRESSIVE_ONION_ITEM: 71830,
+    **{onion_unlock_item(color): 71831 + i for i, color in enumerate(ONION_UNLOCK_ORDER)},
+}
+
 # Part name -> in-game Pellet model ID (fourCC, enum UfoPartID in include/Pellet.h).
 # Used to find a part's physical Pellet in the level and remove it when the
 # location is checked server-side.

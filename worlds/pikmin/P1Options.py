@@ -40,6 +40,24 @@ class ShuffleUnlockAreas(Choice):
     default = 0
 
 
+class ShuffleUnlockOnion(Choice):
+    """
+    Choose how the Yellow and Blue Onions are unlocked. The Red Onion is not affected.
+
+    off         - Onions are discovered in their area, like the original game.
+    progressive - 2 "Progressive Onion" items unlock the Yellow then the Blue Onion.
+    individual  - Each Onion has its own item ("Yellow Onion", "Blue Onion").
+
+    When enabled, an unlocked Onion lands at the landing site from the next landing.
+    Checks needing a locked colour are not sent until its Onion is unlocked.
+    """
+    display_name = "Shuffle Unlock Onion"
+    option_off         = 0
+    option_progressive = 1
+    option_individual  = 2
+    default = 0
+
+
 # ====================================================================
 # PIKMIN LOCATION
 # ====================================================================
@@ -567,6 +585,7 @@ class P1Options(PerGameCommonOptions):
     first_part_is_local: FirstPartIsLocal
     last_part_is_local: LastPartIsLocal
     shuffle_unlock_areas: ShuffleUnlockAreas
+    shuffle_unlock_onion: ShuffleUnlockOnion
 # PIKMIN LOCATION
     enable_pikmin_locations: EnablePikminLocations
     red_pikmin_locations_enabled: RedPikminLocationsEnabled
@@ -637,7 +656,7 @@ class P1Options(PerGameCommonOptions):
 # ====================================================================
 P1_OPTION_GROUPS = [
     OptionGroup("Ship Parts", [
-        FirstPartIsLocal, LastPartIsLocal, ShuffleUnlockAreas,
+        FirstPartIsLocal, LastPartIsLocal, ShuffleUnlockAreas, ShuffleUnlockOnion,
     ]),
     OptionGroup("Pikmin Locations", [
         EnablePikminLocations,
