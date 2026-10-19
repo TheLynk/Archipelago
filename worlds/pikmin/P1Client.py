@@ -1696,6 +1696,10 @@ class P1CommandProcessor(SuperCommandProcessor):
                         f"in_level={is_in_level(game)} day_active={is_day_active(game)} "
                         f"cone_ok={sorted(getattr(ctx, '_cone_ok', set()))} "
                         f"skip_events={sorted((getattr(ctx, 'slot_data', {}) or {}).get('skip_events', []))}")
+            mask_addr = getattr(ctx, "onion_mask", None)
+            mask = u32(mask_addr) if mask_addr else None
+            logger.info(f"[DEBUG ONION] mask={mask!r} applied={sorted(getattr(ctx, '_onion_applied', None) or [])} "
+                        f"hidden={sorted(getattr(ctx, '_onion_hidden', {}))}")
             onions = find_onion_containers(game)
             if not onions:
                 logger.info("[DEBUG ONION] No onion found in this area.")
@@ -1713,6 +1717,7 @@ class P1CommandProcessor(SuperCommandProcessor):
                              f"visible={dme.read_byte(eff + 0x42)}")
                 gpos = struct.unpack(">fff", dme.read_bytes(g + 0x41C, 12))
                 line += f" onionPos=({gpos[0]:.0f},{gpos[1]:.0f},{gpos[2]:.0f})"
+                line += f" waypoint={struct.unpack('>h', dme.read_bytes(g + 0x42A, 2))[0]}"
                 logger.info(line)
         except Exception as e:
             logger.info(f"[DEBUG ONION] Error: {e!r}")
@@ -2078,7 +2083,17 @@ class P1Context(SuperContext):
         self._minleaf_zero_since: dict = {}
         self._minleaf_seen_alive: set = set()
         self._minleaf_prev_owned: Optional[int] = None
-        self._onion_unlocked_prev: Optional[set] = None
+        self._onion_hidden: dict = {}
+        self._worldmap_panes: dict = {}
+        self._onion_applied: Optional[set] = None
+        self._onion_free_since: Optional[float] = None
+        self._mask_free_since: Optional[float] = None
+        self._mask_ready: bool = False
+        self._mask_seen_load: bool = False
+        self.onion_mask: Optional[int] = None
+        self.onion_boot_mailbox: Optional[int] = None
+        self._minleaf_hold_until: dict = {}
+        self._cone_hold_until: dict = {}
         self._bond_kill_pending: bool = False
         self.death_cause_ring: Optional[int] = None   
         self.tracker_stage_name: Optional[str] = None 
@@ -4046,6 +4061,68 @@ def _relink_worldmap(wm: int) -> None:
             dme.write_bytes(base, want)
 
 
+# World map onion display (src/plugPikiYamashita/drawWorldMap.cpp): an onion
+# icon around the ship and a Pikmin counter per colour, shown at map opening
+# only if displayPikiCount(colour). P2DPane: mFlag._0C bit 0x80 = visible,
+# mTagName _10, children PSUTree _D0 (link: mObject _00, mNext _0C).
+DWM_ICON_SCREEN_CURSOR = 0x34   # DrawWorldMap.mCursorMgr (WorldMapCursorMgr*)
+DWM_DATA1_SCREEN = 0x20         # DrawWorldMap.mData1Screen (DrawScreen*, P2DScreen at +4)
+WMCM_CURSOR_ONYONS = 0x44       # WorldMapCursorMgr.mCursorOnyons[3], 0x3C each
+WMCO_SIZE = 0x3C
+PANE_FLAG = 0x0C
+PANE_VISIBLE = 0x80
+PANE_TAG = 0x10
+PANE_CHILDREN = 0xD0
+WORLDMAP_PIKI_COUNT_TAGS = (0x705F6263, 0x705F7263, 0x705F7963)  # 'p_bc' 'p_rc' 'p_yc'
+
+
+def _pane_find(root: int, tag: int, depth: int = 0) -> Optional[int]:
+    """Depth-first search of a P2DPane tree by tag (like P2DPane::search)."""
+    if depth > 8 or not (_RAM_MIN <= root < _RAM_MAX):
+        return None
+    if struct.unpack(">I", dme.read_bytes(root + PANE_TAG, 4))[0] == tag:
+        return root
+    link = struct.unpack(">I", dme.read_bytes(root + PANE_CHILDREN, 4))[0]
+    for _ in range(64):
+        if not (_RAM_MIN <= link < _RAM_MAX):
+            break
+        found = _pane_find(struct.unpack(">I", dme.read_bytes(link, 4))[0], tag, depth + 1)
+        if found:
+            return found
+        link = struct.unpack(">I", dme.read_bytes(link + 0x0C, 4))[0]
+    return None
+
+
+def _show_pane(pane: int) -> None:
+    flag = dme.read_byte(pane + PANE_FLAG)
+    if not flag & PANE_VISIBLE:
+        dme.write_byte(pane + PANE_FLAG, flag | PANE_VISIBLE)
+
+
+def _refresh_worldmap_onions(ctx: P1Context, game: Game, wm: int) -> None:
+    """Show the onion icon and Pikmin counter of a colour owned after the map opened."""
+    ps = struct.unpack(">I", dme.read_bytes(SYM_PLAYER_STATE_PTR[game], 4))[0]
+    if not (_RAM_MIN <= ps < _RAM_MAX):
+        return
+    shown = dme.read_byte(ps + PLAYERSTATE_OFFSETS["mDisplayPikiFlag"])
+    cursor = struct.unpack(">I", dme.read_bytes(wm + DWM_ICON_SCREEN_CURSOR, 4))[0]
+    screen = struct.unpack(">I", dme.read_bytes(wm + DWM_DATA1_SCREEN, 4))[0]
+    cache = ctx._worldmap_panes if ctx._worldmap_panes.get("wm") == wm else {"wm": wm}
+    ctx._worldmap_panes = cache
+    for idx in range(3):  # PikiColor: Blue, Red, Yellow
+        if not shown & (1 << idx):
+            continue
+        if _RAM_MIN <= cursor < _RAM_MAX:
+            icon = struct.unpack(">I", dme.read_bytes(cursor + WMCM_CURSOR_ONYONS + idx * WMCO_SIZE, 4))[0]
+            if _RAM_MIN <= icon < _RAM_MAX:
+                _show_pane(icon)
+        if _RAM_MIN <= screen < _RAM_MAX:
+            if idx not in cache:
+                cache[idx] = _pane_find(screen + 4, WORLDMAP_PIKI_COUNT_TAGS[idx])
+            if cache[idx]:
+                _show_pane(cache[idx])
+
+
 def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) -> None:
     """Refresh the world map in place when a part/area arrives while the player
     is already on it. No effect outside the world map."""
@@ -4084,6 +4161,8 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
             cnt_addr = wm + DWM_PIKI_COUNTS + idx * 4
             if struct.unpack(">i", dme.read_bytes(cnt_addr, 4))[0] != total:
                 dme.write_bytes(cnt_addr, struct.pack(">i", total))
+
+        _refresh_worldmap_onions(ctx, game, wm)
 
         # --- cursor navigation links ---------------------------
         # WorldMapCoursePointMgr::init() computes the up/down/left/right links
@@ -4351,13 +4430,34 @@ async def handle_qol_first_day(ctx: P1Context, game: Game) -> None:
         pass
 
 
-ONION_NEXT_LANDING_MSG = {
-    "en": "{item} unlocked: it will land with you from the next landing.",
-    "fr": "{item} débloqué : il atterrira avec vous dès le prochain atterrissage.",
-    "de": "{item} freigeschaltet: sie landet ab der nächsten Landung mit dir.",
-    "it": "{item} sbloccata: atterrerà con te dal prossimo atterraggio.",
-    "es": "{item} desbloqueada: aterrizará contigo desde el próximo aterrizaje.",
-}
+def _onion_applied(ctx: P1Context, game: Game, sub, ps: int, unlocked_now: set) -> set:
+    """Unlocked onions whose in-level effects may apply now.
+
+    In a level, an onion received after the load only applies after
+    CONE_START_DELAY seconds of free gameplay (not during the landing cutscene)."""
+    if sub != ONEPLAYER_NEW_PIKI_GAME:
+        ctx._onion_applied = None
+        return unlocked_now
+    if not is_day_active(game):
+        ctx._mask_seen_load = True
+    if ctx._onion_applied is None:
+        owned = dme.read_byte(ps + PLAYERSTATE_OFFSETS["mContainerFlag"])
+        ctx._onion_applied = {c for c in unlocked_now if owned & CONTAINER_COLOR_BIT[c]}
+    new = unlocked_now - ctx._onion_applied
+    if new:
+        if not is_day_active(game) or not ctx._mask_seen_load:
+            ctx._onion_free_since = None
+        elif _free_play_elapsed(ctx, game, "_onion_free_since"):
+            ctx._onion_applied |= new
+    return ctx._onion_applied & unlocked_now
+
+
+def onion_active(ctx: P1Context, color: str) -> bool:
+    """onion_unlocked(), delayed in a level like _onion_applied()."""
+    if not onion_unlocked(ctx, color):
+        return False
+    applied = getattr(ctx, "_onion_applied", None)
+    return applied is None or color not in ONION_UNLOCK_ORDER or color in applied
 
 
 def onion_unlocked(ctx: P1Context, color: str) -> bool:
@@ -4380,13 +4480,14 @@ async def handle_onion_unlock(ctx: P1Context, game: Game) -> None:
     ptr = SYM_PLAYER_STATE_PTR.get(game)
     if ptr is None:
         return
-    unlocked = {c for c in ONION_UNLOCK_ORDER if onion_unlocked(ctx, c)}
-    locked = [c for c in ONION_UNLOCK_ORDER if c not in unlocked]
+    unlocked_now = {c for c in ONION_UNLOCK_ORDER if onion_unlocked(ctx, c)}
     sub = _oneplayer_subsection(game)
     try:
         ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
         if not (_RAM_MIN <= ps < _RAM_MAX):
             return
+        unlocked = _onion_applied(ctx, game, sub, ps, unlocked_now)
+        locked = [c for c in ONION_UNLOCK_ORDER if c not in unlocked]
         stored = struct.unpack(">I", dme.read_bytes(ps + PLAYERSTATE_OFFSETS["mDemoFlagsStoredPtr"], 4))[0]
         # No discovery cutscene and no first-pluck unlock for a locked colour.
         if locked and _RAM_MIN <= stored < _RAM_MAX:
@@ -4411,16 +4512,81 @@ async def handle_onion_unlock(ctx: P1Context, game: Game) -> None:
             dme.write_byte(cf_addr, new_cf)
         if new_df != df:
             dme.write_byte(df_addr, new_df)
+        # getContainer() returns nullptr for the masked colours (ISO patch).
+        # Only once the day has started: during the level load the game builds
+        # its carry routes towards every onion returned by getContainer().
+        mask_addr = getattr(ctx, "onion_mask", None)
+        if mask_addr:
+            # mIsPauseAllowed may still be set from the previous day at the start
+            # of the load: wait to see it cleared in this level first.
+            day_active = is_day_active(game)
+            if sub == ONEPLAYER_NEW_PIKI_GAME and not day_active:
+                ctx._mask_seen_load = True
+            active = sub == ONEPLAYER_NEW_PIKI_GAME and day_active and ctx._mask_seen_load \
+                and (ctx._mask_ready or _free_play_elapsed(ctx, game, "_mask_free_since"))
+            if active:
+                ctx._mask_ready = True
+            mask = sum(CONTAINER_COLOR_BIT[c] for c in locked) if active else 0
+            if struct.unpack(">I", dme.read_bytes(mask_addr, 4))[0] != mask:
+                dme.write_bytes(mask_addr, struct.pack(">I", mask))
+        if sub == ONEPLAYER_NEW_PIKI_GAME:
+            _hide_locked_onions(ctx, game, locked)
+            _boot_unlocked_onions(ctx, game, ps, unlocked)
     except Exception:
         return
 
-    prev = ctx._onion_unlocked_prev
-    ctx._onion_unlocked_prev = unlocked
-    if prev is not None and sub == ONEPLAYER_NEW_PIKI_GAME:
-        lang = getattr(ctx, "detected_language", "en")
-        for c in sorted(unlocked - prev):
-            msg = ONION_NEXT_LANDING_MSG.get(lang, ONION_NEXT_LANDING_MSG["en"])
-            logger.info("[Pikmin] " + msg.format(item=onion_unlock_item(c)))
+
+GOAL_HOME_POS = 0x41C          # GoalItem._41C, position forced every frame
+# A locked onion is moved under the map, above y = -2000: Creature::moveNew
+# kills anything below it (the onion legs' ropes would be destroyed).
+ONION_HIDE_Y = -1800.0
+ONION_HIDDEN_Y = -1700.0       # below this height the onion is already hidden
+
+
+def _hide_locked_onions(ctx: P1Context, game: Game, locked: list) -> None:
+    """Move locked onions under the map (out of sight and reach); put back unlocked ones."""
+    onions = find_onion_containers(game)
+    for color, goal in onions.items():
+        pos_addr = goal + GOAL_HOME_POS
+        x, y, z = struct.unpack(">fff", dme.read_bytes(pos_addr, 12))
+        saved = ctx._onion_hidden.get(color)
+        if color in locked:
+            if y > ONION_HIDDEN_Y and not (x == 0.0 and y == 0.0 and z == 0.0):
+                ctx._onion_hidden[color] = (goal, y)
+                dme.write_bytes(pos_addr + 4, struct.pack(">f", ONION_HIDE_Y))
+        elif saved and saved[0] == goal and y <= ONION_HIDDEN_Y:
+            dme.write_bytes(pos_addr + 4, struct.pack(">f", saved[1]))
+            del ctx._onion_hidden[color]
+
+
+def _boot_unlocked_onions(ctx: P1Context, game: Game, ps: int, unlocked: set) -> None:
+    """Mid-day unlock: boot an unlocked onion that is present but not owned yet."""
+    mailbox = getattr(ctx, "onion_boot_mailbox", None)
+    if not mailbox or not is_day_active(game):
+        return
+    if struct.unpack(">I", dme.read_bytes(mailbox, 4))[0] != 0:
+        return  # previous boot not consumed yet
+    cf_addr = ps + PLAYERSTATE_OFFSETS["mContainerFlag"]
+    df_addr = ps + PLAYERSTATE_OFFSETS["mDisplayPikiFlag"]
+    onions = find_onion_containers(game)
+    for color in sorted(unlocked):
+        goal = onions.get(color)
+        cf = dme.read_byte(cf_addr)
+        if not goal or cf & CONTAINER_COLOR_BIT[color]:
+            continue
+        if struct.unpack(">f", dme.read_bytes(goal + GOAL_HOME_POS + 4, 4))[0] <= ONION_HIDDEN_Y:
+            continue  # not put back yet
+        # The onion exists in this level: owning it now is safe for the end of day.
+        dme.write_byte(cf_addr, cf | CONTAINER_COLOR_BIT[color])
+        df = dme.read_byte(df_addr)
+        dme.write_byte(df_addr, df | CONTAINER_COLOR_BIT[color])
+        dme.write_bytes(mailbox, struct.pack(">I", goal))
+        # The boot animation emits the first seed itself.
+        ctx._minleaf_hold_until[color] = time.monotonic() + MINLEAF_BOOT_HOLD
+        ctx._cone_hold_until[color] = time.monotonic() + CONE_BOOT_DELAY
+        if ctx.debug_pbonus:
+            logger.info(f"[DEBUG] {color} onion booted mid-day @0x{goal:08X}")
+        return
 
 
 def _set_demo_flags(stored: int, indices) -> None:
@@ -4474,7 +4640,7 @@ async def handle_qol_skip_cutscenes(ctx: P1Context, game: Game) -> None:
             cf_addr = ps + PLAYERSTATE_OFFSETS["mContainerFlag"]
             cf = dme.read_byte(cf_addr)
             # Shuffle Unlock Onion: never boot or track a locked onion.
-            allowed = [c for c in ("red", "yellow", "blue") if onion_unlocked(ctx, c)]
+            allowed = [c for c in ("red", "yellow", "blue") if onion_active(ctx, c)]
             new_cf = cf | sum(_BOOT_BIT[c] for c in allowed)
             if (new_cf & 0x07) != 0x07:  # a tracking bit is still missing
                 navi = _resolve_olimar(game)
@@ -4527,6 +4693,7 @@ _BOOT_BIT = {"blue": 0x08, "red": 0x10, "yellow": 0x20}  # hasBootContainer (y)
 CONE_DEFAULT_SCALE = 0.1   # full cone scale observed on all onions
 CONE_MAX_TRIES = 5         # max fixes per onion per day
 CONE_START_DELAY = 2.0     # seconds of free gameplay before touching cones
+CONE_BOOT_DELAY = 8.0      # seconds after a mid-day onion boot before touching its cone
 MOVIE_IS_ACTIVE = 0x124    # MoviePlayer.mIsActive (bool)
 
 
@@ -4553,7 +4720,8 @@ async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
     it is re-checked every tick, at most CONE_MAX_TRIES times.
     """
     slot_data = getattr(ctx, "slot_data", None) or {}
-    if "Onion Discovery" not in slot_data.get("skip_events", []):
+    if "Onion Discovery" not in slot_data.get("skip_events", []) \
+            and not slot_data.get("shuffle_unlock_onion", 0):
         return
     # Not during the start-of-day cutscene (onion landing, which opens the cones
     # itself) nor under a menu; then wait CONE_START_DELAY seconds of free
@@ -4576,7 +4744,9 @@ async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
         cf = dme.read_byte(ps + PLAYERSTATE_OFFSETS["mContainerFlag"])
     except Exception:
         return
-    todo = [c for c, bit in _BOOT_BIT.items() if cf & bit and c not in ctx._cone_ok]
+    # After a mid-day boot, leave the cone to the boot animation for a while.
+    todo = [c for c, bit in _BOOT_BIT.items() if cf & bit and c not in ctx._cone_ok
+            and now >= ctx._cone_hold_until.get(c, 0.0)]
     if not todo:
         return
     onions = find_onion_containers(game)
@@ -4625,6 +4795,7 @@ async def handle_onion_cone(ctx: P1Context, game: Game) -> None:
 
 
 MINLEAF_EXTINCT_DELAY = 3.0  # seconds at 0 Pikmin before adding one to the onion
+MINLEAF_BOOT_HOLD = 20.0     # seconds without min leaf after a mid-day onion boot
 
 
 async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
@@ -4706,6 +4877,8 @@ async def handle_qol_min_leaf(ctx: P1Context, game: Game) -> None:
                 continue
             onion = find_onion_containers(game).get(color)
             if not onion:
+                continue
+            if time.monotonic() < ctx._minleaf_hold_until.get(color, 0.0):
                 continue
             # Onion just unlocked: apply now, otherwise wait for the delay.
             since = ctx._minleaf_zero_since.setdefault(color, time.monotonic())
@@ -5021,6 +5194,28 @@ def find_part_anim_mailbox() -> Optional[int]:
     return 0x80003000 + i + len(PART_ANIM_MAGIC) if i >= 0 else None
 
 
+def find_onion_boot_mailbox() -> Optional[int]:
+    """Return the address of the onion boot mailbox (P1Rom.apply_onion_boot_patch), or None."""
+    from .P1Rom import ONION_BOOT_MAGIC
+    try:
+        data = dme.read_bytes(0x80003000, 0x3000)
+    except Exception:
+        return None
+    i = data.find(ONION_BOOT_MAGIC)
+    return 0x80003000 + i + len(ONION_BOOT_MAGIC) if i >= 0 else None
+
+
+def find_onion_mask() -> Optional[int]:
+    """Return the address of the locked-onion mask (P1Rom.apply_onion_mask_patch), or None."""
+    from .P1Rom import ONION_MASK_MAGIC
+    try:
+        data = dme.read_bytes(0x80003000, 0x3000)
+    except Exception:
+        return None
+    i = data.find(ONION_MASK_MAGIC)
+    return 0x80003000 + i + len(ONION_MASK_MAGIC) if i >= 0 else None
+
+
 def find_death_cause_ring() -> Optional[int]:
     """Return the address of the buffer holding Olimar's last received hits.
 
@@ -5169,6 +5364,8 @@ async def dolphin_loop(ctx: P1Context):
                 ctx.iso_slot_name = read_iso_slot_name()
                 ctx.part_anim_mailbox = find_part_anim_mailbox()
                 ctx.death_cause_ring = find_death_cause_ring()
+                ctx.onion_mask = find_onion_mask()
+                ctx.onion_boot_mailbox = find_onion_boot_mailbox()
             if not ctx.game_detected:
                 ctx.game_detected = True
                 if ctx._pending_connect is not None:
@@ -5250,6 +5447,12 @@ async def dolphin_loop(ctx: P1Context):
             ctx._minleaf_free_since = None
             ctx._minleaf_zero_since = {}
             ctx._minleaf_seen_alive = set()
+            ctx._onion_hidden = {}
+            ctx._onion_applied = None
+            ctx._onion_free_since = None
+            ctx._mask_free_since = None
+            ctx._mask_ready = False
+            ctx._mask_seen_load = False
         ctx._in_level_prev = in_level
         ctx._save_was_loaded_prev_death = save_active
 
@@ -5534,6 +5737,7 @@ def _handle_patch(appik1_path: str) -> None:
     disable_trip = True
     skip_part_collect = True
     skip_ship_upgrade = True
+    preload_onions = False
     try:
         import zipfile, json
         with zipfile.ZipFile(appik1_path, "r") as zf:
@@ -5551,6 +5755,7 @@ def _handle_patch(appik1_path: str) -> None:
                 skips = set(opts.get("skip_events", []))
                 skip_part_collect = "Part Collection" in skips
                 skip_ship_upgrade = "Ship Upgrade" in skips
+                preload_onions = int(opts.get("shuffle_unlock_onion", 0)) != 0
     except Exception as e:
         logger.warning(f"[Pikmin] Could not read seed/options from .appik1: {e}")
 
@@ -5562,7 +5767,8 @@ def _handle_patch(appik1_path: str) -> None:
                            skip_ship_upgrade=skip_ship_upgrade,
                            suffix=suffix,
                            title=make_disc_title(seed, slot_name) if seed else "",
-                           slot_name=slot_name) or {}
+                           slot_name=slot_name,
+                           preload_onions=preload_onions) or {}
         logger.info(f"[Pikmin] ISO patched successfully: {output_iso}")
         trip_line = ""
         if disable_trip:
@@ -5592,6 +5798,15 @@ def _handle_patch(appik1_path: str) -> None:
         if status.get("death_cause_patched") is False:
             sn_line += ("\n\nDeath cause hook could NOT be applied: DeathLink messages "
                         "will not name the cause of death.")
+        if status.get("onion_boot_patched") is False:
+            sn_line += ("\n\nOnion boot hook could NOT be applied: an Onion unlocked mid-day "
+                        "will only be active from the next landing.")
+        if status.get("onion_mask_patched") is False:
+            sn_line += ("\n\nOnion mask could NOT be applied: locked Onions stay usable "
+                        "in this ISO.")
+        if status.get("onion_preload_patched") is False:
+            sn_line += ("\n\nOnion preload could NOT be applied: unlocked Onions will only "
+                        "appear where the game normally spawns them.")
         # NTSC only (key absent on PAL).
         if status.get("card_filename_patched") is False:
             sn_line += ("\n\nSave file name could NOT be patched: saving may not work "

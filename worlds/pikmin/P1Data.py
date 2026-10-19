@@ -186,7 +186,7 @@ AREA_PART_THRESHOLDS: dict[str, int] = {
 
 
 def area_unlock_item(area: str) -> str:
-    return f"Unlock {area}"
+    return area
 
 
 AREA_ITEMS: dict[str, int] = {

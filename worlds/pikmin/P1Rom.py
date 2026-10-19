@@ -704,9 +704,172 @@ def apply_death_cause_patch(f, version: bytes) -> bool:
     return True
 
 
+# Shuffle Unlock Onion: GenObjectItem::birth spawns an onion at the landing site
+# only if hasContainer(colour), else at its discovery spot ('next' generator).
+# The "bne" on hasContainer becomes a "b": every onion spawns at the landing site.
+ONION_PRELOAD_SITES = {
+    PAL_GAME_ID:  0x800EE7A8,
+    NTSC_GAME_ID: 0x800EE8F0,
+}
+ONION_PRELOAD_ORIG = 0x40820028   # bne +0x28
+ONION_PRELOAD_PREV = 0x7C800039   # and. r0, r4, r0
+ONION_PRELOAD_NEW = 0x48000028    # b +0x28
+
+# GoalItem::startAI closes the nearest route waypoint of a non-booted onion
+# (wp->setFlag(false)); a hidden onion at the landing site would cut a carry path.
+# "li r4, 0" before that call becomes "li r4, 1".
+ONION_WAYPOINT_SITES = {
+    PAL_GAME_ID:  0x800EBB3C,
+    NTSC_GAME_ID: 0x800EBC84,
+}
+ONION_WAYPOINT_ORIG = 0x38800000  # li r4, 0
+ONION_WAYPOINT_NEW = 0x38800001   # li r4, 1
+
+
+def apply_onion_preload_patch(f, version: bytes) -> bool:
+    """Spawn all onions at the landing site of every area, without closing a route."""
+    addr = ONION_PRELOAD_SITES.get(version)
+    wp_addr = ONION_WAYPOINT_SITES.get(version)
+    if addr is None or wp_addr is None:
+        return False
+    wp_off = ram_to_iso_offset(f, wp_addr)
+    wp_cur = _u32(f, wp_off)
+    if wp_cur not in (ONION_WAYPOINT_ORIG, ONION_WAYPOINT_NEW):
+        return False
+    f.seek(wp_off)
+    f.write(_pack(ONION_WAYPOINT_NEW))
+    off = ram_to_iso_offset(f, addr)
+    cur = _u32(f, off)
+    if cur == ONION_PRELOAD_NEW:
+        return True
+    if cur != ONION_PRELOAD_ORIG or _u32(f, off - 4) != ONION_PRELOAD_PREV:
+        return False
+    f.seek(off)
+    f.write(_pack(ONION_PRELOAD_NEW))
+    return True
+
+
+# Shuffle Unlock Onion: ItemMgr::getContainer(colour) returns nullptr while
+# (mask >> colour) & 1, so a locked onion has no interaction at all.
+#   block = ONION_MASK_MAGIC (8) + mask (u32, written by the client) + stub
+ONION_MASK_MAGIC = b"APPIKONI"
+GET_CONTAINER_ADDR = {
+    PAL_GAME_ID:  0x800F2870,   # getContainer__7ItemMgrFi
+    NTSC_GAME_ID: 0x800F29B8,
+}
+
+
+def build_onion_mask_block(block_ram: int, get_container: int) -> bytes:
+    mask = block_ram + len(ONION_MASK_MAGIC)
+    ha, lo = ((mask + 0x8000) >> 16) & 0xFFFF, mask & 0xFFFF
+    code_ram = mask + 4
+    ins = [
+        (15 << 26) | (12 << 21) | ha,                                   # lis   r12, mask@ha
+        (32 << 26) | (12 << 21) | (12 << 16) | lo,                      # lwz   r12, mask@l(r12)
+        (31 << 26) | (12 << 21) | (12 << 16) | (4 << 11) | (536 << 1),  # srw   r12, r12, r4
+        (28 << 26) | (12 << 21) | (12 << 16) | 1,                       # andi. r12, r12, 1
+        (16 << 26) | (12 << 21) | (2 << 16) | 12,                       # beq   +12
+        (14 << 26) | (3 << 21),                                         # li    r3, 0
+        0x4E800020,                                                     # blr
+        MFLR_R0,                                                        # original instruction
+        (18 << 26) | ((get_container + 4 - (code_ram + 8 * 4)) & 0x03FFFFFC),  # b getContainer+4
+    ]
+    return ONION_MASK_MAGIC + b"\x00" * 4 + b"".join(_ppc(i) for i in ins)
+
+
+def apply_onion_mask_patch(f, version: bytes) -> bool:
+    """Install the locked-onion mask on ItemMgr::getContainer (PAL and NTSC)."""
+    get_container = GET_CONTAINER_ADDR.get(version)
+    if get_container is None:
+        return False
+    try:
+        hook_off = ram_to_iso_offset(f, get_container)
+        if _u32(f, hook_off) != MFLR_R0:
+            return False
+        size = len(build_onion_mask_block(0x80000000, get_container))
+        ram, off = find_code_cave(f, size + 8)
+    except InvalidISOError:
+        return False
+    block_ram, block_off = ram + 4, off + 4
+    f.seek(block_off)
+    f.write(build_onion_mask_block(block_ram, get_container))
+    f.seek(hook_off)
+    f.write(ppc_b(get_container, block_ram + len(ONION_MASK_MAGIC) + 4))
+    return True
+
+
+# Shuffle Unlock Onion: mid-day unlock. The client writes a GoalItem* in the
+# mailbox; at the entry of GoalItem::update() for that onion, the stub clears it
+# and calls GoalItem::startBoot() (boot animation, first seed, setBootContainer).
+#   block = ONION_BOOT_MAGIC (8) + mailbox (u32) + stub
+ONION_BOOT_MAGIC = b"APPIKBOT"
+ONION_BOOT_SITES = {
+    # version: (update__8GoalItemFv, startBoot__8GoalItemFv)
+    PAL_GAME_ID:  (0x800EBCF0, 0x800EBC40),
+    NTSC_GAME_ID: (0x800EBE38, 0x800EBD88),
+}
+
+
+def build_onion_boot_block(block_ram: int, update: int, start_boot: int) -> bytes:
+    mb = block_ram + len(ONION_BOOT_MAGIC)
+    ha, lo = ((mb + 0x8000) >> 16) & 0xFFFF, mb & 0xFFFF
+    code_ram = mb + 4
+    lwz  = lambda d, a, o: (32 << 26) | (d << 21) | (a << 16) | (o & 0xFFFF)
+    stw  = lambda s_, a, o: (36 << 26) | (s_ << 21) | (a << 16) | (o & 0xFFFF)
+    stwu = lambda s_, a, o: (37 << 26) | (s_ << 21) | (a << 16) | (o & 0xFFFF)
+    addi = lambda d, a, i: (14 << 26) | (d << 21) | (a << 16) | (i & 0xFFFF)
+    b    = lambda fr, to, lk=0: (18 << 26) | ((to - fr) & 0x03FFFFFC) | lk
+    ins = [
+        (15 << 26) | (12 << 21) | ha,                    # 0  lis   r12, mb@ha
+        lwz(11, 12, lo),                                 # 1  lwz   r11, mb@l(r12)
+        (31 << 26) | (11 << 16) | (3 << 11),             # 2  cmpw  r11, r3
+        (16 << 26) | (4 << 21) | (2 << 16) | (13 * 4),   # 3  bne   -> 16
+        MFLR_R0,                                         # 4
+        stwu(1, 1, -0x20),                               # 5
+        stw(0, 1, 0x24),                                 # 6
+        stw(3, 1, 0x8),                                  # 7
+        addi(0, 0, 0),                                   # 8  li    r0, 0
+        stw(0, 12, lo),                                  # 9  mailbox = 0
+        None,                                            # 10 bl    startBoot
+        lwz(3, 1, 0x8),                                  # 11
+        lwz(0, 1, 0x24),                                 # 12
+        0x7C0803A6,                                      # 13 mtlr  r0
+        addi(1, 1, 0x20),                                # 14
+        0x60000000,                                      # 15 nop
+        MFLR_R0,                                         # 16 original instruction
+        None,                                            # 17 b     update+4
+    ]
+    ins[10] = b(code_ram + 10 * 4, start_boot, 1)
+    ins[17] = b(code_ram + 17 * 4, update + 4)
+    return ONION_BOOT_MAGIC + b"\x00" * 4 + b"".join(_ppc(i) for i in ins)
+
+
+def apply_onion_boot_patch(f, version: bytes) -> bool:
+    """Install the mid-day onion boot mailbox (PAL and NTSC)."""
+    sites = ONION_BOOT_SITES.get(version)
+    if sites is None:
+        return False
+    update, start_boot = sites
+    try:
+        hook_off = ram_to_iso_offset(f, update)
+        if _u32(f, hook_off) != MFLR_R0:
+            return False
+        size = len(build_onion_boot_block(0x80000000, update, start_boot))
+        ram, off = find_code_cave(f, size + 8)
+    except InvalidISOError:
+        return False
+    block_ram, block_off = ram + 4, off + 4
+    f.seek(block_off)
+    f.write(build_onion_boot_block(block_ram, update, start_boot))
+    f.seek(hook_off)
+    f.write(ppc_b(update, block_ram + len(ONION_BOOT_MAGIC) + 4))
+    return True
+
+
 def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
               skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
-              suffix: str = "", title: str = "", slot_name: str = "") -> dict:
+              suffix: str = "", title: str = "", slot_name: str = "",
+              preload_onions: bool = False) -> dict:
     """Patch the ISO, dispatching to the NTSC or PAL path by Game ID.
 
     `disable_trip`: QOL patch disabling Pikmin tripping (best-effort).
@@ -715,6 +878,7 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
     `suffix`: Game ID suffix (make_game_id_suffix); empty = seed[-3:] fallback
     (for .appik1 files generated by older versions).
     `title`: game name written in the header (full run ID).
+    `preload_onions`: Shuffle Unlock Onion, spawn every onion at the landing site.
     Returns a status dict (trip_patched / part_collect_patched / ship_upgrade_patched).
     """
     base_version = read_game_id(iso_path)
@@ -731,6 +895,10 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
         # padding that could otherwise be mistaken for free space).
         status["part_anim_patched"] = apply_part_anim_patch(f, base_version)
         status["death_cause_patched"] = apply_death_cause_patch(f, base_version)
+        if preload_onions:
+            status["onion_preload_patched"] = apply_onion_preload_patch(f, base_version)
+            status["onion_mask_patched"] = apply_onion_mask_patch(f, base_version)
+            status["onion_boot_patched"] = apply_onion_boot_patch(f, base_version)
         if slot_name:
             status["slot_name_written"] = _write_slot_name(f, slot_name)
     return status

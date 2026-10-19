@@ -29,7 +29,7 @@ class ShuffleUnlockAreas(Choice):
 
     off         - Areas unlock with the number of ship parts, like the original game.
     progressive - 4 "Progressive Area" items unlock the areas in the original order.
-    individual  - Each area has its own "Unlock <Area>" item.
+    individual  - Each area has its own item, named after the area.
 
     When enabled, ship parts no longer unlock any area.
     """
