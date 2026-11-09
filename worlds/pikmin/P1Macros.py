@@ -3,7 +3,7 @@ from typing import Callable
 from BaseClasses import CollectionState
 from .P1Data import (ALL_PARTS, Area, AREA_UNLOCK_ORDER, AREA_PART_THRESHOLDS,
                      PROGRESSIVE_AREA_ITEM, area_unlock_item,
-                     ONION_UNLOCK_ORDER, PROGRESSIVE_ONION_ITEM, onion_unlock_item)
+                     PROGRESSIVE_ONION_ITEM, onion_unlock_item, onion_unlock_order)
 
 
 def _can_access_area(area: str, state: CollectionState, player: int) -> bool:
@@ -22,24 +22,36 @@ can_access: dict[Area, Callable[[CollectionState, int], bool]] = {
     for area in Area.__args__
 }
 
+def can_obtain_any(state: CollectionState, player: int) -> bool:
+    """At least one Pikmin colour, needed to carry anything."""
+    return can_obtain_reds(state, player) or can_obtain_yellows(state, player) \
+        or can_obtain_blues(state, player)
+
+
 def can_obtain_reds(state: CollectionState, player: int) -> bool:
-    return can_access["The Impact Site"](state, player)
+    return _can_obtain("red", "The Impact Site", state, player)
 
 
 def _has_onion(color: str, state: CollectionState, player: int) -> bool:
-    mode = state.multiworld.worlds[player].options.shuffle_unlock_onion.value
-    if mode == 1:
-        return state.has(PROGRESSIVE_ONION_ITEM, player, ONION_UNLOCK_ORDER.index(color) + 1)
+    world = state.multiworld.worlds[player]
+    if color in world.starting_onions:
+        return True
+    if world.options.shuffle_unlock_onion == 1:
+        order = onion_unlock_order(world.starting_onions)
+        return state.has(PROGRESSIVE_ONION_ITEM, player, order.index(color) + 1)
     return state.has(onion_unlock_item(color), player)
 
 
+def _can_obtain(color: str, area: Area, state: CollectionState, player: int) -> bool:
+    world = state.multiworld.worlds[player]
+    if world.options.shuffle_unlock_onion:
+        return _has_onion(color, state, player)
+    return color in world.starting_onions or can_access[area](state, player)
+
+
 def can_obtain_blues(state: CollectionState, player: int) -> bool:
-    if state.multiworld.worlds[player].options.shuffle_unlock_onion:
-        return _has_onion("blue", state, player)
-    return can_access["The Forest Navel"](state, player)
+    return _can_obtain("blue", "The Forest Navel", state, player)
 
 
 def can_obtain_yellows(state: CollectionState, player: int) -> bool:
-    if state.multiworld.worlds[player].options.shuffle_unlock_onion:
-        return _has_onion("yellow", state, player)
-    return can_access["The Forest of Hope"](state, player)
+    return _can_obtain("yellow", "The Forest of Hope", state, player)

@@ -58,6 +58,36 @@ class ShuffleUnlockOnion(Choice):
     default = 0
 
 
+class StartingOnion(Choice):
+    """
+    Choose the Onions you start with.
+
+    off          - Start with the Red Onion, like the original game.
+    none         - Start without any Onion.
+    random_color - Start with one Onion of a random colour.
+    choice       - Start with the Onions listed in Starting Onion Colors.
+
+    With Shuffle Unlock Onion, the other Onions are items. Without it, they are
+    found in their area (the Red Onion at the landing site of The Impact Site).
+    """
+    display_name = "Starting Onion"
+    option_off    = 0
+    option_none   = 1
+    option_random_color = 2
+    option_choice = 3
+    default = 0
+
+
+class StartingOnionColors(OptionSet):
+    """
+    Onions you start with when Starting Onion is set to choice.
+    Valid values: Red, Yellow, Blue (e.g. ['Red', 'Blue']).
+    """
+    display_name = "Starting Onion Colors"
+    valid_keys = {"Red", "Yellow", "Blue"}
+    default = frozenset({"Red"})
+
+
 # ====================================================================
 # PIKMIN LOCATION
 # ====================================================================
@@ -586,6 +616,8 @@ class P1Options(PerGameCommonOptions):
     last_part_is_local: LastPartIsLocal
     shuffle_unlock_areas: ShuffleUnlockAreas
     shuffle_unlock_onion: ShuffleUnlockOnion
+    starting_onion: StartingOnion
+    starting_onion_colors: StartingOnionColors
 # PIKMIN LOCATION
     enable_pikmin_locations: EnablePikminLocations
     red_pikmin_locations_enabled: RedPikminLocationsEnabled
@@ -657,6 +689,7 @@ class P1Options(PerGameCommonOptions):
 P1_OPTION_GROUPS = [
     OptionGroup("Ship Parts", [
         FirstPartIsLocal, LastPartIsLocal, ShuffleUnlockAreas, ShuffleUnlockOnion,
+        StartingOnion, StartingOnionColors,
     ]),
     OptionGroup("Pikmin Locations", [
         EnablePikminLocations,

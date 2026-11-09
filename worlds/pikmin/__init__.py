@@ -161,6 +161,7 @@ class P1World(World):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pikmin_locations: dict[str, PikminLocationData] = {}
+        self.starting_onions: set[str] = {"red"}
         self.hints: dict = {}
 
     # --- Universal Tracker ---------------------------------------------------
@@ -177,6 +178,7 @@ class P1World(World):
         "disable_pikmin_trip",
         "shuffle_unlock_areas",
         "shuffle_unlock_onion",
+        "starting_onion",
     )
 
     @staticmethod
@@ -186,6 +188,15 @@ class P1World(World):
         return slot_data
 
     def generate_early(self) -> None:
+        mode = self.options.starting_onion.value
+        if mode == 1:
+            self.starting_onions = set()
+        elif mode == 2:
+            self.starting_onions = {self.random.choice(ONION_COLORS)}
+        elif mode == 3:
+            self.starting_onions = {c.lower() for c in self.options.starting_onion_colors.value}
+        else:
+            self.starting_onions = {"red"}
         passthrough = getattr(self.multiworld, "re_gen_passthrough", None) or {}
         slot_data = passthrough.get(self.game)
         if not slot_data:
@@ -193,6 +204,8 @@ class P1World(World):
         for name in self._UT_OPTIONS:
             if name in slot_data:
                 getattr(self.options, name).value = slot_data[name]
+        if "starting_onions" in slot_data:
+            self.starting_onions = set(slot_data["starting_onions"])
 
     def create_item(self, name: str) -> "P1Item":
         if name in TRAP_ITEMS:
@@ -287,10 +300,11 @@ class P1World(World):
         elif self.options.shuffle_unlock_areas == 2:
             items += [self.create_item(area_unlock_item(area)) for area in AREA_UNLOCK_ORDER]
 
+        onion_order = onion_unlock_order(self.starting_onions)
         if self.options.shuffle_unlock_onion == 1:
-            items += [self.create_item(PROGRESSIVE_ONION_ITEM) for _ in ONION_UNLOCK_ORDER]
+            items += [self.create_item(PROGRESSIVE_ONION_ITEM) for _ in onion_order]
         elif self.options.shuffle_unlock_onion == 2:
-            items += [self.create_item(onion_unlock_item(color)) for color in ONION_UNLOCK_ORDER]
+            items += [self.create_item(onion_unlock_item(color)) for color in onion_order]
 
         ship_part_locations = len(ALL_PARTS)
         pikmin_location_count = len(self.pikmin_locations) if self.options.enable_pikmin_locations else 0
@@ -378,7 +392,8 @@ class P1World(World):
     def set_rules(self) -> None:
         for name, data in ALL_PARTS.items():
             self.get_location(ship_part_location_name(name)).access_rule = lambda state, data=data: \
-                (not data.required_types.red or can_obtain_reds(state, self.player)) \
+                can_obtain_any(state, self.player) \
+                and (not data.required_types.red or can_obtain_reds(state, self.player)) \
                 and (not data.required_types.yellow or can_obtain_yellows(state, self.player)) \
                 and (not data.required_types.blue or can_obtain_blues(state, self.player))
 
@@ -398,7 +413,7 @@ class P1World(World):
             elif loc_data.color == "blue":
                 location.access_rule = lambda state: can_obtain_blues(state, self.player)
             else:
-                location.access_rule = lambda state: True
+                location.access_rule = lambda state: can_obtain_reds(state, self.player)
 
     def generate_output(self, output_directory: str) -> None:
         """Generate the .appik1 patch file for this player.
@@ -419,6 +434,7 @@ class P1World(World):
             "GameIdSuffix": make_game_id_suffix(seed_name, self.player),
             "Options": {},
             "Hints":   self.hints,
+            "StartingOnions": sorted(self.starting_onions),
         }
 
         for field in fields(self.options):
@@ -459,6 +475,7 @@ class P1World(World):
             "disable_pikmin_trip": self.options.disable_pikmin_trip.value,
             "shuffle_unlock_areas": self.options.shuffle_unlock_areas.value,
             "shuffle_unlock_onion": self.options.shuffle_unlock_onion.value,
+            "starting_onions":     sorted(self.starting_onions),
             "skip_events":         sorted(self.options.skip_events.value),
             "always_min_one_leaf":           self.options.always_min_one_leaf.value,
             "day_cycle_mode":      self.options.day_cycle_mode.value,

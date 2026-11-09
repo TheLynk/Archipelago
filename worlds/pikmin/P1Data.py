@@ -42,7 +42,7 @@ ALL_PARTS: dict[str, ShipPartData] = {
     "Geiger Counter": ShipPartData(71410, mem(0x812408B4, 0x81247E9C), 1, RequiredTypes(False, True, True), "The Forest of Hope"), # uf06
     "Sagittarius": ShipPartData(71411, mem(0x81240994, 0x81247F7C), 1, RequiredTypes(False, False, True), "The Forest of Hope"), # uf07
     "Libra": ShipPartData(71412, mem(0x81240A74, 0x8124805C), 1, RequiredTypes(True, True, True), "The Forest Navel"), # uf08
-    "Omega Stabilizer": ShipPartData(71413, mem(0x81240B54, 0x8124813C), 1, RequiredTypes(False, False, False), "The Forest Navel"), # uf09
+    "Omega Stabilizer": ShipPartData(71413, mem(0x81240B54, 0x8124813C), 1, RequiredTypes(True, False, False), "The Forest Navel"), # uf09
     "#1 Ionium Jet": ShipPartData(71414, mem(0x81240C34, 0x8124821C), 1, RequiredTypes(False, False, True), "The Forest Navel"), # uf10
     "#2 Ionium Jet": ShipPartData(71415, mem(0x81240D14, 0x812482FC), 1, RequiredTypes(False, False, True), "The Distant Spring"), # uf11
     "Shock Absorber": ShipPartData(71416, mem(0x81240DF4, 0x812483DC), 2, RequiredTypes(False, False, False), "The Forest of Hope"), # un01
@@ -199,8 +199,8 @@ AREA_ITEMS: dict[str, int] = {
 # ====================================================================
 PROGRESSIVE_ONION_ITEM = "Progressive Onion"
 
-# Onions unlocked by items, in order (the Red Onion is not shuffled).
-ONION_UNLOCK_ORDER: tuple[str, ...] = ("yellow", "blue")
+# All onion colours, in the progressive unlock order.
+ONION_COLORS: tuple[str, ...] = ("red", "yellow", "blue")
 
 
 def onion_unlock_item(color: str) -> str:
@@ -209,8 +209,15 @@ def onion_unlock_item(color: str) -> str:
 
 ONION_ITEMS: dict[str, int] = {
     PROGRESSIVE_ONION_ITEM: 71830,
-    **{onion_unlock_item(color): 71831 + i for i, color in enumerate(ONION_UNLOCK_ORDER)},
+    onion_unlock_item("yellow"): 71831,
+    onion_unlock_item("blue"): 71832,
+    onion_unlock_item("red"): 71833,
 }
+
+
+def onion_unlock_order(starting) -> list[str]:
+    """Onions to unlock by items (Shuffle Unlock Onion): every colour not given at start."""
+    return [c for c in ONION_COLORS if c not in starting]
 
 # Part name -> in-game Pellet model ID (fourCC, enum UfoPartID in include/Pellet.h).
 # Used to find a part's physical Pellet in the level and remove it when the
@@ -327,4 +334,4 @@ ALL_LOCATIONS: Dict[str, int] = {
     **{ship_part_location_name(name): data.ap_id for name, data in ALL_PARTS.items()},
     # Pikmin locations
     **PIKMIN_LOCATIONS_MAP,
-}
+}

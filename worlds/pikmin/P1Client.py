@@ -4457,19 +4457,72 @@ def onion_active(ctx: P1Context, color: str) -> bool:
     if not onion_unlocked(ctx, color):
         return False
     applied = getattr(ctx, "_onion_applied", None)
-    return applied is None or color not in ONION_UNLOCK_ORDER or color in applied
+    return applied is None or color not in onion_order(ctx) or color in applied
+
+
+def onion_order(ctx: P1Context) -> list:
+    """Onions unlocked by items (Shuffle Unlock Onion), in progressive order."""
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    if not slot_data.get("shuffle_unlock_onion", 0):
+        return []
+    return onion_unlock_order(slot_data.get("starting_onions", ["red"]))
 
 
 def onion_unlocked(ctx: P1Context, color: str) -> bool:
     """True if the onion of this colour may be used (Shuffle Unlock Onion)."""
     slot_data = getattr(ctx, "slot_data", None) or {}
     mode = slot_data.get("shuffle_unlock_onion", 0)
-    if not mode or color not in ONION_UNLOCK_ORDER:
+    order = onion_order(ctx)
+    if not mode or color not in order:
         return True
     received = [i.item for i in ctx.items_received]
     if mode == 1:
-        return received.count(ONION_ITEMS[PROGRESSIVE_ONION_ITEM]) > ONION_UNLOCK_ORDER.index(color)
+        return received.count(ONION_ITEMS[PROGRESSIVE_ONION_ITEM]) > order.index(color)
     return ONION_ITEMS[onion_unlock_item(color)] in received
+
+
+async def handle_onion_ownership(ctx: P1Context, game: Game) -> None:
+    """Starting Onion: the Pikmin counters follow the owned onions, and without
+    Shuffle Unlock Onion a Red Onion not given at start becomes owned once booted
+    (its discovery), since the game never sets it otherwise."""
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    ptr = SYM_PLAYER_STATE_PTR.get(game)
+    if ptr is None:
+        return
+    try:
+        ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
+        if not (_RAM_MIN <= ps < _RAM_MAX):
+            return
+        cf_addr = ps + PLAYERSTATE_OFFSETS["mContainerFlag"]
+        df_addr = ps + PLAYERSTATE_OFFSETS["mDisplayPikiFlag"]
+        # No discovery cutscene for an onion owned from the start.
+        starting = [c for c in slot_data.get("starting_onions", ["red"]) if c != "red"]
+        stored = struct.unpack(">I", dme.read_bytes(ps + PLAYERSTATE_OFFSETS["mDemoFlagsStoredPtr"], 4))[0]
+        if starting and _RAM_MIN <= stored < _RAM_MAX:
+            _set_demo_flags(stored, [DEMOFLAG_DISCOVER_ONION[c] for c in starting])
+        cf = dme.read_byte(cf_addr)
+        red = CONTAINER_COLOR_BIT["red"]
+        # With "Onion Discovery" skipped, the skip handler gives it on touch instead
+        # (it sets every boot bit, so the boot bit is only meaningful here).
+        if not slot_data.get("shuffle_unlock_onion", 0) and "red" not in slot_data.get("starting_onions", ["red"]) \
+                and "Onion Discovery" not in slot_data.get("skip_events", []) \
+                and not cf & red and cf & _BOOT_BIT["red"] and is_in_level(game) and is_day_active(game) \
+                and find_onion_containers(game).get("red"):
+            cf |= red
+            dme.write_byte(cf_addr, cf)
+        # Outside The Impact Site, a Red Onion not owned yet is moved under the map:
+        # it is only discovered there.
+        if not slot_data.get("shuffle_unlock_onion", 0) and "red" not in slot_data.get("starting_onions", ["red"]) \
+                and is_in_level(game):
+            stage = SYM_GAMEFLOW.get(game, {}).get("CURRENT_STAGE_ID")
+            stage_id = struct.unpack(">i", dme.read_bytes(stage, 4))[0] if stage else None
+            hide = [] if cf & red or stage_id == AREA_STAGE_ID["The Impact Site"] else ["red"]
+            _hide_locked_onions(ctx, game, hide)
+        df = dme.read_byte(df_addr)
+        if df | (cf & 0x07) != df:
+            dme.write_byte(df_addr, df | (cf & 0x07))
+    except Exception:
+        pass
 
 
 async def handle_onion_unlock(ctx: P1Context, game: Game) -> None:
@@ -4480,14 +4533,15 @@ async def handle_onion_unlock(ctx: P1Context, game: Game) -> None:
     ptr = SYM_PLAYER_STATE_PTR.get(game)
     if ptr is None:
         return
-    unlocked_now = {c for c in ONION_UNLOCK_ORDER if onion_unlocked(ctx, c)}
+    order = onion_order(ctx)
+    unlocked_now = {c for c in order if onion_unlocked(ctx, c)}
     sub = _oneplayer_subsection(game)
     try:
         ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
         if not (_RAM_MIN <= ps < _RAM_MAX):
             return
         unlocked = _onion_applied(ctx, game, sub, ps, unlocked_now)
-        locked = [c for c in ONION_UNLOCK_ORDER if c not in unlocked]
+        locked = [c for c in order if c not in unlocked]
         stored = struct.unpack(">I", dme.read_bytes(ps + PLAYERSTATE_OFFSETS["mDemoFlagsStoredPtr"], 4))[0]
         # No discovery cutscene and no first-pluck unlock for a locked colour.
         if locked and _RAM_MIN <= stored < _RAM_MAX:
@@ -5468,6 +5522,7 @@ async def dolphin_loop(ctx: P1Context):
                                 handle_tracker_stage,
                                 handle_onion_unlock,
                                 handle_qol_skip_cutscenes,
+                                handle_onion_ownership,
                                 handle_qol_min_leaf)
         # Cosmetic/mechanical handlers: always run (they have internal guards).
         always_handlers = (handle_qol_first_day, handle_qol_trip_item, handle_trip_trap_timer,
@@ -5737,7 +5792,8 @@ def _handle_patch(appik1_path: str) -> None:
     disable_trip = True
     skip_part_collect = True
     skip_ship_upgrade = True
-    preload_onions = False
+    preload_onions = 0
+    starting_onions = CONTAINER_COLOR_BIT["red"]
     try:
         import zipfile, json
         with zipfile.ZipFile(appik1_path, "r") as zf:
@@ -5755,7 +5811,12 @@ def _handle_patch(appik1_path: str) -> None:
                 skips = set(opts.get("skip_events", []))
                 skip_part_collect = "Part Collection" in skips
                 skip_ship_upgrade = "Ship Upgrade" in skips
-                preload_onions = int(opts.get("shuffle_unlock_onion", 0)) != 0
+                starting = set(data.get("StartingOnions", ["red"]))
+                starting_onions = sum(CONTAINER_COLOR_BIT[c] for c in starting if c in CONTAINER_COLOR_BIT)
+                if int(opts.get("shuffle_unlock_onion", 0)):
+                    preload_onions = 0x07
+                elif "red" not in starting:
+                    preload_onions = CONTAINER_COLOR_BIT["red"]
     except Exception as e:
         logger.warning(f"[Pikmin] Could not read seed/options from .appik1: {e}")
 
@@ -5768,7 +5829,8 @@ def _handle_patch(appik1_path: str) -> None:
                            suffix=suffix,
                            title=make_disc_title(seed, slot_name) if seed else "",
                            slot_name=slot_name,
-                           preload_onions=preload_onions) or {}
+                           preload_onions=preload_onions,
+                           starting_onions=starting_onions) or {}
         logger.info(f"[Pikmin] ISO patched successfully: {output_iso}")
         trip_line = ""
         if disable_trip:
@@ -5798,6 +5860,9 @@ def _handle_patch(appik1_path: str) -> None:
         if status.get("death_cause_patched") is False:
             sn_line += ("\n\nDeath cause hook could NOT be applied: DeathLink messages "
                         "will not name the cause of death.")
+        if status.get("starting_onion_patched") is False:
+            sn_line += ("\n\nStarting Onion could NOT be applied: a new game starts with "
+                        "the Red Onion.")
         if status.get("onion_boot_patched") is False:
             sn_line += ("\n\nOnion boot hook could NOT be applied: an Onion unlocked mid-day "
                         "will only be active from the next landing.")

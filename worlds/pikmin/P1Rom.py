@@ -704,16 +704,19 @@ def apply_death_cause_patch(f, version: bytes) -> bool:
     return True
 
 
-# Shuffle Unlock Onion: GenObjectItem::birth spawns an onion at the landing site
-# only if hasContainer(colour), else at its discovery spot ('next' generator).
-# The "bne" on hasContainer becomes a "b": every onion spawns at the landing site.
+# GenObjectItem::birth spawns an onion at the landing site only if
+# hasContainer(colour), else at its discovery spot ('next' generator). The test
+#   li r3,1 / lwz r0,0x24(r29) / lbz r4,0x184(r4) / slw r0,r3,r0 / and. r0,r4,r0
+# becomes
+#   lwz r0,0x24(r29) / lbz r4,0x184(r4) / ori r4,r4,MASK / srw r4,r4,r0 / andi. r0,r4,1
+# so the colours of MASK always spawn at the landing site (non-booted if not owned).
 ONION_PRELOAD_SITES = {
+    # address of the "bne" following the test
     PAL_GAME_ID:  0x800EE7A8,
     NTSC_GAME_ID: 0x800EE8F0,
 }
-ONION_PRELOAD_ORIG = 0x40820028   # bne +0x28
-ONION_PRELOAD_PREV = 0x7C800039   # and. r0, r4, r0
-ONION_PRELOAD_NEW = 0x48000028    # b +0x28
+ONION_PRELOAD_ORIG = (0x38600001, 0x801D0024, 0x88840184, 0x7C600030, 0x7C800039, 0x40820028)
+ONION_PRELOAD_LEGACY_B = 0x48000028
 
 # GoalItem::startAI closes the nearest route waypoint of a non-booted onion
 # (wp->setFlag(false)); a hidden onion at the landing site would cut a carry path.
@@ -726,26 +729,63 @@ ONION_WAYPOINT_ORIG = 0x38800000  # li r4, 0
 ONION_WAYPOINT_NEW = 0x38800001   # li r4, 1
 
 
-def apply_onion_preload_patch(f, version: bytes) -> bool:
-    """Spawn all onions at the landing site of every area, without closing a route."""
+def _onion_preload_code(mask: int) -> tuple:
+    return (0x801D0024, 0x88840184,
+            (24 << 26) | (4 << 21) | (4 << 16) | (mask & 0xFFFF),             # ori   r4, r4, mask
+            (31 << 26) | (4 << 21) | (4 << 16) | (0 << 11) | (536 << 1),      # srw   r4, r4, r0
+            (28 << 26) | (4 << 21) | (0 << 16) | 1)                           # andi. r0, r4, 1
+
+
+def apply_onion_preload_patch(f, version: bytes, mask: int = 0x07) -> bool:
+    """Spawn the onions of `mask` (1 << colour) at the landing site of every area,
+    without closing a route."""
     addr = ONION_PRELOAD_SITES.get(version)
     wp_addr = ONION_WAYPOINT_SITES.get(version)
     if addr is None or wp_addr is None:
         return False
     wp_off = ram_to_iso_offset(f, wp_addr)
-    wp_cur = _u32(f, wp_off)
-    if wp_cur not in (ONION_WAYPOINT_ORIG, ONION_WAYPOINT_NEW):
+    if _u32(f, wp_off) not in (ONION_WAYPOINT_ORIG, ONION_WAYPOINT_NEW):
+        return False
+    off = ram_to_iso_offset(f, addr) - 5 * 4
+    cur = tuple(_u32(f, off + i * 4) for i in range(6))
+    known = (ONION_PRELOAD_ORIG,
+             ONION_PRELOAD_ORIG[:5] + (ONION_PRELOAD_LEGACY_B,))
+    if cur not in known and cur[:2] != _onion_preload_code(0)[:2]:
         return False
     f.seek(wp_off)
     f.write(_pack(ONION_WAYPOINT_NEW))
-    off = ram_to_iso_offset(f, addr)
-    cur = _u32(f, off)
-    if cur == ONION_PRELOAD_NEW:
-        return True
-    if cur != ONION_PRELOAD_ORIG or _u32(f, off - 4) != ONION_PRELOAD_PREV:
-        return False
     f.seek(off)
-    f.write(_pack(ONION_PRELOAD_NEW))
+    f.write(b"".join(_pack(w) for w in _onion_preload_code(mask)) + _pack(ONION_PRELOAD_ORIG[5]))
+    return True
+
+
+# Starting Onion: PlayerState::initGame() and the PlayerState constructor give
+# the Red Onion ("ori r0, r0, 2" on mContainerFlag, then setDisplayPikiCount(Red)).
+# The immediate becomes the starting colours; without red, the call is removed.
+STARTING_ONION_SITES = {
+    # (address of "ori r0, r0, 2" in initGame, same in the constructor)
+    PAL_GAME_ID:  (0x8007F56C, 0x8007F788),
+    NTSC_GAME_ID: (0x8007F6B4, 0x8007F8D0),
+}
+STARTING_ONION_STB = 0x981F0184    # stb r0, 0x184(r31)
+PPC_NOP = 0x60000000
+
+
+def apply_starting_onion_patch(f, version: bytes, bits: int) -> bool:
+    """Give the onions of `bits` (1 << colour) on a new game instead of the Red Onion."""
+    sites = STARTING_ONION_SITES.get(version)
+    if sites is None:
+        return False
+    offs = [ram_to_iso_offset(f, a) for a in sites]
+    for off in offs:
+        if _u32(f, off) & 0xFFFF0000 != 0x60000000 or _u32(f, off + 4) != STARTING_ONION_STB:
+            return False
+    for off in offs:
+        f.seek(off)
+        f.write(_pack(0x60000000 | (bits & 0x07)))
+        if not bits & 0x02:
+            f.seek(off + 8)
+            f.write(_pack(PPC_NOP))
     return True
 
 
@@ -869,7 +909,7 @@ def apply_onion_boot_patch(f, version: bytes) -> bool:
 def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
               skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
               suffix: str = "", title: str = "", slot_name: str = "",
-              preload_onions: bool = False) -> dict:
+              preload_onions: int = 0, starting_onions: int = 0x02) -> dict:
     """Patch the ISO, dispatching to the NTSC or PAL path by Game ID.
 
     `disable_trip`: QOL patch disabling Pikmin tripping (best-effort).
@@ -878,7 +918,8 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
     `suffix`: Game ID suffix (make_game_id_suffix); empty = seed[-3:] fallback
     (for .appik1 files generated by older versions).
     `title`: game name written in the header (full run ID).
-    `preload_onions`: Shuffle Unlock Onion, spawn every onion at the landing site.
+    `preload_onions`: mask (1 << colour) of onions always spawned at the landing site.
+    `starting_onions`: mask (1 << colour) of onions owned on a new game.
     Returns a status dict (trip_patched / part_collect_patched / ship_upgrade_patched).
     """
     base_version = read_game_id(iso_path)
@@ -896,9 +937,12 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
         status["part_anim_patched"] = apply_part_anim_patch(f, base_version)
         status["death_cause_patched"] = apply_death_cause_patch(f, base_version)
         if preload_onions:
-            status["onion_preload_patched"] = apply_onion_preload_patch(f, base_version)
+            status["onion_preload_patched"] = apply_onion_preload_patch(f, base_version, preload_onions)
+        if preload_onions == 0x07:
             status["onion_mask_patched"] = apply_onion_mask_patch(f, base_version)
             status["onion_boot_patched"] = apply_onion_boot_patch(f, base_version)
+        if starting_onions != 0x02:
+            status["starting_onion_patched"] = apply_starting_onion_patch(f, base_version, starting_onions)
         if slot_name:
             status["slot_name_written"] = _write_slot_name(f, slot_name)
     return status
