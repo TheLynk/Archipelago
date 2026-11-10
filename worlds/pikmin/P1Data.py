@@ -29,9 +29,9 @@ def mem(GPIP01: int, GPIE01: int) -> MemoryAddress:
 
 
 ALL_PARTS: dict[str, ShipPartData] = {
-    "Bowsprit": ShipPartData(71400, mem(0x8123FFF4, 0x812475DC), 1, RequiredTypes(False, False, False), "The Distant Spring"), # ust1
+    "Bowsprit": ShipPartData(71400, mem(0x8123FFF4, 0x812475DC), 1, RequiredTypes(True, True, False), "The Distant Spring"), # ust1
     "Gluon Drive": ShipPartData(71401, mem(0x812400D4, 0x812476BC), 1, RequiredTypes(False, False, True), "The Distant Spring"), # ust2
-    "Anti-Dioxin Filter": ShipPartData(71402, mem(0x812401B4, 0x8124779C), 1, RequiredTypes(False, False, True), "The Forest Navel"), # ust3
+    "Anti-Dioxin Filter": ShipPartData(71402, mem(0x812401B4, 0x8124779C), 1, RequiredTypes(True, False, True), "The Forest Navel"), # ust3
     "Eternal Fuel Dynamo": ShipPartData(71403, mem(0x81240294, 0x8124787C), 1, RequiredTypes(False, False, False), "The Forest of Hope"), # ust4
     "Main Engine": ShipPartData(71404, mem(0x81240374, 0x8124795C), 1, RequiredTypes(False, False, False), "The Impact Site"), # ust5
     "Whimsical Radar": ShipPartData(71405, mem(0x81240454, 0x81247A3C), 1, RequiredTypes(False, True, False), "The Forest of Hope"), # uf01
@@ -46,8 +46,8 @@ ALL_PARTS: dict[str, ShipPartData] = {
     "#1 Ionium Jet": ShipPartData(71414, mem(0x81240C34, 0x8124821C), 1, RequiredTypes(False, False, True), "The Forest Navel"), # uf10
     "#2 Ionium Jet": ShipPartData(71415, mem(0x81240D14, 0x812482FC), 1, RequiredTypes(False, False, True), "The Distant Spring"), # uf11
     "Shock Absorber": ShipPartData(71416, mem(0x81240DF4, 0x812483DC), 2, RequiredTypes(False, False, False), "The Forest of Hope"), # un01
-    "Gravity Jumper": ShipPartData(71417, mem(0x81240ED4, 0x812484BC), 2, RequiredTypes(False, False, True), "The Forest Navel"), # un02
-    "Pilot's Seat": ShipPartData(71418, mem(0x81240FB4, 0x8124859C), 2, RequiredTypes(False, False, False), "The Distant Spring"), # un03
+    "Gravity Jumper": ShipPartData(71417, mem(0x81240ED4, 0x812484BC), 2, RequiredTypes(True, False, False), "The Forest Navel"), # un02
+    "Pilot's Seat": ShipPartData(71418, mem(0x81240FB4, 0x8124859C), 2, RequiredTypes(False, True, False), "The Distant Spring"), # un03
     "Nova Blaster": ShipPartData(71419, mem(0x81241094, 0x8124867C), 2, RequiredTypes(False, True, False), "The Forest of Hope"), # un04
     "Automatic Gear": ShipPartData(71420, mem(0x81241174, 0x8124875C), 2, RequiredTypes(False, False, False), "The Forest Navel"), # un05
     "Zirconium Rotor": ShipPartData(71421, mem(0x81241254, 0x8124883C), 2, RequiredTypes(False, True, True), "The Distant Spring"), # un06
