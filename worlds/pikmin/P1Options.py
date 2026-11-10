@@ -1,26 +1,54 @@
 from dataclasses import dataclass
 from Options import DefaultOnToggle, Toggle, Range, Choice, OptionSet, PerGameCommonOptions, OptionGroup
 from .P1Symbols import SKIP_EVENT_ALL_KEYS
+from .P1Data import ALL_PARTS
 
 
 # ====================================================================
 # SHIP PART
 # ====================================================================
-class FirstPartIsLocal(DefaultOnToggle):
+class ShipPartImportance(Choice):
     """
-    Force collecting the Main Engine to give a ship part.
-    This can be useful to prevent getting stuck immediately at the start of the game.
+    Choose what kind of item the ship part locations listed in Ship Part Importance
+    Locations can contain.
+
+    filler      - Filler items (from any player).
+    useful      - Useful items (from any player).
+    progression - Progression items (from any player).
+    trap        - Traps (from any player).
+    ship_part   - Your own ship parts only.
+    choice      - The types listed in Ship Part Importance Types.
+    mixed       - Any item, like the original randomizer.
     """
-    display_name = "Local First Part"
+    display_name = "Ship Part Importance"
+    option_filler      = 0
+    option_useful      = 1
+    option_progression = 2
+    option_trap        = 3
+    option_ship_part   = 4
+    option_choice      = 5
+    option_mixed       = 6
+    default = 6
 
 
-class LastPartIsLocal(DefaultOnToggle):
+class ShipPartImportanceTypes(OptionSet):
     """
-    Force collecting the Secret Safe to give a ship part.
-    Since you complete Pikmin 1 by collecting the last ship part, it could give a required item for another player.
-    This option prevents this, so other players won't ever need to wait for Pikmin to finish.
+    Item types allowed when Ship Part Importance is set to choice.
+    Valid values: Filler, Useful, Progression, Trap, Ship Part.
     """
-    display_name = "Local Last Part"
+    display_name = "Ship Part Importance Types"
+    valid_keys = {"Filler", "Useful", "Progression", "Trap", "Ship Part"}
+    default = frozenset({"Filler", "Useful", "Progression", "Trap", "Ship Part"})
+
+
+class ShipPartImportanceLocations(OptionSet):
+    """
+    Ship part locations affected by Ship Part Importance (default: all 30).
+    Valid values: the ship part names (e.g. 'Main Engine', 'Secret Safe').
+    """
+    display_name = "Ship Part Importance Locations"
+    valid_keys = set(ALL_PARTS.keys())
+    default = frozenset(ALL_PARTS.keys())
 
 
 class ShuffleUnlockAreas(Choice):
@@ -612,8 +640,9 @@ class OlimarBondHeal(Range):
 @dataclass
 class P1Options(PerGameCommonOptions):
 # SHIP PART
-    first_part_is_local: FirstPartIsLocal
-    last_part_is_local: LastPartIsLocal
+    ship_part_importance: ShipPartImportance
+    ship_part_importance_types: ShipPartImportanceTypes
+    ship_part_importance_locations: ShipPartImportanceLocations
     shuffle_unlock_areas: ShuffleUnlockAreas
     shuffle_unlock_onion: ShuffleUnlockOnion
     starting_onion: StartingOnion
@@ -688,7 +717,7 @@ class P1Options(PerGameCommonOptions):
 # ====================================================================
 P1_OPTION_GROUPS = [
     OptionGroup("Ship Parts", [
-        FirstPartIsLocal, LastPartIsLocal, ShuffleUnlockAreas, ShuffleUnlockOnion,
+        ShipPartImportance, ShipPartImportanceTypes, ShipPartImportanceLocations, ShuffleUnlockAreas, ShuffleUnlockOnion,
         StartingOnion, StartingOnionColors,
     ]),
     OptionGroup("Pikmin Locations", [

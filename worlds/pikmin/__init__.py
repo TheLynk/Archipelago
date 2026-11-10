@@ -1,9 +1,10 @@
 import logging
 import os
 from dataclasses import fields
-from typing import ClassVar, Callable, Any
+from typing import ClassVar, Callable, Any, Optional
 
-from BaseClasses import Item, ItemClassification, Location, Region, CollectionState
+from BaseClasses import Item, ItemClassification, Location, LocationProgressType, Region, CollectionState
+from worlds.generic.Rules import add_item_rule
 from Options import OptionError
 from worlds.AutoWorld import World
 from worlds.LauncherComponents import launch, Type, components, icon_paths, Component, SuffixIdentifier
@@ -284,17 +285,6 @@ class P1World(World):
         if self.options.disable_pikmin_trip == 2:  # option_item
             items.append(self.create_item("Trip Immunity"))
 
-        locked = 0
-        if self.options.first_part_is_local:
-            self.get_location(ship_part_location_name("Main Engine")).place_locked_item(
-                items.pop(self.multiworld.random.randint(0, len(items) - 1)))
-            locked += 1
-
-        if self.options.last_part_is_local:
-            self.get_location(ship_part_location_name("Secret Safe")).place_locked_item(
-                items.pop(self.multiworld.random.randint(0, len(items) - 1)))
-            locked += 1
-
         if self.options.shuffle_unlock_areas == 1:
             items += [self.create_item(PROGRESSIVE_AREA_ITEM) for _ in AREA_UNLOCK_ORDER]
         elif self.options.shuffle_unlock_areas == 2:
@@ -311,7 +301,7 @@ class P1World(World):
         total_locations = ship_part_locations + pikmin_location_count
         total_items = len(items)
         if (self.options.shuffle_unlock_areas or self.options.shuffle_unlock_onion) \
-                and total_items > total_locations - locked:
+                and total_items > total_locations:
             raise OptionError(
                 f"Pikmin ({self.player_name}): Shuffle Unlock Areas / Onion needs more locations, "
                 f"enable Pikmin locations.")
@@ -389,7 +379,58 @@ class P1World(World):
 
         return pool
 
+    # Ship Part Importance: option value -> allowed item types.
+    _SHIP_PART_IMPORTANCE_TYPES: ClassVar[dict[int, set[str]]] = {
+        0: {"Filler"}, 1: {"Useful"}, 2: {"Progression"}, 3: {"Trap"}, 4: {"Ship Part"},
+    }
+
+    def _ship_part_item_types(self) -> Optional[set[str]]:
+        """Item types allowed on the important ship part locations, or None for any item."""
+        mode = self.options.ship_part_importance.value
+        if mode == 6:
+            return None
+        if mode == 5:
+            return set(self.options.ship_part_importance_types.value)
+        return self._SHIP_PART_IMPORTANCE_TYPES[mode]
+
+    def _ship_part_item_allowed(self, item: Item, types: set[str]) -> bool:
+        if "Ship Part" in types and item.player == self.player and item.name in ALL_PARTS:
+            return True
+        if "Progression" in types and item.advancement:
+            return True
+        if "Trap" in types and item.trap:
+            return True
+        if "Useful" in types and item.useful and not item.advancement:
+            return True
+        return "Filler" in types and not (item.advancement or item.useful or item.trap)
+
+    def _set_ship_part_importance_rules(self) -> None:
+        types = self._ship_part_item_types()
+        if types is None:
+            return
+        # Without filler or trap allowed, these locations are filled first with
+        # progression (priority), otherwise only filler would be left for them.
+        priority = not types & {"Filler", "Trap"}
+        for name in self.options.ship_part_importance_locations.value:
+            location = self.get_location(ship_part_location_name(name))
+            add_item_rule(location, lambda item, types=types: self._ship_part_item_allowed(item, types))
+            if priority:
+                location.progress_type = LocationProgressType.PRIORITY
+
+    def pre_fill(self) -> None:
+        types = self._ship_part_item_types()
+        if types is None:
+            return
+        needed = len(self.options.ship_part_importance_locations.value)
+        available = sum(1 for item in self.multiworld.itempool if self._ship_part_item_allowed(item, types))
+        if available < needed:
+            raise OptionError(
+                f"Pikmin ({self.player_name}): Ship Part Importance needs {needed} items of type "
+                f"{', '.join(sorted(types))} for its ship part locations, but only {available} exist. "
+                f"Remove ship parts from Ship Part Importance Locations or allow more item types.")
+
     def set_rules(self) -> None:
+        self._set_ship_part_importance_rules()
         for name, data in ALL_PARTS.items():
             self.get_location(ship_part_location_name(name)).access_rule = lambda state, data=data: \
                 can_obtain_any(state, self.player) \
