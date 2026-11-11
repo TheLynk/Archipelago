@@ -62,6 +62,12 @@ ALL_PARTS: dict[str, ShipPartData] = {
 }
 
 
+# Parts the game does not need for an ending (PlayerState::getUfoParts):
+# the other 25 are counted in mRequiredUfoPartCount.
+OPTIONAL_PARTS: tuple[str, ...] = ("Nova Blaster", "Space Float", "Massage Machine", "Secret Safe", "UV Lamp")
+REQUIRED_PARTS: tuple[str, ...] = tuple(name for name in ALL_PARTS if name not in OPTIONAL_PARTS)
+
+
 # ====================================================================
 # ONION STAGE ADDRESSES - Persistent pikmin counts per stage (PAL, u32 each)
 # Total displayed in-game = Leaf + Bud + Flower (recalculated by the game)

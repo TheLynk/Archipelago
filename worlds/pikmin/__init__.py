@@ -180,6 +180,7 @@ class P1World(World):
         "shuffle_unlock_areas",
         "shuffle_unlock_onion",
         "starting_onion",
+        "goal",
     )
 
     @staticmethod
@@ -219,6 +220,9 @@ class P1World(World):
             return P1Item(name, ItemClassification.progression, AREA_ITEMS[name], self.player)
         if name in ONION_ITEMS:
             return P1Item(name, ItemClassification.progression, ONION_ITEMS[name], self.player)
+        # Neutral ending with shuffled areas: the optional parts unlock nothing.
+        if name in OPTIONAL_PARTS and self.options.goal == 1 and self.options.shuffle_unlock_areas:
+            return P1Item(name, ItemClassification.filler, ALL_PARTS[name].ap_id, self.player)
         return P1Item(name, ItemClassification.progression, ALL_PARTS[name].ap_id, self.player)
 
     def create_event(self, name: str) -> "P1Item":
@@ -441,8 +445,12 @@ class P1World(World):
         if self.options.enable_pikmin_locations:
             self._set_pikmin_location_rules()
 
-        self.set_event("The Final Trial", "Collect All Ship Parts", "Victory", lambda state: \
-            state.has_from_list(ALL_PARTS.keys(), self.player, 30))
+        if self.options.goal == 1:
+            self.set_event("The Impact Site", "Collect All Ship Parts", "Victory", lambda state: \
+                state.has_all(REQUIRED_PARTS, self.player))
+        else:
+            self.set_event("The Final Trial", "Collect All Ship Parts", "Victory", lambda state: \
+                state.has_from_list(ALL_PARTS.keys(), self.player, 30))
         self.multiworld.completion_condition[self.player] = lambda state: state.has("Victory", self.player)
 
     def _set_pikmin_location_rules(self) -> None:
@@ -516,6 +524,7 @@ class P1World(World):
             "disable_pikmin_trip": self.options.disable_pikmin_trip.value,
             "shuffle_unlock_areas": self.options.shuffle_unlock_areas.value,
             "shuffle_unlock_onion": self.options.shuffle_unlock_onion.value,
+            "goal":                self.options.goal.value,
             "starting_onions":     sorted(self.starting_onions),
             "skip_events":         sorted(self.options.skip_events.value),
             "always_min_one_leaf":           self.options.always_min_one_leaf.value,

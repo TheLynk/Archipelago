@@ -906,10 +906,35 @@ def apply_onion_boot_patch(f, version: bytes) -> bool:
     return True
 
 
+# Goal neutral_ending: PlayerState::getTotalParts() only feeds the displays
+# (world map, pause menu, results, diary): "lwz r3, 0x174(r3)" becomes "li r3, N".
+# mTotalParts itself is a loop bound over the parts and stays 30.
+TOTAL_PARTS_SITES = {
+    PAL_GAME_ID:  0x80080B20,   # getTotalParts__11PlayerStateFv
+    NTSC_GAME_ID: 0x80080C68,
+}
+TOTAL_PARTS_ORIG = 0x80630174   # lwz r3, 0x174(r3)
+
+
+def apply_total_parts_patch(f, version: bytes, total: int) -> bool:
+    """Show `total` as the number of ship parts to collect."""
+    addr = TOTAL_PARTS_SITES.get(version)
+    if addr is None:
+        return False
+    off = ram_to_iso_offset(f, addr)
+    cur = _u32(f, off)
+    if cur != TOTAL_PARTS_ORIG and cur & 0xFFFF0000 != 0x38600000:
+        return False
+    f.seek(off)
+    f.write(_pack(0x38600000 | (total & 0xFFFF)))
+    return True
+
+
 def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
               skip_part_collect: bool = True, skip_ship_upgrade: bool = True,
               suffix: str = "", title: str = "", slot_name: str = "",
-              preload_onions: int = 0, starting_onions: int = 0x02) -> dict:
+              preload_onions: int = 0, starting_onions: int = 0x02,
+              total_parts: int = 30) -> dict:
     """Patch the ISO, dispatching to the NTSC or PAL path by Game ID.
 
     `disable_trip`: QOL patch disabling Pikmin tripping (best-effort).
@@ -920,6 +945,7 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
     `title`: game name written in the header (full run ID).
     `preload_onions`: mask (1 << colour) of onions always spawned at the landing site.
     `starting_onions`: mask (1 << colour) of onions owned on a new game.
+    `total_parts`: number of ship parts shown as the target (30 = unchanged).
     Returns a status dict (trip_patched / part_collect_patched / ship_upgrade_patched).
     """
     base_version = read_game_id(iso_path)
@@ -943,6 +969,8 @@ def patch_iso(iso_path: str, seed: str = "", disable_trip: bool = True,
             status["onion_boot_patched"] = apply_onion_boot_patch(f, base_version)
         if starting_onions != 0x02:
             status["starting_onion_patched"] = apply_starting_onion_patch(f, base_version, starting_onions)
+        if total_parts != 30:
+            status["total_parts_patched"] = apply_total_parts_patch(f, base_version, total_parts)
         if slot_name:
             status["slot_name_written"] = _write_slot_name(f, slot_name)
     return status

@@ -7,6 +7,20 @@ from .P1Data import ALL_PARTS
 # ====================================================================
 # SHIP PART
 # ====================================================================
+class Goal(Choice):
+    """
+    Choose how you win.
+
+    good_ending    - Collect all 30 ship parts: the ship takes off right away.
+    neutral_ending - Collect the 25 ship parts needed by the game (all but Nova Blaster,
+                     Space Float, Massage Machine, Secret Safe and UV Lamp).
+    """
+    display_name = "Goal"
+    option_good_ending    = 0
+    option_neutral_ending = 1
+    default = 0
+
+
 class ShipPartImportance(Choice):
     """
     Choose what kind of item the ship part locations listed in Ship Part Importance
@@ -639,6 +653,8 @@ class OlimarBondHeal(Range):
 
 @dataclass
 class P1Options(PerGameCommonOptions):
+# GOAL
+    goal: Goal
 # SHIP PART
     ship_part_importance: ShipPartImportance
     ship_part_importance_types: ShipPartImportanceTypes
@@ -716,6 +732,9 @@ class P1Options(PerGameCommonOptions):
 # OPTION GROUPS - web Options Creator / generated YAML template
 # ====================================================================
 P1_OPTION_GROUPS = [
+    OptionGroup("Goal", [
+        Goal,
+    ]),
     OptionGroup("Ship Parts", [
         ShipPartImportance, ShipPartImportanceTypes, ShipPartImportanceLocations, ShuffleUnlockAreas, ShuffleUnlockOnion,
         StartingOnion, StartingOnionColors,

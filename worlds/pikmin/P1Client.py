@@ -4123,7 +4123,8 @@ def _refresh_worldmap_onions(ctx: P1Context, game: Game, wm: int) -> None:
                 _show_pane(cache[idx])
 
 
-def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) -> None:
+def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int,
+                             shown_parts: Optional[int] = None) -> None:
     """Refresh the world map in place when a part/area arrives while the player
     is already on it. No effect outside the world map."""
     ptr_addr = SYM_MAP_WINDOW_PTR.get(game)
@@ -4144,8 +4145,9 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int) 
     try:
         # --- part counter (bottom-left): re-read every frame ---
         cur_addr = wm + W["DWM_CURRPARTS"]
-        if struct.unpack(">i", dme.read_bytes(cur_addr, 4))[0] != ship_parts_count:
-            dme.write_bytes(cur_addr, struct.pack(">i", ship_parts_count))
+        shown = ship_parts_count if shown_parts is None else shown_parts
+        if struct.unpack(">i", dme.read_bytes(cur_addr, 4))[0] != shown:
+            dme.write_bytes(cur_addr, struct.pack(">i", shown))
 
         # --- per-colour Pikmin counters (top of the map) ----------
         # DrawWorldMap.mTotalPikiCounts[Blue/Red/Yellow] (_44) is filled once
@@ -4256,6 +4258,24 @@ def _sync_stage_unlock_anim(game: Game, ap_areas: int, game_areas: int) -> None:
         logger.debug(f"Error syncing stage unlock anim: {e}")
 
 
+NEUTRAL_REQUIRED_PARTS = 25   # MIN_HAPPY_END_PARTS
+
+
+def neutral_goal(ctx: P1Context) -> bool:
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    return slot_data.get("goal", 0) == 1
+
+
+def required_parts_count(ctx: P1Context) -> int:
+    """Number of received ship parts the game counts in mRequiredUfoPartCount."""
+    ids = {ALL_PARTS[name].ap_id for name in REQUIRED_PARTS}
+    return len({item.item for item in ctx.items_received if item.item in ids})
+
+
+def neutral_ready(ctx: P1Context) -> bool:
+    return neutral_goal(ctx) and required_parts_count(ctx) >= NEUTRAL_REQUIRED_PARTS
+
+
 def is_final_ending(game: Game) -> bool:
     """True during the ending sequence (end of the last day with 30 parts:
     liftoff, onions, Olimar in space). The game reinitialises the Teki/Movie
@@ -4298,7 +4318,13 @@ async def handle_areas(ctx: P1Context, game: Game):
 
     total_required = 0
 
-    if ship_parts_count >= 30:
+    if neutral_goal(ctx):
+        # Neutral ending: the goal is sent as soon as the 25 required parts are received.
+        total_required = min(required_parts_count(ctx), NEUTRAL_REQUIRED_PARTS)
+        if neutral_ready(ctx) and not ctx.finished_game:
+            await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+            ctx.finished_game = True
+    elif ship_parts_count >= 30:
         total_required = 25
 
         if not ctx.finished_game:
@@ -4309,7 +4335,9 @@ async def handle_areas(ctx: P1Context, game: Game):
 
     # mCurrParts / mRequiredUfoPartCount are written through the playerState
     # pointer, and only when the value changes.
-    _write_playerstate_part_counts(game, ship_parts_count, total_required)
+    # Neutral ending: the part counter only counts the 25 required parts (out of 25).
+    shown_parts = required_parts_count(ctx) if neutral_goal(ctx) else ship_parts_count
+    _write_playerstate_part_counts(game, shown_parts, total_required)
     game_areas = dme.read_byte(UNLOCKED_AREAS[game])
     _sync_stage_unlock_anim(game, areas, game_areas)
     if game_areas != areas:
@@ -4348,7 +4376,7 @@ async def handle_areas(ctx: P1Context, game: Game):
 
     # If already on the world map, refresh unlocked areas and the part counter
     # without having to leave/restart a day.
-    _refresh_worldmap_screen(ctx, game, ship_parts_count)
+    _refresh_worldmap_screen(ctx, game, ship_parts_count, shown_parts)
 
 
 async def handle_day_cycle(ctx: P1Context, game: Game) -> None:
@@ -5794,6 +5822,7 @@ def _handle_patch(appik1_path: str) -> None:
     skip_ship_upgrade = True
     preload_onions = 0
     starting_onions = CONTAINER_COLOR_BIT["red"]
+    total_parts = 30
     try:
         import zipfile, json
         with zipfile.ZipFile(appik1_path, "r") as zf:
@@ -5813,6 +5842,8 @@ def _handle_patch(appik1_path: str) -> None:
                 skip_ship_upgrade = "Ship Upgrade" in skips
                 starting = set(data.get("StartingOnions", ["red"]))
                 starting_onions = sum(CONTAINER_COLOR_BIT[c] for c in starting if c in CONTAINER_COLOR_BIT)
+                if int(opts.get("goal", 0)) == 1:
+                    total_parts = NEUTRAL_REQUIRED_PARTS
                 if int(opts.get("shuffle_unlock_onion", 0)):
                     preload_onions = 0x07
                 elif "red" not in starting:
@@ -5830,7 +5861,8 @@ def _handle_patch(appik1_path: str) -> None:
                            title=make_disc_title(seed, slot_name) if seed else "",
                            slot_name=slot_name,
                            preload_onions=preload_onions,
-                           starting_onions=starting_onions) or {}
+                           starting_onions=starting_onions,
+                           total_parts=total_parts) or {}
         logger.info(f"[Pikmin] ISO patched successfully: {output_iso}")
         trip_line = ""
         if disable_trip:
@@ -5860,6 +5892,9 @@ def _handle_patch(appik1_path: str) -> None:
         if status.get("death_cause_patched") is False:
             sn_line += ("\n\nDeath cause hook could NOT be applied: DeathLink messages "
                         "will not name the cause of death.")
+        if status.get("total_parts_patched") is False:
+            sn_line += ("\n\nShip part target could NOT be changed: the game will show 30 parts "
+                        "instead of 25.")
         if status.get("starting_onion_patched") is False:
             sn_line += ("\n\nStarting Onion could NOT be applied: a new game starts with "
                         "the Red Onion.")
