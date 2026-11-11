@@ -145,10 +145,11 @@ class P1World(World):
         **USEFUL_ITEMS,
         **AREA_ITEMS,
         **ONION_ITEMS,
+        **GENERIC_PART_ITEMS,
     }
 
     item_name_groups: ClassVar[dict[str, set[str]]] = {
-        "Ship Part": set(ALL_PARTS.keys()),
+        "Ship Parts": set(ALL_PARTS.keys()),
         "Trap": set(TRAP_ITEMS.keys()),
         "Area": set(AREA_ITEMS.keys()),
         "Onion": set(ONION_ITEMS.keys()),
@@ -164,6 +165,8 @@ class P1World(World):
         self.pikmin_locations: dict[str, PikminLocationData] = {}
         self.starting_onions: set[str] = {"red"}
         self.hints: dict = {}
+        self.active_parts: list[str] = list(ALL_PARTS)
+        self.missing_colours: set[str] = set()
 
     # --- Universal Tracker ---------------------------------------------------
     # UT can regenerate the world without a YAML, from the server's slot_data.
@@ -181,6 +184,8 @@ class P1World(World):
         "shuffle_unlock_onion",
         "starting_onion",
         "goal",
+        "max_ship_parts",
+        "ship_parts_required",
     )
 
     @staticmethod
@@ -209,6 +214,37 @@ class P1World(World):
         if "starting_onions" in slot_data:
             self.starting_onions = set(slot_data["starting_onions"])
 
+    @property
+    def custom_goal(self) -> bool:
+        return self.options.goal == 2
+
+    def _setup_custom_goal(self) -> None:
+        """Custom ship part goal: force the hint mode, adjust Max Ship Parts and pick the
+        ship part locations that stay in the game."""
+        if not self.custom_goal:
+            self.active_parts = list(ALL_PARTS)
+            return
+        if self.options.ship_part_hint_mode.value in (2, 3):
+            self.options.ship_part_hint_mode.value = 1
+        required = self.options.ship_parts_required.value
+        if self.options.max_ship_parts.value < required:
+            logger.warning(f"Pikmin ({self.player_name}): Max Ship Parts raised from "
+                           f"{self.options.max_ship_parts.value} to {required} (Ship Parts Required).")
+            self.options.max_ship_parts.value = required
+        excluded_areas: set[str] = set()
+        if not self.options.shuffle_unlock_areas:
+            excluded_areas = {area for area, need in AREA_PART_THRESHOLDS.items() if need > required}
+        colour_areas = {"red": "The Impact Site", "yellow": "The Forest of Hope", "blue": "The Forest Navel"}
+        missing_colours = {colour for colour, area in colour_areas.items()
+                           if area in excluded_areas and colour not in self.starting_onions
+                           and not self.options.shuffle_unlock_onion}
+        self.active_parts = [
+            name for name, data in ALL_PARTS.items()
+            if data.area not in excluded_areas
+            and not any(getattr(data.required_types, colour) for colour in missing_colours)
+        ]
+        self.missing_colours = missing_colours
+
     def create_item(self, name: str) -> "P1Item":
         if name in TRAP_ITEMS:
             return P1Item(name, ItemClassification.trap, TRAP_ITEMS[name], self.player)
@@ -220,6 +256,8 @@ class P1World(World):
             return P1Item(name, ItemClassification.progression, AREA_ITEMS[name], self.player)
         if name in ONION_ITEMS:
             return P1Item(name, ItemClassification.progression, ONION_ITEMS[name], self.player)
+        if name in GENERIC_PART_ITEMS:
+            return P1Item(name, ItemClassification.progression, GENERIC_PART_ITEMS[name], self.player)
         # Neutral ending with shuffled areas: the optional parts unlock nothing.
         if name in OPTIONAL_PARTS and self.options.goal == 1 and self.options.shuffle_unlock_areas:
             return P1Item(name, ItemClassification.filler, ALL_PARTS[name].ap_id, self.player)
@@ -236,6 +274,7 @@ class P1World(World):
         location.place_locked_item(self.create_event(item))
 
     def create_regions(self) -> None:
+        self._setup_custom_goal()
         menu = Region("Area Select", self.player, self.multiworld)
         self.multiworld.regions.append(menu)
 
@@ -246,12 +285,13 @@ class P1World(World):
             self.multiworld.regions.append(regions[area])
 
             regions[area].connect(menu, f"Leave {area}",
-                                  (lambda state: state.has_from_list(ALL_PARTS.keys(), self.player, 1))
+                                  (lambda state: self._has_ship_parts(state, 1))
                                   if area == "The Impact Site" else None)
             menu.connect(regions[area], f"Enter {area}",
                          lambda state, area=area: can_access[area](state, self.player))
 
-        for name, data in ALL_PARTS.items():
+        for name in self.active_parts:
+            data = ALL_PARTS[name]
             regions[data.area].locations.append(
                 P1Location(self.player, ship_part_location_name(name), data.ap_id, regions[data.area]))
 
@@ -266,7 +306,8 @@ class P1World(World):
             red_interval=self.options.red_pikmin_interval.value,
             yellow_enabled=self.options.yellow_pikmin_locations_enabled.value,
             yellow_interval=self.options.yellow_pikmin_interval.value,
-            blue_enabled=self.options.blue_pikmin_locations_enabled.value,
+            blue_enabled=self.options.blue_pikmin_locations_enabled.value
+            and "blue" not in self.missing_colours,
             blue_interval=self.options.blue_pikmin_interval.value,
         )
 
@@ -280,8 +321,9 @@ class P1World(World):
     def create_items(self) -> None:
         items = []
 
-        for part in ALL_PARTS:
-            items.append(self.create_item(part))
+        if not self.custom_goal:
+            for part in ALL_PARTS:
+                items.append(self.create_item(part))
 
         # Disable Pikmin Trip in "item" mode: add the Useful upgrade to the pool.
         # Added before the filler count is computed so it replaces a filler
@@ -300,9 +342,11 @@ class P1World(World):
         elif self.options.shuffle_unlock_onion == 2:
             items += [self.create_item(onion_unlock_item(color)) for color in onion_order]
 
-        ship_part_locations = len(ALL_PARTS)
+        ship_part_locations = len(self.active_parts)
         pikmin_location_count = len(self.pikmin_locations) if self.options.enable_pikmin_locations else 0
         total_locations = ship_part_locations + pikmin_location_count
+        if self.custom_goal:
+            items += self._create_generic_ship_parts(total_locations - len(items))
         total_items = len(items)
         if (self.options.shuffle_unlock_areas or self.options.shuffle_unlock_onion) \
                 and total_items > total_locations:
@@ -315,7 +359,53 @@ class P1World(World):
         for name in filler_pool:
             items.append(self.create_item(name))
 
+        if self.custom_goal:
+            items = self._place_extra_ship_parts(items)
         self.multiworld.itempool += items
+
+    def _place_extra_ship_parts(self, items: list["P1Item"]) -> list["P1Item"]:
+        """Ship Part Importance without filler or trap: the important locations that the
+        progression Ship Parts cannot cover get the extra (useful) Ship Parts."""
+        types = self._ship_part_item_types()
+        if types is None or "Ship Part" not in types or types & {"Filler", "Trap"}:
+            return items
+        names = self._importance_locations()
+        self.random.shuffle(names)
+        names.sort(key=lambda name: (
+            sum(ALL_PARTS[name].required_types.__dict__.values()),
+            AREA_PART_THRESHOLDS.get(ALL_PARTS[name].area, 0)), reverse=True)
+        locations = [self.get_location(ship_part_location_name(name)) for name in names]
+        missing = len(locations) - self.options.ship_parts_required.value
+        extras = [item for item in items if item.name == GENERIC_SHIP_PART_ITEM and not item.advancement]
+        count = min(missing, len(extras))
+        if count <= 0:
+            return items
+        for location, item in zip(locations, extras[:count]):
+            location.place_locked_item(item)
+        placed = set(map(id, extras[:count]))
+        return [item for item in items if id(item) not in placed]
+
+    def _create_generic_ship_parts(self, room: int) -> list["P1Item"]:
+        required = self.options.ship_parts_required.value
+        if room < required:
+            raise OptionError(
+                f"Pikmin ({self.player_name}): Ship Parts Required is {required} but only {max(room, 0)} "
+                f"locations are free. Lower Ship Parts Required or enable Pikmin locations.")
+        if self.options.max_ship_parts.value > room:
+            logger.warning(f"Pikmin ({self.player_name}): Max Ship Parts lowered from "
+                           f"{self.options.max_ship_parts.value} to {room} (not enough locations).")
+            self.options.max_ship_parts.value = room
+        total = self.options.max_ship_parts.value
+        parts = [self.create_item(GENERIC_SHIP_PART_ITEM) for _ in range(required)]
+        parts += [P1Item(GENERIC_SHIP_PART_ITEM, ItemClassification.useful,
+                         GENERIC_PART_ITEMS[GENERIC_SHIP_PART_ITEM], self.player)
+                  for _ in range(total - required)]
+        return parts
+
+    def _has_ship_parts(self, state: CollectionState, count: int) -> bool:
+        if self.custom_goal:
+            return state.has(GENERIC_SHIP_PART_ITEM, self.player, count)
+        return state.has_from_list(ALL_PARTS.keys(), self.player, count)
 
     def _build_filler_pool(self, count: int) -> list[str]:
         if count == 0:
@@ -398,7 +488,8 @@ class P1World(World):
         return self._SHIP_PART_IMPORTANCE_TYPES[mode]
 
     def _ship_part_item_allowed(self, item: Item, types: set[str]) -> bool:
-        if "Ship Part" in types and item.player == self.player and item.name in ALL_PARTS:
+        if "Ship Part" in types and item.player == self.player \
+                and (item.name in ALL_PARTS or item.name == GENERIC_SHIP_PART_ITEM):
             return True
         if "Progression" in types and item.advancement:
             return True
@@ -408,6 +499,9 @@ class P1World(World):
             return True
         return "Filler" in types and not (item.advancement or item.useful or item.trap)
 
+    def _importance_locations(self) -> list[str]:
+        return [name for name in self.active_parts if name in self.options.ship_part_importance_locations.value]
+
     def _set_ship_part_importance_rules(self) -> None:
         types = self._ship_part_item_types()
         if types is None:
@@ -415,7 +509,7 @@ class P1World(World):
         # Without filler or trap allowed, these locations are filled first with
         # progression (priority), otherwise only filler would be left for them.
         priority = not types & {"Filler", "Trap"}
-        for name in self.options.ship_part_importance_locations.value:
+        for name in self._importance_locations():
             location = self.get_location(ship_part_location_name(name))
             add_item_rule(location, lambda item, types=types: self._ship_part_item_allowed(item, types))
             if priority:
@@ -425,7 +519,8 @@ class P1World(World):
         types = self._ship_part_item_types()
         if types is None:
             return
-        needed = len(self.options.ship_part_importance_locations.value)
+        needed = sum(1 for name in self._importance_locations()
+                     if self.get_location(ship_part_location_name(name)).item is None)
         available = sum(1 for item in self.multiworld.itempool if self._ship_part_item_allowed(item, types))
         if available < needed:
             raise OptionError(
@@ -435,7 +530,8 @@ class P1World(World):
 
     def set_rules(self) -> None:
         self._set_ship_part_importance_rules()
-        for name, data in ALL_PARTS.items():
+        for name in self.active_parts:
+            data = ALL_PARTS[name]
             self.get_location(ship_part_location_name(name)).access_rule = lambda state, data=data: \
                 can_obtain_any(state, self.player) \
                 and (not data.required_types.red or can_obtain_reds(state, self.player)) \
@@ -445,7 +541,11 @@ class P1World(World):
         if self.options.enable_pikmin_locations:
             self._set_pikmin_location_rules()
 
-        if self.options.goal == 1:
+        if self.custom_goal:
+            required = self.options.ship_parts_required.value
+            self.set_event("The Impact Site", "Collect All Ship Parts", "Victory", lambda state: \
+                state.has(GENERIC_SHIP_PART_ITEM, self.player, required))
+        elif self.options.goal == 1:
             self.set_event("The Impact Site", "Collect All Ship Parts", "Victory", lambda state: \
                 state.has_all(REQUIRED_PARTS, self.player))
         else:
@@ -525,6 +625,8 @@ class P1World(World):
             "shuffle_unlock_areas": self.options.shuffle_unlock_areas.value,
             "shuffle_unlock_onion": self.options.shuffle_unlock_onion.value,
             "goal":                self.options.goal.value,
+            "max_ship_parts":      self.options.max_ship_parts.value,
+            "ship_parts_required": self.options.ship_parts_required.value,
             "starting_onions":     sorted(self.starting_onions),
             "skip_events":         sorted(self.options.skip_events.value),
             "always_min_one_leaf":           self.options.always_min_one_leaf.value,

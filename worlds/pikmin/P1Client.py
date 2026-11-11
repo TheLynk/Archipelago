@@ -2642,6 +2642,8 @@ def sync_playerstate_parts(ctx: P1Context, game: Game) -> None:
                 dme.write_byte(a, count)
 
         # Total parts (ship upgrade, display): take the max.
+        if custom_goal(ctx):
+            return
         total = len(checked_parts)
         caddr = ps + O["mCurrParts"]
         cur_total = struct.unpack(">i", dme.read_bytes(caddr, 4))[0]
@@ -3760,6 +3762,8 @@ async def handle_parts(ctx: P1Context, game: Game):
 
         # Normal direction: collected in-game -> send the check to the server.
         if read == data.collected_byte and data.ap_id not in ctx.checked_locations:
+            if ctx.server_locations and data.ap_id not in ctx.server_locations:
+                continue
             # Not sent while a colour it needs is locked (Shuffle Unlock Onion).
             needed = [c for c in ("red", "yellow", "blue") if getattr(data.required_types, c)]
             if not all(onion_unlocked(ctx, c) for c in needed):
@@ -4276,6 +4280,28 @@ def neutral_ready(ctx: P1Context) -> bool:
     return neutral_goal(ctx) and required_parts_count(ctx) >= NEUTRAL_REQUIRED_PARTS
 
 
+def custom_goal(ctx: P1Context) -> bool:
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    return slot_data.get("goal", 0) == 2
+
+
+def custom_parts_required(ctx: P1Context) -> int:
+    slot_data = getattr(ctx, "slot_data", None) or {}
+    return int(slot_data.get("ship_parts_required", 30))
+
+
+def custom_shown_parts(received: int, required: int) -> int:
+    """Part counter value for the custom goal. 30 triggers the game's ending, so it is
+    skipped while more parts are required."""
+    shown = min(received, required, 99)
+    if shown == MAX_SHIP_PARTS and required > MAX_SHIP_PARTS:
+        shown += 1
+    return shown
+
+
+MAX_SHIP_PARTS = 30
+
+
 def is_final_ending(game: Game) -> bool:
     """True during the ending sequence (end of the last day with 30 parts:
     liftoff, onions, Olimar in space). The game reinitialises the Teki/Movie
@@ -4289,7 +4315,7 @@ def is_final_ending(game: Game) -> bool:
         ps = struct.unpack(">I", dme.read_bytes(ptr, 4))[0]
         if not (_RAM_MIN <= ps < _RAM_MAX):
             return False
-        return struct.unpack(">i", dme.read_bytes(ps + PLAYERSTATE_OFFSETS["mCurrParts"], 4))[0] >= 30
+        return struct.unpack(">i", dme.read_bytes(ps + PLAYERSTATE_OFFSETS["mCurrParts"], 4))[0] == 30
     except Exception:
         return False
 
@@ -4318,7 +4344,13 @@ async def handle_areas(ctx: P1Context, game: Game):
 
     total_required = 0
 
-    if neutral_goal(ctx):
+    if custom_goal(ctx):
+        generic_id = GENERIC_PART_ITEMS[GENERIC_SHIP_PART_ITEM]
+        ship_parts_count = sum(1 for item in ctx.items_received if item.item == generic_id)
+        if ship_parts_count >= custom_parts_required(ctx) and not ctx.finished_game:
+            await ctx.send_msgs([{"cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+            ctx.finished_game = True
+    elif neutral_goal(ctx):
         # Neutral ending: the goal is sent as soon as the 25 required parts are received.
         total_required = min(required_parts_count(ctx), NEUTRAL_REQUIRED_PARTS)
         if neutral_ready(ctx) and not ctx.finished_game:
@@ -4336,7 +4368,12 @@ async def handle_areas(ctx: P1Context, game: Game):
     # mCurrParts / mRequiredUfoPartCount are written through the playerState
     # pointer, and only when the value changes.
     # Neutral ending: the part counter only counts the 25 required parts (out of 25).
-    shown_parts = required_parts_count(ctx) if neutral_goal(ctx) else ship_parts_count
+    if custom_goal(ctx):
+        shown_parts = custom_shown_parts(ship_parts_count, custom_parts_required(ctx))
+    elif neutral_goal(ctx):
+        shown_parts = required_parts_count(ctx)
+    else:
+        shown_parts = ship_parts_count
     _write_playerstate_part_counts(game, shown_parts, total_required)
     game_areas = dme.read_byte(UNLOCKED_AREAS[game])
     _sync_stage_unlock_anim(game, areas, game_areas)
@@ -5844,6 +5881,8 @@ def _handle_patch(appik1_path: str) -> None:
                 starting_onions = sum(CONTAINER_COLOR_BIT[c] for c in starting if c in CONTAINER_COLOR_BIT)
                 if int(opts.get("goal", 0)) == 1:
                     total_parts = NEUTRAL_REQUIRED_PARTS
+                elif int(opts.get("goal", 0)) == 2:
+                    total_parts = int(opts.get("ship_parts_required", 30))
                 if int(opts.get("shuffle_unlock_onion", 0)):
                     preload_onions = 0x07
                 elif "red" not in starting:

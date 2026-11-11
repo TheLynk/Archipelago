@@ -11,14 +11,41 @@ class Goal(Choice):
     """
     Choose how you win.
 
-    good_ending    - Collect all 30 ship parts: the ship takes off right away.
-    neutral_ending - Collect the 25 ship parts needed by the game (all but Nova Blaster,
-                     Space Float, Massage Machine, Secret Safe and UV Lamp).
+    good_ending      - Collect all 30 ship parts: the ship takes off right away.
+    neutral_ending   - Collect the 25 ship parts needed by the game (all but Nova Blaster,
+                       Space Float, Massage Machine, Secret Safe and UV Lamp).
+    custom_ship_part - The 30 named ship parts are replaced by generic "Ship Part" items.
+                       Collect Ship Parts Required of them (see Max Ship Parts).
     """
     display_name = "Goal"
-    option_good_ending    = 0
-    option_neutral_ending = 1
+    option_good_ending      = 0
+    option_neutral_ending   = 1
+    option_custom_ship_part = 2
     default = 0
+
+
+class MaxShipParts(Range):
+    """
+    Custom ship part goal only: number of "Ship Part" items in the pool.
+    Raised to Ship Parts Required if lower, and lowered if there are not enough locations.
+    The extra ones are useful items but still count for the goal and the area unlocks.
+    """
+    display_name = "Max Ship Parts"
+    range_start = 1
+    range_end = 99
+    default = 30
+
+
+class ShipPartsRequired(Range):
+    """
+    Custom ship part goal only: number of "Ship Part" items needed to win.
+    With Shuffle Unlock Areas off, the areas that need more ship parts than this are
+    removed (Forest of Hope 1, Forest Navel 5, Distant Spring 12, Final Trial 29).
+    """
+    display_name = "Ship Parts Required"
+    range_start = 1
+    range_end = 99
+    default = 25
 
 
 class ShipPartImportance(Choice):
@@ -30,7 +57,7 @@ class ShipPartImportance(Choice):
     useful      - Useful items (from any player).
     progression - Progression items (from any player).
     trap        - Traps (from any player).
-    ship_part   - Your own ship parts only.
+    ship_part   - Your own ship parts only (the "Ship Part" items with the custom goal).
     choice      - The types listed in Ship Part Importance Types.
     mixed       - Any item, like the original randomizer.
     """
@@ -655,6 +682,8 @@ class OlimarBondHeal(Range):
 class P1Options(PerGameCommonOptions):
 # GOAL
     goal: Goal
+    max_ship_parts: MaxShipParts
+    ship_parts_required: ShipPartsRequired
 # SHIP PART
     ship_part_importance: ShipPartImportance
     ship_part_importance_types: ShipPartImportanceTypes
@@ -733,7 +762,7 @@ class P1Options(PerGameCommonOptions):
 # ====================================================================
 P1_OPTION_GROUPS = [
     OptionGroup("Goal", [
-        Goal,
+        Goal, MaxShipParts, ShipPartsRequired,
     ]),
     OptionGroup("Ship Parts", [
         ShipPartImportance, ShipPartImportanceTypes, ShipPartImportanceLocations, ShuffleUnlockAreas, ShuffleUnlockOnion,

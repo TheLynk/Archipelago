@@ -103,6 +103,8 @@ def get_hints_by_option(multiworld: MultiWorld, player_hints: set[int]) -> None:
                 else:
                     loc: Location = ship_part_index.get((hint_name, player_int))
 
+                if loc is None and world.custom_goal:
+                    continue
                 if loc is None or loc.item is None:
                     logger.warning(f"[Hints] No filled location found for ({hint_name}, player={player_int}) "
                                    f"— was get_hints_by_option called from post_fill()?")

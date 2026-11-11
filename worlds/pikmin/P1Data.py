@@ -221,6 +221,14 @@ ONION_ITEMS: dict[str, int] = {
 }
 
 
+# Generic ship part item used by the custom ship part goal.
+GENERIC_SHIP_PART_ITEM = "Ship Part"
+
+GENERIC_PART_ITEMS: dict[str, int] = {
+    GENERIC_SHIP_PART_ITEM: 71834,
+}
+
+
 def onion_unlock_order(starting) -> list[str]:
     """Onions to unlock by items (Shuffle Unlock Onion): every colour not given at start."""
     return [c for c in ONION_COLORS if c not in starting]
