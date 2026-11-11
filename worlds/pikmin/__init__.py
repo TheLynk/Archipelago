@@ -136,7 +136,7 @@ class P1World(World):
     options_dataclass = P1Options
     options: P1Options
 
-    origin_region_name: str = "The Impact Site"
+    origin_region_name: str = "Area Select"
 
     item_name_to_id: ClassVar[dict[str, int]] = {
         **{name: data.ap_id for name, data in ALL_PARTS.items()},
@@ -164,6 +164,7 @@ class P1World(World):
         super().__init__(*args, **kwargs)
         self.pikmin_locations: dict[str, PikminLocationData] = {}
         self.starting_onions: set[str] = {"red"}
+        self.starting_areas: set[str] = {"The Impact Site"}
         self.hints: dict = {}
         self.active_parts: list[str] = list(ALL_PARTS)
         self.missing_colours: set[str] = set()
@@ -183,6 +184,7 @@ class P1World(World):
         "shuffle_unlock_areas",
         "shuffle_unlock_onion",
         "starting_onion",
+        "normal_first_day",
         "goal",
         "max_ship_parts",
         "ship_parts_required",
@@ -204,6 +206,7 @@ class P1World(World):
             self.starting_onions = {c.lower() for c in self.options.starting_onion_colors.value}
         else:
             self.starting_onions = {"red"}
+        self.starting_areas = self._pick_starting_areas()
         passthrough = getattr(self.multiworld, "re_gen_passthrough", None) or {}
         slot_data = passthrough.get(self.game)
         if not slot_data:
@@ -213,6 +216,23 @@ class P1World(World):
                 getattr(self.options, name).value = slot_data[name]
         if "starting_onions" in slot_data:
             self.starting_onions = set(slot_data["starting_onions"])
+        if "starting_areas" in slot_data:
+            self.starting_areas = set(slot_data["starting_areas"])
+
+    def _pick_starting_areas(self) -> set[str]:
+        mode = self.options.starting_area.value
+        if mode == 6:
+            areas = {area for area in [self.random.choice((None,) + ALL_AREAS)] if area}
+        elif mode == 7:
+            by_abbrev = {abbrev: area for area, abbrev in AREA_ABBREV.items()}
+            areas = {by_abbrev[abbrev] for abbrev in self.options.starting_area_list.value}
+        elif 1 <= mode <= len(ALL_AREAS):
+            areas = {ALL_AREAS[mode - 1]}
+        else:
+            areas = set()
+        if not self.options.shuffle_unlock_areas or not self.options.normal_first_day:
+            areas.add("The Impact Site")
+        return areas
 
     @property
     def custom_goal(self) -> bool:
@@ -233,7 +253,8 @@ class P1World(World):
             self.options.max_ship_parts.value = required
         excluded_areas: set[str] = set()
         if not self.options.shuffle_unlock_areas:
-            excluded_areas = {area for area, need in AREA_PART_THRESHOLDS.items() if need > required}
+            excluded_areas = {area for area, need in AREA_PART_THRESHOLDS.items()
+                              if need > required and area not in self.starting_areas}
         colour_areas = {"red": "The Impact Site", "yellow": "The Forest of Hope", "blue": "The Forest Navel"}
         missing_colours = {colour for colour, area in colour_areas.items()
                            if area in excluded_areas and colour not in self.starting_onions
@@ -284,11 +305,10 @@ class P1World(World):
             regions[area] = Region(area, self.player, self.multiworld)
             self.multiworld.regions.append(regions[area])
 
-            regions[area].connect(menu, f"Leave {area}",
-                                  (lambda state: self._has_ship_parts(state, 1))
-                                  if area == "The Impact Site" else None)
+            regions[area].connect(menu, f"Leave {area}")
             menu.connect(regions[area], f"Enter {area}",
-                         lambda state, area=area: can_access[area](state, self.player))
+                         lambda state, area=area: can_access[area](state, self.player)
+                         and (area == "The Impact Site" or self._left_first_day(state)))
 
         for name in self.active_parts:
             data = ALL_PARTS[name]
@@ -332,9 +352,9 @@ class P1World(World):
             items.append(self.create_item("Trip Immunity"))
 
         if self.options.shuffle_unlock_areas == 1:
-            items += [self.create_item(PROGRESSIVE_AREA_ITEM) for _ in AREA_UNLOCK_ORDER]
+            items += [self.create_item(PROGRESSIVE_AREA_ITEM) for _ in area_unlock_order(self.starting_areas)]
         elif self.options.shuffle_unlock_areas == 2:
-            items += [self.create_item(area_unlock_item(area)) for area in AREA_UNLOCK_ORDER]
+            items += [self.create_item(area_unlock_item(area)) for area in area_unlock_order(self.starting_areas)]
 
         onion_order = onion_unlock_order(self.starting_onions)
         if self.options.shuffle_unlock_onion == 1:
@@ -401,6 +421,10 @@ class P1World(World):
                          GENERIC_PART_ITEMS[GENERIC_SHIP_PART_ITEM], self.player)
                   for _ in range(total - required)]
         return parts
+
+    def _left_first_day(self, state: CollectionState) -> bool:
+        """Without Normal First Day, day 1 is a tutorial in The Impact Site that ends with a part."""
+        return bool(self.options.normal_first_day) or self._has_ship_parts(state, 1)
 
     def _has_ship_parts(self, state: CollectionState, count: int) -> bool:
         if self.custom_goal:
@@ -543,10 +567,10 @@ class P1World(World):
 
         if self.custom_goal:
             required = self.options.ship_parts_required.value
-            self.set_event("The Impact Site", "Collect All Ship Parts", "Victory", lambda state: \
+            self.set_event("Area Select", "Collect All Ship Parts", "Victory", lambda state: \
                 state.has(GENERIC_SHIP_PART_ITEM, self.player, required))
         elif self.options.goal == 1:
-            self.set_event("The Impact Site", "Collect All Ship Parts", "Victory", lambda state: \
+            self.set_event("Area Select", "Collect All Ship Parts", "Victory", lambda state: \
                 state.has_all(REQUIRED_PARTS, self.player))
         else:
             self.set_event("The Final Trial", "Collect All Ship Parts", "Victory", lambda state: \
@@ -628,6 +652,7 @@ class P1World(World):
             "max_ship_parts":      self.options.max_ship_parts.value,
             "ship_parts_required": self.options.ship_parts_required.value,
             "starting_onions":     sorted(self.starting_onions),
+            "starting_areas":      sorted(self.starting_areas),
             "skip_events":         sorted(self.options.skip_events.value),
             "always_min_one_leaf":           self.options.always_min_one_leaf.value,
             "day_cycle_mode":      self.options.day_cycle_mode.value,

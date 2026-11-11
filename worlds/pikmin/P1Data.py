@@ -198,7 +198,16 @@ def area_unlock_item(area: str) -> str:
 AREA_ITEMS: dict[str, int] = {
     PROGRESSIVE_AREA_ITEM: 71825,
     **{area_unlock_item(area): 71826 + i for i, area in enumerate(AREA_UNLOCK_ORDER)},
+    area_unlock_item("The Impact Site"): 71835,
 }
+
+# Every area, in the vanilla order.
+ALL_AREAS: tuple[str, ...] = ("The Impact Site",) + AREA_UNLOCK_ORDER
+
+
+def area_unlock_order(starting) -> list[str]:
+    """Areas to unlock by items (Shuffle Unlock Areas): every area not open at start."""
+    return [area for area in ALL_AREAS if area not in starting]
 
 # ====================================================================
 # ONION ITEMS (Shuffle Unlock Onion)

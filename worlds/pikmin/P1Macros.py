@@ -2,19 +2,22 @@ from typing import Callable
 
 from BaseClasses import CollectionState
 from .P1Data import (ALL_PARTS, Area, AREA_UNLOCK_ORDER, AREA_PART_THRESHOLDS, GENERIC_SHIP_PART_ITEM,
-                     PROGRESSIVE_AREA_ITEM, area_unlock_item,
+                     PROGRESSIVE_AREA_ITEM, area_unlock_item, area_unlock_order,
                      PROGRESSIVE_ONION_ITEM, onion_unlock_item, onion_unlock_order)
 
 
 def _can_access_area(area: str, state: CollectionState, player: int) -> bool:
-    if area not in AREA_UNLOCK_ORDER:
+    world = state.multiworld.worlds[player]
+    if area in world.starting_areas:
         return True
-    mode = state.multiworld.worlds[player].options.shuffle_unlock_areas.value
+    mode = world.options.shuffle_unlock_areas.value
     if mode == 1:
-        return state.has(PROGRESSIVE_AREA_ITEM, player, AREA_UNLOCK_ORDER.index(area) + 1)
+        return state.has(PROGRESSIVE_AREA_ITEM, player, area_unlock_order(world.starting_areas).index(area) + 1)
     if mode == 2:
         return state.has(area_unlock_item(area), player)
-    if state.multiworld.worlds[player].options.goal == 2:
+    if area not in AREA_PART_THRESHOLDS:
+        return True
+    if world.options.goal == 2:
         return state.has(GENERIC_SHIP_PART_ITEM, player, AREA_PART_THRESHOLDS[area])
     return state.has_from_list(ALL_PARTS.keys(), player, AREA_PART_THRESHOLDS[area])
 

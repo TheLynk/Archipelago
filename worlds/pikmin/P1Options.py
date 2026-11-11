@@ -127,6 +127,45 @@ class ShuffleUnlockOnion(Choice):
     default = 0
 
 
+class StartingArea(Choice):
+    """
+    Choose the areas open at the start.
+
+    none        - Start without any area.
+    tis         - Start with The Impact Site, like the original game.
+    tfoh        - Start with The Forest of Hope.
+    tfn         - Start with The Forest Navel.
+    tds         - Start with The Distant Spring.
+    tft         - Start with The Final Trial.
+    random_area - One of the above, picked at random (none included).
+    choice      - The areas listed in Starting Area List.
+
+    Without Normal First Day, day 1 is played in The Impact Site, so it is always open.
+    With Shuffle Unlock Areas off, The Impact Site is always open and the other areas
+    still open with ship parts.
+    """
+    display_name = "Starting Area"
+    option_none        = 0
+    option_tis         = 1
+    option_tfoh        = 2
+    option_tfn         = 3
+    option_tds         = 4
+    option_tft         = 5
+    option_random_area = 6
+    option_choice      = 7
+    default = 1
+
+
+class StartingAreaList(OptionSet):
+    """
+    Areas open at the start when Starting Area is set to choice.
+    Valid values: TIS, TFoH, TFN, TDS, TFT (e.g. ['TFoH', 'TDS'])
+    """
+    display_name = "Starting Area List"
+    valid_keys = {"TIS", "TFoH", "TFN", "TDS", "TFT"}
+    default = frozenset({"TIS"})
+
+
 class StartingOnion(Choice):
     """
     Choose the Onions you start with.
@@ -689,6 +728,8 @@ class P1Options(PerGameCommonOptions):
     ship_part_importance_types: ShipPartImportanceTypes
     ship_part_importance_locations: ShipPartImportanceLocations
     shuffle_unlock_areas: ShuffleUnlockAreas
+    starting_area: StartingArea
+    starting_area_list: StartingAreaList
     shuffle_unlock_onion: ShuffleUnlockOnion
     starting_onion: StartingOnion
     starting_onion_colors: StartingOnionColors
@@ -765,7 +806,8 @@ P1_OPTION_GROUPS = [
         Goal, MaxShipParts, ShipPartsRequired,
     ]),
     OptionGroup("Ship Parts", [
-        ShipPartImportance, ShipPartImportanceTypes, ShipPartImportanceLocations, ShuffleUnlockAreas, ShuffleUnlockOnion,
+        ShipPartImportance, ShipPartImportanceTypes, ShipPartImportanceLocations, ShuffleUnlockAreas,
+        StartingArea, StartingAreaList, ShuffleUnlockOnion,
         StartingOnion, StartingOnionColors,
     ]),
     OptionGroup("Pikmin Locations", [

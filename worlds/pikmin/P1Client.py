@@ -4103,6 +4103,74 @@ def _show_pane(pane: int) -> None:
         dme.write_byte(pane + PANE_FLAG, flag | PANE_VISIBLE)
 
 
+def _hide_pane(pane: int) -> None:
+    flag = dme.read_byte(pane + PANE_FLAG)
+    if flag & PANE_VISIBLE:
+        dme.write_byte(pane + PANE_FLAG, flag & ~PANE_VISIBLE & 0xFF)
+
+
+def _pane_at(addr: int) -> Optional[int]:
+    pane = struct.unpack(">I", dme.read_bytes(addr, 4))[0]
+    return pane if _RAM_MIN <= pane < _RAM_MAX else None
+
+
+# WorldMapCoursePoint panes (drawWorldMap.cpp): unselected _14, selected _18,
+# opened _1C, selection line _20, stay pane _24. P2DPane.mBounds (_18) min X/Y are s16.
+CP_PANE_UNSELECTED = 0x14
+CP_PANE_SELECTED = 0x18
+CP_PANE_OPENED = 0x1C
+CP_PANE_LINE = 0x20
+CP_PANE_STAY = 0x24
+CPM_SELECTED = 0x04            # WorldMapCoursePointMgr.mSelectedPoint
+PANE_BOUNDS = 0x18
+CURSOR_STATUS = 0x04           # WorldMapCursorMgr.mUfoStatus (1 = Moving)
+CURSOR_TARGET = 0x0C           # WorldMapCursorMgr.mTargetPos (Vector3f)
+CURSOR_LANDING = 0x34          # mIsLanding, mIsForcedMove (_35)
+UFO_HOVERING = 0
+UFO_MOVING = 1
+
+
+def _close_locked_worldmap_points(wm: int, unlocked) -> None:
+    """Hide the areas the map opened but AP keeps locked (e.g. The Impact Site with a
+    Starting Area), and move the selection and the ship off a hidden area."""
+    W = WORLDMAP_CHAIN
+    mgr = struct.unpack(">I", dme.read_bytes(wm + W["DWM_COURSEPOINTMGR"], 4))[0]
+    if not (_RAM_MIN <= mgr < _RAM_MAX):
+        return
+    pts = mgr + W["CPM_POINTS"]
+    for game_area, is_unlocked in enumerate(unlocked):
+        point = pts + MAP_GAME2SCR[game_area] * W["CP_STRIDE"]
+        if is_unlocked or not dme.read_byte(point + W["CP_ISVISIBLE"]):
+            continue
+        dme.write_byte(point + W["CP_ISVISIBLE"], 0)
+        for off in (CP_PANE_UNSELECTED, CP_PANE_SELECTED, CP_PANE_OPENED, CP_PANE_LINE):
+            pane = _pane_at(point + off)
+            if pane:
+                _hide_pane(pane)
+    selected = struct.unpack(">I", dme.read_bytes(mgr + CPM_SELECTED, 4))[0]
+    if not (pts <= selected < pts + 5 * W["CP_STRIDE"]) or dme.read_byte(selected + W["CP_ISVISIBLE"]):
+        return
+    targets = [pts + MAP_GAME2SCR[a] * W["CP_STRIDE"] for a, ok in enumerate(unlocked) if ok]
+    targets = [p for p in targets if dme.read_byte(p + W["CP_ISVISIBLE"])]
+    cursor = _pane_at(wm + DWM_ICON_SCREEN_CURSOR)
+    if not targets or not cursor:
+        return
+    if dme.read_byte(cursor + CURSOR_STATUS + 3) != UFO_HOVERING or dme.read_bytes(cursor + CURSOR_LANDING, 2) != b"\x00\x00":
+        return
+    target = targets[0]
+    stay = _pane_at(target + CP_PANE_STAY)
+    if not stay:
+        return
+    dme.write_bytes(mgr + CPM_SELECTED, struct.pack(">I", target))
+    for off, show in ((CP_PANE_UNSELECTED, False), (CP_PANE_SELECTED, True), (CP_PANE_LINE, True)):
+        pane = _pane_at(target + off)
+        if pane:
+            (_show_pane if show else _hide_pane)(pane)
+    x, y = struct.unpack(">hh", dme.read_bytes(stay + PANE_BOUNDS, 4))
+    dme.write_bytes(cursor + CURSOR_TARGET, struct.pack(">fff", float(x), float(y), 0.0))
+    dme.write_bytes(cursor + CURSOR_STATUS, struct.pack(">i", UFO_MOVING))
+
+
 def _refresh_worldmap_onions(ctx: P1Context, game: Game, wm: int) -> None:
     """Show the onion icon and Pikmin counter of a colour owned after the map opened."""
     ps = struct.unpack(">I", dme.read_bytes(SYM_PLAYER_STATE_PTR[game], 4))[0]
@@ -4169,6 +4237,9 @@ def _refresh_worldmap_screen(ctx: P1Context, game: Game, ship_parts_count: int,
                 dme.write_bytes(cnt_addr, struct.pack(">i", total))
 
         _refresh_worldmap_onions(ctx, game, wm)
+
+        if struct.unpack(">i", dme.read_bytes(wm + W["DWM_CURRENTMODE"], 4))[0] == DWM_MODE_OPERATION:
+            _close_locked_worldmap_points(wm, unlocked_areas(ctx, ship_parts_count))
 
         # --- cursor navigation links ---------------------------
         # WorldMapCoursePointMgr::init() computes the up/down/left/right links
@@ -4325,14 +4396,15 @@ def unlocked_areas(ctx: P1Context, ship_parts_count: int) -> tuple[bool, ...]:
     slot_data = getattr(ctx, "slot_data", None) or {}
     mode = slot_data.get("shuffle_unlock_areas", 0)
     received = [i.item for i in ctx.items_received]
+    starting = set(slot_data.get("starting_areas", ["The Impact Site"]))
     if mode == 1:
         count = received.count(AREA_ITEMS[PROGRESSIVE_AREA_ITEM])
-        flags = [count > i for i in range(len(AREA_UNLOCK_ORDER))]
-    elif mode == 2:
-        flags = [AREA_ITEMS[area_unlock_item(a)] in received for a in AREA_UNLOCK_ORDER]
-    else:
-        flags = [ship_parts_count >= AREA_PART_THRESHOLDS[a] for a in AREA_UNLOCK_ORDER]
-    return (True, *flags)
+        order = area_unlock_order(starting)
+        return tuple(a in starting or order.index(a) < count for a in ALL_AREAS)
+    if mode == 2:
+        return tuple(a in starting or AREA_ITEMS[area_unlock_item(a)] in received for a in ALL_AREAS)
+    return tuple(a == "The Impact Site" or a in starting or ship_parts_count >= AREA_PART_THRESHOLDS[a]
+                 for a in ALL_AREAS)
 
 
 async def handle_areas(ctx: P1Context, game: Game):
